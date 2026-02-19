@@ -159,15 +159,12 @@
 
             section.appendChild(container);
 
+            // Add loading placeholder for lazy loading
+            container.innerHTML = '<div class="loading">Loading...</div>';
+            container.dataset.loaded = 'false';
             if (isTargeted) {
-                // Load immediately for hash-targeted charts (after adding to DOM)
-                const buildTypes = ['debug', 'opt', 'asan', 'tsan', 'ccov', 'msix', 'condprof', 'debug-isolated-process'];
-                createScatterPlot(container, platformData, platform, currentRepository, colors, buildTypes);
-                container.dataset.loaded = 'true';
-            } else {
-                // Add loading placeholder for lazy loading
-                container.innerHTML = '<div class="loading">Loading...</div>';
-                container.dataset.loaded = 'false';
+                // Mark for immediate loading once added to the DOM
+                container.dataset.targeted = 'true';
             }
 
             return section;
@@ -220,7 +217,10 @@
                 chartsDiv.appendChild(mainSection);
             });
 
-            // Set up intersection observer for lazy loading
+            // Immediately load charts targeted by URL hash (now that they're in the DOM)
+            document.querySelectorAll('.chart-container[data-targeted="true"]').forEach(loadChart);
+
+            // Set up intersection observer for lazy loading remaining charts
             setupChartObserver();
         }
 
