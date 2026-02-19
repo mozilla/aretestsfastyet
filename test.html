@@ -1721,7 +1721,7 @@
             try {
                 // Fetch index.json for the correct harness
                 // Can't use fetchData('index.json') because it defaults to xpcshell via getHarnessType()
-                const indexResponse = await fetchFromCI(usedHarness, 'try', 'index.json');
+                const indexResponse = await fetchFromCI(usedHarness, 'index.json');
                 if (!indexResponse.ok) return null;
 
                 const index = await indexResponse.json();

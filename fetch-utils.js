@@ -8,7 +8,8 @@ function getHarnessType() {
 }
 
 // Helper function to fetch from Firefox CI with specified harness
-function fetchFromCI(harness, repository, filename) {
+function fetchFromCI(harness, filename) {
+    const repository = window.location.hostname === 'fqueze.github.io' ? 'try' : 'mozilla-central';
     const prefix = `https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.${repository}.latest.source.test-info-${harness}-timings/artifacts/public/`;
     return fetch(`${prefix}${filename}`);
 }
@@ -144,9 +145,6 @@ async function fetchData(filename) {
             }
         }
 
-        // Use try repository for fqueze.github.io, mozilla-central for others
-        const repository = window.location.hostname === 'fqueze.github.io' ? 'try' : 'mozilla-central';
-
         // Detect harness from filename (xpcshell-*.json or mochitest-*.json)
         // For generic files like index.json, use the URL parameter
         let harness = 'xpcshell';
@@ -157,7 +155,7 @@ async function fetchData(filename) {
         }
 
         // Try the detected harness first
-        const response = await fetchFromCI(harness, repository, filename);
+        const response = await fetchFromCI(harness, filename);
 
         // If data exists, return it
         if (response.ok) {
@@ -168,7 +166,7 @@ async function fetchData(filename) {
         if (filename.startsWith('xpcshell-try-')) {
             const mochitestFilename = filename.replace('xpcshell-', 'mochitest-');
             console.log(`xpcshell data not found for ${filename}, trying ${mochitestFilename}...`);
-            return fetchFromCI('mochitest', repository, mochitestFilename);
+            return fetchFromCI('mochitest', mochitestFilename);
         }
 
         // For non-try runs, return the original failed response
