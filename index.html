@@ -286,14 +286,14 @@
 
             const count = Math.min(days, stats.dates.length);
             return {
-                dates: stats.dates.slice(0, count),
-                totalTestRuns: stats.totalTestRuns.slice(0, count),
-                failedTestRuns: stats.failedTestRuns.slice(0, count),
-                skippedTestRuns: stats.skippedTestRuns.slice(0, count),
-                processedJobCount: stats.processedJobCount.slice(0, count),
-                failedJobs: stats.failedJobs.slice(0, count),
-                invalidJobs: stats.invalidJobs.slice(0, count),
-                ignoredJobs: stats.ignoredJobs ? stats.ignoredJobs.slice(0, count) : new Array(count).fill(0)
+                dates: stats.dates.slice(-count),
+                totalTestRuns: stats.totalTestRuns.slice(-count),
+                failedTestRuns: stats.failedTestRuns.slice(-count),
+                skippedTestRuns: stats.skippedTestRuns.slice(-count),
+                processedJobCount: stats.processedJobCount.slice(-count),
+                failedJobs: stats.failedJobs.slice(-count),
+                invalidJobs: stats.invalidJobs.slice(-count),
+                ignoredJobs: stats.ignoredJobs ? stats.ignoredJobs.slice(-count) : new Array(count).fill(0)
             };
         }
 
