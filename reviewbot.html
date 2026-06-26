@@ -107,6 +107,17 @@
 
         #hover-tooltip a:hover { text-decoration: underline; }
 
+        /* shared.css forces .hoverlayer .hovertext path { fill:#2a2a2a !important } site-wide.
+           The volume chart uses Plotly's native white tooltip — override for this chart. */
+        #volume-chart .hoverlayer .hovertext path {
+            fill: white !important;
+            stroke: #ccc !important;
+            opacity: 1 !important;
+        }
+        #volume-chart .hoverlayer .hovertext text.nums {
+            fill: #333 !important;
+        }
+
         #hover-tooltip .tt-sep {
             border-top: 1px solid #555;
             margin: 4px 0;
@@ -126,12 +137,17 @@
         <div id="counters-row" class="counters-row" style="margin-bottom:24px">
             <div class="loading">Loading…</div>
         </div>
+
+        <div class="chart-container" id="volume-chart" style="margin-bottom:24px;min-height:0">
+            <div class="loading">Loading…</div>
+        </div>
     </div>
 
     <script>
         const REDASH = 'https://sql.telemetry.mozilla.org/api/queries';
         const QUERIES = {
             topline: { id: 121795, key: 'XMoKD1DN34W9BajtCsBklWqjdLNSJhnlMl4r1NUH' },
+            volume:  { id: 121728, key: 'RIbCpUDhjyJLFZTrMhAclNnglbSw154VpoWNOVJo' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -190,6 +206,9 @@
         tooltipEl.addEventListener('mouseenter', () => clearTimeout(hideTimer));
         tooltipEl.addEventListener('mouseleave', () => { tooltipEl.style.display = 'none'; });
 
+        // Populated by renderVolumeChart; read by renderCounters if it runs after
+        let reviewbotTrySharePct = null;
+
         // ── Topline counters ────────────────────────────────────────────
 
         async function renderCounters() {
@@ -212,6 +231,66 @@
                 card.innerHTML = `<div class="counter-value">${formatted}</div>${unitHtml}<div class="counter-label">${label}</div>`;
                 container.appendChild(card);
             }
+
+            // Placeholder card for the try-push share % (populated by renderVolumeChart)
+            const pctCard = document.createElement('div');
+            pctCard.className = 'counter-card';
+            pctCard.id = 'counter-reviewbot-pct';
+            if (reviewbotTrySharePct !== null) {
+                pctCard.innerHTML = `<div class="counter-value">${reviewbotTrySharePct}%</div><div class="counter-label">of try pushes</div>`;
+            } else {
+                pctCard.innerHTML = `<div class="counter-value" style="font-size:1.4em">…</div><div class="counter-label">of try pushes</div>`;
+            }
+            container.appendChild(pctCard);
+        }
+
+        // ── Volume bar chart ────────────────────────────────────────────
+
+        async function renderVolumeChart() {
+            const rows = await fetchRows(QUERIES.volume);
+            clearLoading('volume-chart');
+
+            const dates  = rows.map(r => r.submission_date);
+            const rb     = rows.map(r => r.reviewbot_push_count);
+            const other  = rows.map(r => r.total_push_count - r.reviewbot_push_count);
+            const dayPct = rows.map(r =>
+                r.total_push_count ? (r.reviewbot_push_count / r.total_push_count * 100).toFixed(1) : '0.0'
+            );
+
+            Plotly.newPlot('volume-chart', [
+                {
+                    type: 'bar', name: 'Reviewbot',
+                    x: dates, y: rb,
+                    marker: { color: '#ff7f0e' },
+                    customdata: dayPct,
+                    hovertemplate: '%{y} pushes (%{customdata}% of try)<extra>Reviewbot</extra>',
+                },
+                {
+                    type: 'bar', name: 'Remainder of try-pushes',
+                    x: dates, y: other,
+                    marker: { color: '#aec7e8' },
+                    customdata: dayPct,
+                    hovertemplate: '%{y} pushes (%{customdata}% reviewbot)<extra>Remainder of try-pushes</extra>',
+                },
+            ], {
+                ...PLOTLY_LAYOUT_BASE,
+                height: 200,
+                margin: { t: 20, r: 20, b: 40, l: 60 },
+                barmode: 'stack',
+                xaxis: { type: 'date' },
+                yaxis: { title: { text: 'Pushes/day' } },
+                legend: { orientation: 'h', y: -0.35 },
+            }, { responsive: false, displayModeBar: false });
+
+            // Compute overall share and update the counter card
+            const totalRB  = rows.reduce((s, r) => s + r.reviewbot_push_count, 0);
+            const totalAll = rows.reduce((s, r) => s + r.total_push_count, 0);
+            reviewbotTrySharePct = totalAll ? (totalRB / totalAll * 100).toFixed(1) : '0.0';
+
+            const card = document.getElementById('counter-reviewbot-pct');
+            if (card) {
+                card.innerHTML = `<div class="counter-value">${reviewbotTrySharePct}%</div><div class="counter-label">of try pushes</div>`;
+            }
         }
 
         // ── Bootstrap ───────────────────────────────────────────────────
@@ -219,6 +298,7 @@
         async function loadData() {
             const results = await Promise.allSettled([
                 renderCounters(),
+                renderVolumeChart(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
