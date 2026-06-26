@@ -108,12 +108,14 @@
         #hover-tooltip a:hover { text-decoration: underline; }
 
         /* shared.css forces .hoverlayer .hovertext path { fill:#2a2a2a !important } site-wide.
-           The volume chart uses Plotly's native white tooltip — override for this chart. */
+           These charts use Plotly's native white tooltip — override per chart. */
+        #kind-histogram-chart .hoverlayer .hovertext path,
         #volume-chart .hoverlayer .hovertext path {
             fill: white !important;
             stroke: #ccc !important;
             opacity: 1 !important;
         }
+        #kind-histogram-chart .hoverlayer .hovertext text.nums,
         #volume-chart .hoverlayer .hovertext text.nums {
             fill: #333 !important;
         }
@@ -158,6 +160,15 @@
         <!-- ── Per-task timing ──────────────────────────────────────── -->
         <h2 id="per-task">Per-task timing</h2>
 
+        <div class="kind-row">
+            <div class="chart-container" id="kind-histogram-chart">
+                <div class="loading">Loading…</div>
+            </div>
+            <div class="chart-container" id="by-kind-chart">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
+
         <h3>Pending time</h3>
         <div class="charts-row single-col">
             <div class="chart-container" id="decision-pending-chart">
@@ -195,6 +206,7 @@
             decision:   { id: 121828, key: '410ouFAh0CWe3AXQFvy1OfergrIS9nDCmzEaNVUo' },
             sourceTest: { id: 121829, key: 's73SR5yHE8SRifEn5RPSM3NBA0pIWmR4P6QE9jA0' },
             codeReview: { id: 121826, key: 'sHbkU7rPGkJPKDm38S9RDOug29145JzoNkCXygw4' },
+            byKind:     { id: 121738, key: 'tUrI1DpiwF3DHbKW9eVsJNx5VhZpjF0KONECMVST' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -662,6 +674,81 @@
             makeTaskScatter(rows, 'started', 'duration_minutes', 'Running duration', null, 'Decision task — running', 'decision-duration-chart', { profilerClick: true });
         }
 
+        // ── Task volume by kind: histogram + pie ────────────────────────
+
+        async function renderByKindCharts() {
+            const rows = await fetchRows(QUERIES.byKind);
+
+            const dates = [...new Set(rows.map(r => r.submission_date))].sort();
+
+            const totals = {};
+            for (const r of rows) totals[r.kind] = (totals[r.kind] || 0) + r.task_count;
+            const sortedKinds = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+            const topKinds = sortedKinds.slice(0, 5);
+            const restKinds = new Set(sortedKinds.slice(5));
+
+            const byDateKind = {};
+            for (const r of rows) {
+                (byDateKind[r.submission_date] ??= {})[r.kind] = r.task_count;
+            }
+            const dailyTotal = {};
+            for (const d of dates) {
+                dailyTotal[d] = Object.values(byDateKind[d] || {}).reduce((s, v) => s + v, 0);
+            }
+
+            function countForDate(d, kind) { return byDateKind[d]?.[kind] || 0; }
+            function othersCount(d) {
+                return [...restKinds].reduce((s, k) => s + countForDate(d, k), 0);
+            }
+
+            clearLoading('kind-histogram-chart');
+            const displayKinds = [...topKinds, ...(restKinds.size ? ['others'] : [])];
+            const histTraces = displayKinds.map(kind => {
+                const isOther = kind === 'others';
+                const counts = dates.map(d => isOther ? othersCount(d) : countForDate(d, kind));
+                return {
+                    type: 'bar', name: kind, x: dates, y: counts,
+                    customdata: dates.map((d, i) => ({
+                        pct: dailyTotal[d] ? (counts[i] / dailyTotal[d] * 100).toFixed(1) : '0.0',
+                    })),
+                    hovertemplate: '%{y} tasks (%{customdata.pct}%)<extra>%{fullData.name}</extra>',
+                    hoverlabel: { bgcolor: 'white', bordercolor: '#ccc',
+                                  font: { color: '#333', size: 13 } },
+                };
+            });
+            Plotly.newPlot('kind-histogram-chart', histTraces, {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Task volume by kind per day', font: { size: 13 } },
+                barmode: 'stack',
+                xaxis: { type: 'date', title: { text: 'Date' } },
+                yaxis: { title: { text: 'Tasks' } },
+                legend: { orientation: 'h', y: -0.3, font: { size: 10 } },
+                hoverlabel: {
+                    bgcolor: 'white', bordercolor: '#ccc',
+                    font: { color: '#333', size: 13,
+                            family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
+                },
+            }, PLOTLY_CONFIG);
+
+            clearLoading('by-kind-chart');
+            const othersTotal = [...restKinds].reduce((s, k) => s + (totals[k] || 0), 0);
+            const pieLabels = [...topKinds, ...(othersTotal ? ['others'] : [])];
+            const pieValues = [...topKinds.map(k => totals[k]), ...(othersTotal ? [othersTotal] : [])];
+            Plotly.newPlot('by-kind-chart', [{
+                type: 'pie',
+                labels: pieLabels, values: pieValues,
+                textinfo: 'label+percent',
+                textposition: 'inside',
+                insidetextorientation: 'radial',
+                sort: false,
+            }], {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Task volume by kind (total)', font: { size: 13 } },
+                margin: { t: 50, r: 10, b: 10, l: 10 },
+                legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
+            }, PLOTLY_CONFIG);
+        }
+
         // ── Code-review timing ──────────────────────────────────────────
 
         async function renderCodeReviewCharts() {
@@ -711,6 +798,7 @@
                 renderDecisionCharts(),
                 renderSourceTestCharts(),
                 renderCodeReviewCharts(),
+                renderByKindCharts(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
