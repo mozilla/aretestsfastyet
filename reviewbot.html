@@ -154,6 +154,23 @@
         <div class="chart-container" id="e2e-category-chart" style="margin-bottom:24px">
             <div class="loading">Loading…</div>
         </div>
+
+        <!-- ── Per-task timing ──────────────────────────────────────── -->
+        <h2 id="per-task">Per-task timing</h2>
+
+        <h3>Pending time</h3>
+        <div class="charts-row single-col">
+            <div class="chart-container" id="decision-pending-chart">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
+
+        <h3>Running duration</h3>
+        <div class="charts-row single-col">
+            <div class="chart-container" id="decision-duration-chart">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -163,6 +180,7 @@
             volume:     { id: 121728, key: 'RIbCpUDhjyJLFZTrMhAclNnglbSw154VpoWNOVJo' },
             resolution: { id: 121794, key: 'kLwAEJCaZfYf9HK6dvmiTQxLM8juQ5hvcMUQsXbe' },
             e2e:        { id: 121729, key: 'J4rrhsPcMTEkZNxtAze5ww68pYRJybIho4TXbIiN' },
+            decision:   { id: 121828, key: '410ouFAh0CWe3AXQFvy1OfergrIS9nDCmzEaNVUo' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -228,8 +246,22 @@
             return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&thread=0&v=16`;
         }
 
+        function taskProfilerUrl(taskId, runId, label) {
+            const base = `${TC}/api/queue/v1/task/${taskId}/runs/${runId}/artifacts/public/build/profile_build_resources.json`;
+            const name = `${label || 'task'} (${taskId}.${runId})`;
+            return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&profileName=${encodeURIComponent(name)}&thread=0&v=16`;
+        }
+
         function treeherderTryUrl(rev) {
             return `https://treeherder.mozilla.org/jobs?repo=try&revision=${rev}`;
+        }
+
+        function treeherderTaskRunUrl(rev, taskId, runId) {
+            return `https://treeherder.mozilla.org/jobs?repo=try&revision=${rev}&selectedTaskRun=${taskId}.${runId}`;
+        }
+
+        function tcTaskUrl(taskId) {
+            return `${TC}/tasks/${taskId}`;
         }
 
         // ── Bug cache (keyed by gecko_head_rev) ─────────────────────────
@@ -265,6 +297,11 @@
 
         // task_group_id → gecko_head_rev (populated by renderE2EScatter)
         const taskGroupToRev = new Map();
+
+        async function fetchBugForTaskGroup(taskGroupId) {
+            const rev = taskGroupToRev.get(taskGroupId);
+            return rev ? fetchBugForRev(rev) : null;
+        }
 
         // Populated by renderVolumeChart; read by renderCounters if it runs after
         let reviewbotTrySharePct = null;
@@ -477,6 +514,140 @@
             );
         }
 
+        // ── Per-task scatter helper ─────────────────────────────────────
+        // opts.profilerClick = true → dot click opens task profiler (running charts)
+
+        function makeTaskScatter(rows, xKey, yKey, yTitle, seriesKey, title, chartId, opts = {}) {
+            clearLoading(chartId);
+            if (!rows.length) {
+                document.getElementById(chartId).innerHTML =
+                    '<p class="loading">No data for this chart.</p>';
+                return;
+            }
+            const { profilerClick = false } = opts;
+
+            let traces;
+            if (seriesKey) {
+                const labels = [...new Set(rows.map(r => r[seriesKey]))].sort();
+                traces = labels.map(lbl => {
+                    const sub = rows.filter(r => r[seriesKey] === lbl);
+                    return {
+                        type: 'scatter', mode: 'markers', name: lbl,
+                        x: sub.map(r => r[xKey]),
+                        y: sub.map(r => r[yKey]),
+                        marker: { size: 4, opacity: 0.6 },
+                        customdata: sub.map(r => ({
+                            taskId:      r.task_id,
+                            runId:       r.run_id ?? 0,
+                            taskGroupId: r.task_group_id,
+                            workerPool:  r.task_queue_id,
+                            label:       r[seriesKey],
+                            yVal:        r[yKey],
+                            xVal:        r[xKey],
+                        })),
+                        hoverinfo: 'none',
+                    };
+                });
+            } else {
+                traces = [{
+                    type: 'scatter', mode: 'markers', showlegend: false,
+                    x: rows.map(r => r[xKey]),
+                    y: rows.map(r => r[yKey]),
+                    marker: { size: 4, opacity: 0.6 },
+                    customdata: rows.map(r => ({
+                        taskId:      r.task_id,
+                        runId:       r.run_id ?? 0,
+                        taskGroupId: r.task_group_id,
+                        workerPool:  r.task_queue_id,
+                        label:       r.label || 'decision-task',
+                        yVal:        r[yKey],
+                        xVal:        r[xKey],
+                    })),
+                    hoverinfo: 'none',
+                }];
+            }
+
+            Plotly.newPlot(chartId, traces, {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: title, font: { size: 13 } },
+                xaxis: { type: 'date', title: { text: 'Started' } },
+                yaxis: { title: { text: yTitle } },
+                legend: { orientation: 'h', y: -0.2, font: { size: 10 } },
+                hovermode: 'closest',
+            }, PLOTLY_CONFIG);
+
+            const chartEl = document.getElementById(chartId);
+            const drag = chartEl.getElementsByClassName('nsewdrag')[0];
+
+            chartEl.on('plotly_hover', function(data) {
+                if (drag) drag.style.cursor = 'pointer';
+                if (!data.points.length) return;
+                const cd = data.points[0].customdata;
+                currentTooltipKey = cd.taskId;
+                const date = new Date(cd.xVal).toLocaleString();
+                const durStr = formatDuration(Number(cd.yVal));
+                const lbl = escapeHtml(cd.label || 'decision-task');
+
+                function html(bug, rev) {
+                    const bugLine = bug === 'loading'
+                        ? `<span style="font-style:italic">Loading bug…</span>`
+                        : bug
+                            ? `<a href="https://bugzilla.mozilla.org/show_bug.cgi?id=${bug.bugId}" target="_blank">Bug ${bug.bugId}</a>` +
+                              (bug.title ? `<span> — ${escapeHtml(bug.title)}</span>` : '')
+                            : '';
+                    const profLine = profilerClick
+                        ? `<a href="${taskProfilerUrl(cd.taskId, cd.runId, cd.label)}" target="_blank">→ Profiler</a>` : '';
+                    const thLine = rev
+                        ? `<a href="${treeherderTaskRunUrl(rev, cd.taskId, cd.runId)}" target="_blank">→ Treeherder</a>` : '';
+                    const poolLine = cd.workerPool
+                        ? `<span style="font-size:0.9em">${escapeHtml(cd.workerPool)}</span>` : '';
+                    return (
+                        `<span><b>${lbl}</b></span>` +
+                        `<span>${date} — ${durStr}</span>` +
+                        bugLine +
+                        `<div class="tt-sep"></div>` +
+                        profLine +
+                        `<a href="${tcTaskUrl(cd.taskId)}" target="_blank">→ TC Task</a>` +
+                        thLine +
+                        poolLine
+                    );
+                }
+
+                const rev = taskGroupToRev.get(cd.taskGroupId) || null;
+                const cached = rev ? bugCache.get(rev) : undefined;
+                showTooltip(data.event, html(cached !== undefined ? cached : 'loading', rev));
+
+                if (rev && cached === undefined) {
+                    fetchBugForRev(rev).then(bug => {
+                        if (currentTooltipKey === cd.taskId && tooltipEl.style.display !== 'none') {
+                            tooltipEl.innerHTML = html(bug, rev);
+                        }
+                    });
+                }
+            });
+
+            chartEl.on('plotly_unhover', function() {
+                if (drag) drag.style.cursor = '';
+                scheduleHideTooltip();
+            });
+
+            if (profilerClick) {
+                chartEl.on('plotly_click', function(data) {
+                    if (!data.points.length) return;
+                    const cd = data.points[0].customdata;
+                    window.open(taskProfilerUrl(cd.taskId, cd.runId, cd.label), '_blank');
+                });
+            }
+        }
+
+        // ── Decision task timing ────────────────────────────────────────
+
+        async function renderDecisionCharts() {
+            const rows = await fetchRows(QUERIES.decision);
+            makeTaskScatter(rows, 'started', 'pending_minutes',  'Pending time',    null, 'Decision task — pending', 'decision-pending-chart');
+            makeTaskScatter(rows, 'started', 'duration_minutes', 'Running duration', null, 'Decision task — running', 'decision-duration-chart', { profilerClick: true });
+        }
+
         // ── Push resolution pie ─────────────────────────────────────────
 
         async function renderResolutionPie() {
@@ -507,6 +678,7 @@
                 renderVolumeChart(),
                 renderResolutionPie(),
                 renderE2EScatter(),
+                renderDecisionCharts(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
