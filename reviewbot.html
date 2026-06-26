@@ -142,8 +142,13 @@
             <div class="loading">Loading…</div>
         </div>
 
-        <div class="chart-container" id="resolution-chart" style="margin-bottom:24px">
-            <div class="loading">Loading…</div>
+        <div class="e2e-row">
+            <div class="chart-container" id="e2e-chart">
+                <div class="loading">Loading…</div>
+            </div>
+            <div class="chart-container" id="resolution-chart">
+                <div class="loading">Loading…</div>
+            </div>
         </div>
     </div>
 
@@ -153,6 +158,7 @@
             topline: { id: 121795, key: 'XMoKD1DN34W9BajtCsBklWqjdLNSJhnlMl4r1NUH' },
             volume:     { id: 121728, key: 'RIbCpUDhjyJLFZTrMhAclNnglbSw154VpoWNOVJo' },
             resolution: { id: 121794, key: 'kLwAEJCaZfYf9HK6dvmiTQxLM8juQ5hvcMUQsXbe' },
+            e2e:        { id: 121729, key: 'J4rrhsPcMTEkZNxtAze5ww68pYRJybIho4TXbIiN' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -210,6 +216,51 @@
 
         tooltipEl.addEventListener('mouseenter', () => clearTimeout(hideTimer));
         tooltipEl.addEventListener('mouseleave', () => { tooltipEl.style.display = 'none'; });
+
+        // ── URL helpers ─────────────────────────────────────────────────
+
+        function taskGroupProfilerUrl(id) {
+            const base = `${TC}/api/web-server/v1/task-group/${id}/profile`;
+            return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&thread=0&v=16`;
+        }
+
+        function treeherderTryUrl(rev) {
+            return `https://treeherder.mozilla.org/jobs?repo=try&revision=${rev}`;
+        }
+
+        // ── Bug cache (keyed by gecko_head_rev) ─────────────────────────
+
+        const bugCache = new Map();
+
+        async function fetchBugForRev(geckoHeadRev) {
+            if (bugCache.has(geckoHeadRev)) return bugCache.get(geckoHeadRev);
+            bugCache.set(geckoHeadRev, 'loading');
+            try {
+                const r = await fetch(
+                    `https://treeherder.mozilla.org/api/project/try/push/?revision=${geckoHeadRev}&count=1`
+                );
+                if (!r.ok) { bugCache.set(geckoHeadRev, null); return null; }
+                const revisions = (await r.json()).results?.[0]?.revisions ?? [];
+                const patch = revisions.find(rv => !rv.comments.startsWith('try_task_config'));
+                if (!patch) { bugCache.set(geckoHeadRev, null); return null; }
+                const m = patch.comments.split('\n')[0].match(/(?:WIP:\s+)?Bug\s+(\d+)/i);
+                if (!m) { bugCache.set(geckoHeadRev, null); return null; }
+                const bugId = m[1];
+                const bz = await fetch(
+                    `https://bugzilla.mozilla.org/rest/bug/${bugId}?include_fields=summary`
+                );
+                const title = bz.ok ? ((await bz.json()).bugs?.[0]?.summary ?? null) : null;
+                const result = { bugId, title };
+                bugCache.set(geckoHeadRev, result);
+                return result;
+            } catch {
+                bugCache.set(geckoHeadRev, null);
+                return null;
+            }
+        }
+
+        // task_group_id → gecko_head_rev (populated by renderE2EScatter)
+        const taskGroupToRev = new Map();
 
         // Populated by renderVolumeChart; read by renderCounters if it runs after
         let reviewbotTrySharePct = null;
@@ -298,6 +349,104 @@
             }
         }
 
+        // ── E2e scatter helper ──────────────────────────────────────────
+
+        function renderE2EScatterChart(chartId, rows, seriesKey, colorMap, yTitle, title) {
+            clearLoading(chartId);
+            const series = [...new Set(rows.map(r => r[seriesKey]))];
+            const traces = series.map(s => {
+                const sub = rows.filter(r => r[seriesKey] === s);
+                return {
+                    type: 'scatter',
+                    mode: 'markers',
+                    name: s,
+                    x: sub.map(r => r.push_start),
+                    y: sub.map(r => r.push_hours),
+                    marker: { color: colorMap[s] || '#7f7f7f', size: 5, opacity: 0.7 },
+                    customdata: sub.map(r => ({
+                        taskGroupId:  r.task_group_id,
+                        geckoHeadRev: r.gecko_head_rev,
+                        pushHours:    r.push_hours,
+                    })),
+                    hoverinfo: 'none',
+                };
+            });
+            Plotly.newPlot(chartId, traces, {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: title, font: { size: 14 } },
+                xaxis: { type: 'date', title: { text: 'Push start' } },
+                yaxis: { title: { text: yTitle } },
+                legend: { orientation: 'h', y: -0.15 },
+                hovermode: 'closest',
+            }, PLOTLY_CONFIG);
+
+            const el = document.getElementById(chartId);
+            const drag = el.getElementsByClassName('nsewdrag')[0];
+
+            el.on('plotly_hover', function(data) {
+                if (drag) drag.style.cursor = 'pointer';
+                if (!data.points.length) return;
+                const { taskGroupId, geckoHeadRev, pushHours } = data.points[0].customdata;
+                currentTooltipKey = geckoHeadRev || taskGroupId;
+                const date = new Date(data.points[0].x).toLocaleString();
+                const durStr = `${Number(pushHours * 60).toFixed(0)} min`;
+                const thLink = geckoHeadRev
+                    ? `<a href="${treeherderTryUrl(geckoHeadRev)}" target="_blank">→ Treeherder</a>` : '';
+
+                function html(bug) {
+                    const bugLine = bug === 'loading'
+                        ? `<span style="font-style:italic">Loading bug…</span>`
+                        : bug
+                            ? `<a href="https://bugzilla.mozilla.org/show_bug.cgi?id=${bug.bugId}" target="_blank">Bug ${bug.bugId}</a>` +
+                              (bug.title ? `<span> — ${escapeHtml(bug.title)}</span>` : '')
+                            : '';
+                    return `<span>${date} — ${durStr}</span>` + bugLine +
+                           `<div class="tt-sep"></div>` +
+                           `<a href="${taskGroupProfilerUrl(taskGroupId)}" target="_blank">→ Profiler</a>` +
+                           thLink;
+                }
+
+                const cached = geckoHeadRev ? bugCache.get(geckoHeadRev) : undefined;
+                showTooltip(data.event, html(cached !== undefined ? cached : 'loading'));
+
+                if (geckoHeadRev && cached === undefined) {
+                    fetchBugForRev(geckoHeadRev).then(bug => {
+                        if (currentTooltipKey === (geckoHeadRev || taskGroupId) &&
+                            tooltipEl.style.display !== 'none') {
+                            tooltipEl.innerHTML = html(bug);
+                        }
+                    });
+                }
+            });
+            el.on('plotly_unhover', function() {
+                if (drag) drag.style.cursor = '';
+                scheduleHideTooltip();
+            });
+            el.on('plotly_click', function(data) {
+                if (!data.points.length) return;
+                window.open(taskGroupProfilerUrl(data.points[0].customdata.taskGroupId), '_blank');
+            });
+        }
+
+        // ── E2e scatter by resolution ───────────────────────────────────
+
+        async function renderE2EScatter() {
+            const rows = await fetchRows(QUERIES.e2e);
+
+            for (const r of rows) {
+                if (r.task_group_id && r.gecko_head_rev) {
+                    taskGroupToRev.set(r.task_group_id, r.gecko_head_rev);
+                }
+            }
+
+            renderE2EScatterChart(
+                'e2e-chart', rows, 'worst_resolution',
+                { 'completed': '#2ca02c', 'failed': '#d62728', 'deadline-exceeded': '#ff7f0e' },
+                'End-to-end duration (hours)',
+                'End-to-end duration per push — by resolution'
+            );
+        }
+
         // ── Push resolution pie ─────────────────────────────────────────
 
         async function renderResolutionPie() {
@@ -327,6 +476,7 @@
                 renderCounters(),
                 renderVolumeChart(),
                 renderResolutionPie(),
+                renderE2EScatter(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
