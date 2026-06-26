@@ -436,7 +436,7 @@
             const traces = series.map(s => {
                 const sub = rows.filter(r => r[seriesKey] === s);
                 return {
-                    type: 'scatter',
+                    type: 'scattergl',
                     mode: 'markers',
                     name: s,
                     x: sub.map(r => r.push_start),
@@ -558,7 +558,7 @@
                 traces = labels.map(lbl => {
                     const sub = rows.filter(r => r[seriesKey] === lbl);
                     return {
-                        type: 'scatter', mode: 'markers', name: lbl,
+                        type: 'scattergl', mode: 'markers', name: lbl,
                         x: sub.map(r => r[xKey]),
                         y: sub.map(r => r[yKey]),
                         marker: { size: 4, opacity: 0.6 },
@@ -576,7 +576,7 @@
                 });
             } else {
                 traces = [{
-                    type: 'scatter', mode: 'markers', showlegend: false,
+                    type: 'scattergl', mode: 'markers', showlegend: false,
                     x: rows.map(r => r[xKey]),
                     y: rows.map(r => r[yKey]),
                     marker: { size: 4, opacity: 0.6 },
