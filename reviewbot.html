@@ -141,13 +141,18 @@
         <div class="chart-container" id="volume-chart" style="margin-bottom:24px;min-height:0">
             <div class="loading">Loading…</div>
         </div>
+
+        <div class="chart-container" id="resolution-chart" style="margin-bottom:24px">
+            <div class="loading">Loading…</div>
+        </div>
     </div>
 
     <script>
         const REDASH = 'https://sql.telemetry.mozilla.org/api/queries';
         const QUERIES = {
             topline: { id: 121795, key: 'XMoKD1DN34W9BajtCsBklWqjdLNSJhnlMl4r1NUH' },
-            volume:  { id: 121728, key: 'RIbCpUDhjyJLFZTrMhAclNnglbSw154VpoWNOVJo' },
+            volume:     { id: 121728, key: 'RIbCpUDhjyJLFZTrMhAclNnglbSw154VpoWNOVJo' },
+            resolution: { id: 121794, key: 'kLwAEJCaZfYf9HK6dvmiTQxLM8juQ5hvcMUQsXbe' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -293,12 +298,35 @@
             }
         }
 
+        // ── Push resolution pie ─────────────────────────────────────────
+
+        async function renderResolutionPie() {
+            const rows = await fetchRows(QUERIES.resolution);
+            clearLoading('resolution-chart');
+            const colors = { 'completed': '#2ca02c', 'failed': '#d62728', 'deadline-exceeded': '#ff7f0e' };
+            Plotly.newPlot('resolution-chart', [{
+                type: 'pie',
+                labels: rows.map(r => r.worst_resolution),
+                values: rows.map(r => r.push_count),
+                marker: { colors: rows.map(r => colors[r.worst_resolution] || '#7f7f7f') },
+                textinfo: 'label+percent',
+                textposition: 'inside',
+                insidetextorientation: 'radial',
+            }], {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Push resolution breakdown', font: { size: 14 } },
+                margin: { t: 50, r: 10, b: 10, l: 10 },
+                legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
+            }, PLOTLY_CONFIG);
+        }
+
         // ── Bootstrap ───────────────────────────────────────────────────
 
         async function loadData() {
             const results = await Promise.allSettled([
                 renderCounters(),
                 renderVolumeChart(),
+                renderResolutionPie(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
