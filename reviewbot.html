@@ -166,6 +166,9 @@
             <div class="chart-container" id="source-test-pending-chart">
                 <div class="loading">Loading…</div>
             </div>
+            <div class="chart-container" id="code-review-pending-chart">
+                <div class="loading">Loading…</div>
+            </div>
         </div>
 
         <h3>Running duration</h3>
@@ -174,6 +177,9 @@
                 <div class="loading">Loading…</div>
             </div>
             <div class="chart-container" id="source-test-duration-chart">
+                <div class="loading">Loading…</div>
+            </div>
+            <div class="chart-container" id="code-review-duration-chart">
                 <div class="loading">Loading…</div>
             </div>
         </div>
@@ -188,6 +194,7 @@
             e2e:        { id: 121729, key: 'J4rrhsPcMTEkZNxtAze5ww68pYRJybIho4TXbIiN' },
             decision:   { id: 121828, key: '410ouFAh0CWe3AXQFvy1OfergrIS9nDCmzEaNVUo' },
             sourceTest: { id: 121829, key: 's73SR5yHE8SRifEn5RPSM3NBA0pIWmR4P6QE9jA0' },
+            codeReview: { id: 121826, key: 'sHbkU7rPGkJPKDm38S9RDOug29145JzoNkCXygw4' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -655,6 +662,14 @@
             makeTaskScatter(rows, 'started', 'duration_minutes', 'Running duration', null, 'Decision task — running', 'decision-duration-chart', { profilerClick: true });
         }
 
+        // ── Code-review timing ──────────────────────────────────────────
+
+        async function renderCodeReviewCharts() {
+            const rows = await fetchRows(QUERIES.codeReview);
+            makeTaskScatter(rows, 'started', 'pending_minutes',  'Pending time',     'label', 'Code-review tasks — pending', 'code-review-pending-chart');
+            makeTaskScatter(rows, 'started', 'duration_minutes', 'Running duration', 'label', 'Code-review tasks — running', 'code-review-duration-chart', { profilerClick: true });
+        }
+
         // ── Source-test timing ──────────────────────────────────────────
 
         async function renderSourceTestCharts() {
@@ -695,6 +710,7 @@
                 renderE2EScatter(),
                 renderDecisionCharts(),
                 renderSourceTestCharts(),
+                renderCodeReviewCharts(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
