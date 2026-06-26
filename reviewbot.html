@@ -150,6 +150,10 @@
                 <div class="loading">Loading…</div>
             </div>
         </div>
+
+        <div class="chart-container" id="e2e-category-chart" style="margin-bottom:24px">
+            <div class="loading">Loading…</div>
+        </div>
     </div>
 
     <script>
@@ -349,6 +353,18 @@
             }
         }
 
+        // ── Duration formatting ─────────────────────────────────────────
+
+        function formatDuration(minutes) {
+            const s = Math.round(minutes * 60);
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            if (h > 0) return `${h}h ${m}min ${sec}s`;
+            if (m > 0) return `${m}min ${sec}s`;
+            return `${sec}s`;
+        }
+
         // ── E2e scatter helper ──────────────────────────────────────────
 
         function renderE2EScatterChart(chartId, rows, seriesKey, colorMap, yTitle, title) {
@@ -389,7 +405,7 @@
                 const { taskGroupId, geckoHeadRev, pushHours } = data.points[0].customdata;
                 currentTooltipKey = geckoHeadRev || taskGroupId;
                 const date = new Date(data.points[0].x).toLocaleString();
-                const durStr = `${Number(pushHours * 60).toFixed(0)} min`;
+                const durStr = formatDuration(Number(pushHours) * 60);
                 const thLink = geckoHeadRev
                     ? `<a href="${treeherderTryUrl(geckoHeadRev)}" target="_blank">→ Treeherder</a>` : '';
 
@@ -428,7 +444,7 @@
             });
         }
 
-        // ── E2e scatter by resolution ───────────────────────────────────
+        // ── E2e: resolution + category ──────────────────────────────────
 
         async function renderE2EScatter() {
             const rows = await fetchRows(QUERIES.e2e);
@@ -444,6 +460,20 @@
                 { 'completed': '#2ca02c', 'failed': '#d62728', 'deadline-exceeded': '#ff7f0e' },
                 'End-to-end duration (hours)',
                 'End-to-end duration per push — by resolution'
+            );
+
+            // Rename 'other' → 'linters only'; category is a priority cascade
+            // (toolchain > docker-image > android > linters only), so a push tagged
+            // 'toolchain' may also contain other task types.
+            const categoryRows = rows.map(r => ({
+                ...r,
+                task_category: r.task_category === 'other' ? 'linters only' : r.task_category,
+            }));
+            renderE2EScatterChart(
+                'e2e-category-chart', categoryRows, 'task_category',
+                { 'toolchain': '#9467bd', 'docker-image': '#17becf', 'android': '#e67e22', 'linters only': '#7f7f7f' },
+                'End-to-end duration (hours)',
+                'End-to-end duration per push — by task category (priority: toolchain > docker-image > android > linters only)'
             );
         }
 
