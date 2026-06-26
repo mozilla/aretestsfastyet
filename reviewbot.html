@@ -163,11 +163,17 @@
             <div class="chart-container" id="decision-pending-chart">
                 <div class="loading">Loading…</div>
             </div>
+            <div class="chart-container" id="source-test-pending-chart">
+                <div class="loading">Loading…</div>
+            </div>
         </div>
 
         <h3>Running duration</h3>
         <div class="charts-row single-col">
             <div class="chart-container" id="decision-duration-chart">
+                <div class="loading">Loading…</div>
+            </div>
+            <div class="chart-container" id="source-test-duration-chart">
                 <div class="loading">Loading…</div>
             </div>
         </div>
@@ -181,6 +187,7 @@
             resolution: { id: 121794, key: 'kLwAEJCaZfYf9HK6dvmiTQxLM8juQ5hvcMUQsXbe' },
             e2e:        { id: 121729, key: 'J4rrhsPcMTEkZNxtAze5ww68pYRJybIho4TXbIiN' },
             decision:   { id: 121828, key: '410ouFAh0CWe3AXQFvy1OfergrIS9nDCmzEaNVUo' },
+            sourceTest: { id: 121829, key: 's73SR5yHE8SRifEn5RPSM3NBA0pIWmR4P6QE9jA0' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -648,6 +655,14 @@
             makeTaskScatter(rows, 'started', 'duration_minutes', 'Running duration', null, 'Decision task — running', 'decision-duration-chart', { profilerClick: true });
         }
 
+        // ── Source-test timing ──────────────────────────────────────────
+
+        async function renderSourceTestCharts() {
+            const rows = await fetchRows(QUERIES.sourceTest);
+            makeTaskScatter(rows, 'started', 'duration_minutes', 'Running duration', 'label', 'Source-test tasks — running', 'source-test-duration-chart', { profilerClick: true });
+            makeTaskScatter(rows, 'started', 'pending_minutes',  'Pending time',     'label', 'Source-test tasks — pending', 'source-test-pending-chart');
+        }
+
         // ── Push resolution pie ─────────────────────────────────────────
 
         async function renderResolutionPie() {
@@ -679,6 +694,7 @@
                 renderResolutionPie(),
                 renderE2EScatter(),
                 renderDecisionCharts(),
+                renderSourceTestCharts(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
