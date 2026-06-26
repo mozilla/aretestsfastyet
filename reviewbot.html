@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reviewbot CI Task Timing</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="shared.js"></script>
+    <script src="dashboards.js"></script>
+    <script src="common-ui.js"></script>
+    <link rel="icon" href="favicon-orange.svg">
+    <link rel="stylesheet" href="shared.css">
+    <style>
+        .counters-row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .counter-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px 28px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+            min-width: 140px;
+        }
+
+        .counter-value {
+            font-size: 2.2em;
+            font-weight: bold;
+            color: #0060df;
+        }
+
+        .counter-unit {
+            color: #888;
+            font-size: 0.8em;
+            margin-top: 2px;
+        }
+
+        .counter-label {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 4px;
+        }
+
+        .e2e-row {
+            display: grid;
+            grid-template-columns: 3fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .kind-row {
+            display: grid;
+            grid-template-columns: 3fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .charts-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .charts-row.single-col {
+            grid-template-columns: 1fr;
+        }
+
+        .chart-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 12px;
+        }
+
+        .loading {
+            color: #888;
+            padding: 20px;
+            font-style: italic;
+        }
+
+        #hover-tooltip {
+            position: fixed;
+            background: #2a2a2a;
+            color: white;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 13px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.7;
+            pointer-events: auto;
+            z-index: 1000;
+            display: none;
+            white-space: nowrap;
+        }
+
+        #hover-tooltip a, #hover-tooltip span {
+            color: inherit;
+            text-decoration: none;
+            display: block;
+        }
+
+        #hover-tooltip a { color: #7ecfff; }
+
+        #hover-tooltip a:hover { text-decoration: underline; }
+
+        #hover-tooltip .tt-sep {
+            border-top: 1px solid #555;
+            margin: 4px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="hover-tooltip"></div>
+    <div class="container">
+        <h1>Reviewbot CI Task Timing</h1>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <!-- ── End-to-end per push ───────────────────────────────────── -->
+        <h2 id="e2e">End-to-end per push</h2>
+
+        <div id="counters-row" class="counters-row" style="margin-bottom:24px">
+            <div class="loading">Loading…</div>
+        </div>
+    </div>
+
+    <script>
+        const REDASH = 'https://sql.telemetry.mozilla.org/api/queries';
+        const QUERIES = {
+            topline: { id: 121795, key: 'XMoKD1DN34W9BajtCsBklWqjdLNSJhnlMl4r1NUH' },
+        };
+
+        const TC = 'https://firefox-ci-tc.services.mozilla.com';
+
+        function resultsUrl(q) {
+            return `${REDASH}/${q.id}/results.json?api_key=${q.key}`;
+        }
+
+        async function fetchRows(q) {
+            const response = await fetch(resultsUrl(q));
+            if (!response.ok) throw new Error(`HTTP ${response.status} for query ${q.id}`);
+            return (await response.json()).query_result.data.rows;
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('error');
+            el.textContent = `Error loading data: ${msg}`;
+            el.style.display = 'block';
+        }
+
+        function clearLoading(id) {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = '';
+        }
+
+        // ── Plotly base config ──────────────────────────────────────────
+
+        const PLOTLY_LAYOUT_BASE = {
+            margin: { t: 40, r: 20, b: 60, l: 60 },
+            paper_bgcolor: 'white',
+            plot_bgcolor: 'white',
+            font: { family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
+        };
+        const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
+
+        // ── Hover tooltip ───────────────────────────────────────────────
+
+        const tooltipEl = document.getElementById('hover-tooltip');
+        let hideTimer = null;
+        let currentTooltipKey = null;
+
+        function showTooltip(event, html) {
+            clearTimeout(hideTimer);
+            tooltipEl.innerHTML = html;
+            tooltipEl.style.display = 'block';
+            const x = event.clientX + 16, y = event.clientY - 10;
+            const w = tooltipEl.offsetWidth, h = tooltipEl.offsetHeight;
+            tooltipEl.style.left = (x + w > window.innerWidth  ? event.clientX - w - 8 : x) + 'px';
+            tooltipEl.style.top  = (y + h > window.innerHeight ? event.clientY - h - 8 : y) + 'px';
+        }
+
+        function scheduleHideTooltip() {
+            hideTimer = setTimeout(() => { tooltipEl.style.display = 'none'; }, 220);
+        }
+
+        tooltipEl.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+        tooltipEl.addEventListener('mouseleave', () => { tooltipEl.style.display = 'none'; });
+
+        // ── Topline counters ────────────────────────────────────────────
+
+        async function renderCounters() {
+            const rows = await fetchRows(QUERIES.topline);
+            const row = rows[0];
+            const container = document.getElementById('counters-row');
+            container.innerHTML = '';
+            const metrics = [
+                { key: 'p50_minutes', label: 'p50 end-to-end', unit: 'minutes' },
+                { key: 'p90_minutes', label: 'p90 end-to-end', unit: 'minutes' },
+                { key: 'p99_minutes', label: 'p99 end-to-end', unit: 'minutes' },
+                { key: 'avg_pushes_per_business_day', label: 'pushes/business day', unit: null },
+            ];
+            for (const { key, label, unit } of metrics) {
+                const value = row[key];
+                const formatted = typeof value === 'number' ? String(Math.round(value)) : escapeHtml(String(value));
+                const card = document.createElement('div');
+                card.className = 'counter-card';
+                const unitHtml = unit ? `<div class="counter-unit">${escapeHtml(unit)}</div>` : '';
+                card.innerHTML = `<div class="counter-value">${formatted}</div>${unitHtml}<div class="counter-label">${label}</div>`;
+                container.appendChild(card);
+            }
+        }
+
+        // ── Bootstrap ───────────────────────────────────────────────────
+
+        async function loadData() {
+            const results = await Promise.allSettled([
+                renderCounters(),
+            ]);
+            const failed = results.filter(r => r.status === 'rejected');
+            if (failed.length) {
+                showError(failed.map(r => r.reason?.message || r.reason).join('; '));
+            }
+        }
+
+        loadData();
+    </script>
+</body>
+</html>
