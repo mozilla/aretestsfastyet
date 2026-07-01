@@ -7,6 +7,7 @@
     <link rel="icon" href="favicon-screenshots.svg">
     <script src="fetch-utils.js"></script>
     <script defer src="dashboards.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <link rel="stylesheet" href="shared.css">
     <style>
         /* Controls bar: a few labelled groups of toggle buttons. */
@@ -65,6 +66,12 @@
             color: #999;
             margin-right: 8px;
         }
+        .combo-head .filename {
+            font-family: monospace;
+            font-size: 0.78rem;
+            color: #999;
+            margin-left: 8px;
+        }
         .shots {
             display: flex;
             flex-wrap: wrap;
@@ -111,15 +118,107 @@
             background: #fff;
             box-shadow: 0 4px 30px rgba(0,0,0,0.6);
         }
+
+        /* Download-all progress overlay */
+        #download-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 3000;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        #download-overlay.open { display: flex; }
+        .dl-box {
+            background: white;
+            border-radius: 10px;
+            padding: 28px 32px;
+            width: 420px;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .dl-title { font-weight: 600; font-size: 1rem; }
+        .dl-status { font-size: 0.85rem; color: #555; min-height: 1.2em; }
+        .dl-track {
+            background: #e8e8e8;
+            border-radius: 6px;
+            height: 10px;
+            overflow: hidden;
+        }
+        .dl-fill {
+            background: #0060df;
+            height: 100%;
+            border-radius: 6px;
+            width: 0%;
+            transition: width 0.15s;
+        }
+        .dl-fill.indeterminate {
+            width: 40% !important;
+            transition: none;
+            animation: dl-slide 1.2s ease-in-out infinite;
+        }
+        @keyframes dl-slide {
+            0%   { margin-left: -40%; }
+            100% { margin-left: 100%; }
+        }
+
+        /* Push selector bar — shown as soon as Treeherder pushes are fetched,
+           independent of the screenshot data load. */
+        #push-bar {
+            display: none;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 16px;
+            margin-bottom: 12px;
+        }
+        #push-bar .label { color: #666; font-size: 0.9rem; }
+        #push-select {
+            padding: 5px 8px;
+            font-size: 0.9rem;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background: white;
+            cursor: pointer;
+            max-width: 420px;
+        }
+        #push-url-input {
+            padding: 5px 8px;
+            font-size: 0.9rem;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            min-width: 280px;
+        }
+        #push-bar button {
+            padding: 5px 12px;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Firefox UI Screenshots</h1>
 
+        <div id="push-bar">
+            <span class="label">Push:</span>
+            <select id="push-select" onchange="onPushChange(this.value)">
+                <option value="">Latest</option>
+            </select>
+            <span class="label">or paste a Treeherder push URL:</span>
+            <input type="text" id="push-url-input"
+                   placeholder="https://treeherder.mozilla.org/jobs?repo=try&amp;revision=…"
+                   onkeydown="if (event.key === 'Enter') applyPushUrlInput();">
+            <button onclick="applyPushUrlInput()">Go</button>
+        </div>
+
         <div class="controls" id="controls" style="display: none;">
             <div class="control-group" id="platform-group">
                 <span class="label">Platform:</span>
+            </div>
+            <div class="control-group" id="variant-group">
+                <span class="label">Variant:</span>
             </div>
             <div class="control-group" id="theme-group">
                 <span class="label">Theme:</span>
@@ -135,6 +234,12 @@
                 <input type="range" id="size-range" min="300" max="1800" step="20" value="900"
                        title="Screenshot size (drag to the right edge for full size)">
             </div>
+            <div class="control-group">
+                <button id="download-all-btn" onclick="downloadAll()"
+                        title="Download every screenshot across all platforms, themes and densities as a ZIP">
+                    Download all
+                </button>
+            </div>
         </div>
 
         <p class="summary" id="summary"></p>
@@ -145,6 +250,15 @@
     </div>
 
     <div id="lightbox"><img alt=""></div>
+
+    <div id="download-overlay">
+        <div class="dl-box">
+            <div class="dl-title">Downloading all screenshots</div>
+            <div class="dl-status" id="dl-status">Preparing…</div>
+            <div class="dl-track"><div class="dl-fill" id="dl-fill"></div></div>
+            <button id="dl-cancel">Cancel</button>
+        </div>
+    </div>
 
     <script>
         // --- Data source ----------------------------------------------------
@@ -157,10 +271,20 @@
         const INDEX = `${TC}/index/v1`;
         const QUEUE = `${TC}/queue/v1`;
 
+        // Parsed once up front (used below to seed REPO/nova before anything fetches).
+        const params = new URLSearchParams(location.search);
+
         // `try` on the staging site, `mozilla-central` otherwise — matching
-        // fetchFromCI()'s convention. Override locally with ?data-source=try.
-        const REPO = getDataSource() === 'try' ? 'try' : 'mozilla-central';
-        const REPO_KEY = REPO === 'try' ? 'try' : 'central';
+        // fetchFromCI()'s convention. Override locally with ?data-source=try, or
+        // explicitly with ?repo=try|mozilla-central (set when pasting a Treeherder
+        // push URL via applyPushUrlInput()). REPO/REPO_KEY are `let` since pasting
+        // a push URL for a different repo reassigns them after the initial load.
+        function defaultRepo() {
+            return getDataSource() === 'try' ? 'try' : 'mozilla-central';
+        }
+        const _repoParam = params.get('repo');
+        let REPO = (_repoParam === 'try' || _repoParam === 'mozilla-central') ? _repoParam : defaultRepo();
+        let REPO_KEY = REPO === 'try' ? 'try' : 'central';
 
         // The three test platforms the screenshots job runs on. The index
         // job-name has the test-platform appended (see the test transform), so
@@ -214,6 +338,16 @@
         };
         const SECTION_ORDER = Object.keys(SECTION_LABELS);
 
+        // UI variant: "Proton" is the current/default desktop UI, "Nova" is the
+        // redesign, selected via an extra `-nv` suffix on the *platform* segment
+        // of the index namespace, e.g. `mochitest-browser-screenshots.linux2404-64-opt-nv`.
+        const VARIANTS = ['proton', 'nova'];
+        const VARIANT_LABELS = { proton: 'Proton', nova: 'Nova' };
+        let selectedVariant = params.get('variant') === 'nova' ? 'nova' : 'proton';
+        function platformSuffix(testPlatform) {
+            return testPlatform.replace(/\//g, '-') + (selectedVariant === 'nova' ? '-nv' : '');
+        }
+
         function escapeHtml(s) {
             return String(s).replace(/[&<>"']/g, c => (
                 { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -229,8 +363,9 @@
         // job-name, giving `…mochitest-browser-screenshots.linux2404-64-opt`.
         // We must build the identical sanitized namespace here.
         async function findTaskId(testPlatform) {
-            const suffix = testPlatform.replace(/\//g, '-');
-            const ns = `gecko.v2.${REPO}.latest.test.mochitest-browser-screenshots.${suffix}`;
+            const suffix = platformSuffix(testPlatform);
+            const revPart = selectedRevision ? `revision.${selectedRevision}` : 'latest';
+            const ns = `gecko.v2.${REPO}.${revPart}.test.mochitest-browser-screenshots.${suffix}`;
             const data = await fetchJson(`${INDEX}/task/${encodeURIComponent(ns)}`);
             return data && data.taskId ? data.taskId : null;
         }
@@ -308,7 +443,6 @@
         const availableDensities = []; // density labels present in the data
         const platformHasData = {};    // id -> bool
 
-        const params = new URLSearchParams(location.search);
         // Platform, theme and density are single-select (radio buttons); the
         // empty defaults for theme/density are resolved to the first available
         // value once we know what the data contains. Windows is shown by default.
@@ -317,6 +451,9 @@
         let selectedDensity = params.get('density') || '';
         let selectedSection = params.get('section') || 'all';
         let shotWidth = parseInt(params.get('size'), 10) || SIZE_DEFAULT;
+        // Full revision SHA when a specific push is selected; null = latest.
+        let selectedRevision = params.get('rev') || null;
+        let recentPushes = [];
 
         // Drive the screenshot max-width from the size slider. At the maximum we
         // use 100% so a wide-enough window shows the screenshots at full size
@@ -334,6 +471,21 @@
             p.set('density', selectedDensity);
             p.set('section', selectedSection);
             p.set('size', String(shotWidth));
+            if (selectedRevision) {
+                p.set('rev', selectedRevision);
+            } else {
+                p.delete('rev');
+            }
+            if (REPO !== defaultRepo()) {
+                p.set('repo', REPO);
+            } else {
+                p.delete('repo');
+            }
+            if (selectedVariant !== 'proton') {
+                p.set('variant', selectedVariant);
+            } else {
+                p.delete('variant');
+            }
             history.replaceState(null, '', `${location.pathname}?${p.toString()}${location.hash}`);
         }
 
@@ -479,10 +631,13 @@
                         .filter(t => !THEME_NAMES[t] && !DENSITY_NAMES[t])
                         .join(' · ') || '(default)';
                     const url = r.byPlatform[platform.id];
+                    const filename = decodeURIComponent(url.split('/').pop());
                     html += '<div class="combo">';
                     html += `<div class="combo-head">` +
                             (r.nn ? `<span class="nn">#${escapeHtml(r.nn)}</span>` : '') +
-                            escapeHtml(label) + '</div>';
+                            escapeHtml(label) +
+                            `<span class="filename">${escapeHtml(filename)}</span>` +
+                            '</div>';
                     html += '<div class="shots">' +
                             `<img class="shot-img" loading="lazy" src="${escapeHtml(url)}" ` +
                             `alt="${escapeHtml(platform.label)}: ${escapeHtml(label)}">` +
@@ -491,6 +646,218 @@
                 html += '</div>';
             }
             gallery.innerHTML = html;
+        }
+
+        // Build the Proton/Nova toggle once. Unlike Platform/Theme/Density/Section
+        // (which depend on the freshly loaded data and get rebuilt every load()),
+        // Variant is a plain two-way, mutually-exclusive choice known up front —
+        // so its buttons are created a single time and just re-highlighted here,
+        // never removed, keeping the selection visible through a reload.
+        function renderVariantGroup() {
+            const group = document.getElementById('variant-group');
+            for (const v of VARIANTS) {
+                const btn = document.createElement('button');
+                btn.textContent = VARIANT_LABELS[v];
+                btn.dataset.value = v;
+                btn.classList.toggle('active', v === selectedVariant);
+                btn.onclick = () => {
+                    if (v === selectedVariant) {
+                        return;
+                    }
+                    selectedVariant = v;
+                    group.querySelectorAll('button').forEach(b =>
+                        b.classList.toggle('active', b.dataset.value === v));
+                    syncUrl();
+                    resetPushDropdown();
+                    resetDataState();
+                    fetchRecentPushes();
+                    load();
+                };
+                group.appendChild(btn);
+            }
+        }
+
+        // --- Push selector --------------------------------------------------
+
+        // Clear screenshot data and generated controls so load() can be re-run
+        // cleanly after a push change.
+        function resetDataState() {
+            allRows = [];
+            availableSections.length = 0;
+            availableThemes.length = 0;
+            availableDensities.length = 0;
+            for (const k in platformHasData) delete platformHasData[k];
+            // variant-group is excluded: its buttons are created once by
+            // renderVariantGroup() and persist across reloads so Proton/Nova
+            // stay visibly selected (and clickable) through the reload itself.
+            ['platform-group', 'theme-group', 'density-group', 'section-group'].forEach(id => {
+                document.getElementById(id).querySelectorAll('button').forEach(b => b.remove());
+            });
+            document.getElementById('controls').style.display = 'none';
+            document.getElementById('summary').textContent = '';
+            document.getElementById('error').style.display = 'none';
+            document.getElementById('gallery').innerHTML =
+                '<div class="loading">Loading screenshots…</div>';
+        }
+
+        function onPushChange(value) {
+            selectedRevision = value || null;
+            syncUrl();
+            resetDataState();
+            load();
+        }
+
+        // Clear every option but "Latest" and forget what we've found so far, so
+        // fetchRecentPushes() can be re-run cleanly for a different repo or variant.
+        function resetPushDropdown() {
+            const sel = document.getElementById('push-select');
+            sel.querySelectorAll('option:not(:first-child)').forEach(o => o.remove());
+            sel.value = '';
+            recentPushes = [];
+        }
+
+        // Parse `repo`/`revision` out of a pasted Treeherder push URL, e.g.
+        // https://treeherder.mozilla.org/jobs?repo=try&revision=<sha>
+        function parsePushUrl(text) {
+            text = text.trim();
+            if (!text) {
+                return null;
+            }
+            let url;
+            try {
+                url = new URL(text);
+            } catch {
+                try {
+                    url = new URL(`https://${text}`);
+                } catch {
+                    return null;
+                }
+            }
+            const repo = url.searchParams.get('repo');
+            const revision = url.searchParams.get('revision');
+            if (!repo || !revision || (repo !== 'try' && repo !== 'mozilla-central')) {
+                return null;
+            }
+            return { repo, revision };
+        }
+
+        function applyPushUrlInput() {
+            const input = document.getElementById('push-url-input');
+            const errorEl = document.getElementById('error');
+            const parsed = parsePushUrl(input.value);
+            if (!parsed) {
+                errorEl.style.display = '';
+                errorEl.textContent = 'Could not parse a repo + revision from that URL. ' +
+                    'Expected something like https://treeherder.mozilla.org/jobs?repo=try&revision=<sha>.';
+                return;
+            }
+            errorEl.style.display = 'none';
+            REPO = parsed.repo;
+            REPO_KEY = REPO === 'try' ? 'try' : 'central';
+            selectedRevision = parsed.revision;
+            input.value = '';
+            syncUrl();
+            resetPushDropdown();
+            resetDataState();
+            fetchRecentPushes();
+            load();
+        }
+
+        // Returns the list of platform ids that have a screenshots task for `revision`.
+        // Uses the TC index namespace listing endpoint to get all platforms in one
+        // request instead of one per platform.
+        async function screenshotPlatforms(revision) {
+            const ns = `gecko.v2.${REPO}.revision.${revision}.test.mochitest-browser-screenshots`;
+            const resp = await fetch(`${INDEX}/tasks/${encodeURIComponent(ns)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+            });
+            if (!resp.ok) return [];
+            const data = await resp.json();
+            if (!data.tasks?.length) return [];
+            return PLATFORMS.filter(p => {
+                const suffix = platformSuffix(p.testPlatform[REPO_KEY]);
+                return data.tasks.some(t => t.namespace.endsWith(suffix));
+            }).map(p => p.id);
+        }
+
+        function makePushOption(push) {
+            const d = new Date(push.push_timestamp * 1000);
+            const dateStr = d.toLocaleDateString('en-CA') + ' ' +
+                d.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
+            const shortRev = push.revision.slice(0, 12);
+            const author = push.author.replace(/@.*$/, '');
+            const allPlatforms = PLATFORMS.every(p => push.platforms.includes(p.id));
+            const platformNote = allPlatforms
+                ? 'all platforms'
+                : push.platforms.map(id => PLATFORMS.find(p => p.id === id).label).join(', ');
+            const opt = document.createElement('option');
+            opt.value = push.revision;
+            opt.textContent = `${dateStr} · ${shortRev} · ${author} [${platformNote}]`;
+            opt.selected = push.revision === selectedRevision;
+            return opt;
+        }
+
+        async function fetchRecentPushes() {
+            const TARGET = 20;
+
+            const sel = document.getElementById('push-select');
+            document.getElementById('push-bar').style.display = 'flex';
+
+            const repo = REPO === 'try' ? 'try' : 'mozilla-central';
+            recentPushes = [];
+
+            // Step 1: get all revision namespaces from the TC index. This gives us
+            // every revision that has any indexed task, without touching Treeherder.
+            // The list is sorted by expires (latest first) as a recency proxy.
+            const nsData = await (async () => {
+                const resp = await fetch(
+                    `${INDEX}/namespaces/gecko.v2.${REPO}.revision`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+                );
+                return resp.ok ? resp.json() : null;
+            })();
+            if (!nsData?.namespaces?.length) return;
+            // Sort most-recently-expiring first as a proxy for recency.
+            const revisions = nsData.namespaces
+                .sort((a, b) => b.expires.localeCompare(a.expires))
+                .map(ns => ns.name);
+
+            // Step 2: probe each revision for screenshot tasks, stopping once we
+            // have TARGET hits. Probe in batches of 20 to limit parallelism.
+            const PROBE_BATCH = 20;
+            const thUrl = `https://treeherder.mozilla.org/api/project/${repo}/push/`;
+            for (let i = 0; i < revisions.length && recentPushes.length < TARGET; i += PROBE_BATCH) {
+                const slice = revisions.slice(i, i + PROBE_BATCH);
+                const platformLists = await Promise.all(slice.map(r => screenshotPlatforms(r)));
+
+                // Step 3: for each hit in this batch, fetch Treeherder metadata
+                // in parallel, then append options in order.
+                const batchHits = slice
+                    .map((revision, j) => platformLists[j].length ? { revision, platforms: platformLists[j] } : null)
+                    .filter(Boolean);
+                const metaList = await Promise.all(batchHits.map(async h => {
+                    const data = await fetchJson(`${thUrl}?revision=${h.revision}&full=true`);
+                    const th = data?.results?.[0];
+                    return th ? { ...th, platforms: h.platforms } : null;
+                }));
+                for (const push of metaList) {
+                    if (!push || recentPushes.length >= TARGET) continue;
+                    recentPushes.push(push);
+                    sel.appendChild(makePushOption(push));
+                }
+            }
+
+            // If the URL specified a revision outside the result set, pin it as a
+            // placeholder at the top so the select still reflects the current state.
+            if (selectedRevision && !recentPushes.some(p => p.revision === selectedRevision)) {
+                const opt = document.createElement('option');
+                opt.value = selectedRevision;
+                opt.textContent = selectedRevision.slice(0, 12) + ' (from URL)';
+                opt.selected = true;
+                sel.insertBefore(opt, sel.options[1]);
+            }
         }
 
         // --- Load -----------------------------------------------------------
@@ -560,9 +927,12 @@
             }
 
             if (!allRows.length) {
-                const where = REPO === 'try' ? 'the latest Try push' : REPO;
+                const where = selectedRevision
+                    ? `revision ${selectedRevision.slice(0, 12)} on ${REPO}`
+                    : (REPO === 'try' ? 'the latest Try push' : REPO);
+                const variant = selectedVariant === 'nova' ? ' (Nova variant)' : '';
                 document.getElementById('gallery').innerHTML =
-                    `<div class="loading">No screenshots are indexed yet for ${escapeHtml(where)}. ` +
+                    `<div class="loading">No screenshots are indexed yet for ${escapeHtml(where)}${variant}. ` +
                     `The mochitest-browser-screenshots jobs (bug 2050672) may not have run here yet.</div>`;
                 return;
             }
@@ -617,6 +987,108 @@
             }
         });
 
+        // --- Download all screenshots as a ZIP ------------------------------
+
+        // Fetch a Taskcluster queue artifact URL, caching the TC→GCS base redirect so
+        // subsequent artifacts from the same task hit GCS directly. Key is everything
+        // up to '/public/' in the URL, which is shared across a task's artifacts.
+        const _resolvedArtifactBases = new Map(); // TC base → GCS base
+        async function fetchTaskArtifact(url) {
+            const cut = url.indexOf('/public/');
+            if (cut !== -1) {
+                const cached = _resolvedArtifactBases.get(url.slice(0, cut));
+                if (cached) return fetch(cached + url.slice(cut));
+            }
+            const response = await fetch(url);
+            if (response.url && response.url !== url && cut !== -1) {
+                const gcsCut = response.url.indexOf('/public/');
+                if (gcsCut !== -1)
+                    _resolvedArtifactBases.set(url.slice(0, cut), response.url.slice(0, gcsCut));
+            }
+            return response;
+        }
+
+        let dlAborted = false;
+        document.getElementById('dl-cancel').onclick = () => { dlAborted = true; };
+
+        async function downloadAll() {
+            dlAborted = false;
+            const overlay = document.getElementById('download-overlay');
+            const statusEl = document.getElementById('dl-status');
+            const fillEl = document.getElementById('dl-fill');
+            overlay.classList.add('open');
+            fillEl.style.width = '0%';
+
+            // Every image across all platforms/sections/themes/densities.
+            // Path: {platform}/{section}/{filename} — filename extracted from the
+            // artifact URL (last path segment) since `file` lives on shots, not rows.
+            const images = [];
+            for (const row of allRows) {
+                for (const [pid, url] of Object.entries(row.byPlatform)) {
+                    const filename = decodeURIComponent(url.split('/').pop());
+                    images.push({ path: `${pid}/${row.section}/${filename}`, url });
+                }
+            }
+
+            const total = images.length;
+            let done = 0, failed = 0, idx = 0;
+            const zip = new JSZip();
+
+            const update = () => {
+                const pct = total ? Math.round(done / total * 100) : 0;
+                fillEl.style.width = `${pct}%`;
+                statusEl.textContent =
+                    `Fetching ${done} / ${total} images…` +
+                    (failed ? ` (${failed} failed)` : '');
+            };
+            update();
+
+            const worker = async () => {
+                while (idx < images.length && !dlAborted) {
+                    const { path, url } = images[idx++];
+                    let ok = false;
+                    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+                        try {
+                            const resp = await fetchTaskArtifact(url);
+                            if (resp.ok) {
+                                zip.file(path, await resp.blob());
+                                ok = true;
+                            }
+                        } catch {}
+                    }
+                    if (!ok) failed++;
+                    done++;
+                    update();
+                }
+            };
+
+            await Promise.all(Array.from({ length: 400 }, worker));
+
+            if (dlAborted) {
+                overlay.classList.remove('open');
+                return;
+            }
+
+            statusEl.textContent = 'Building ZIP…';
+            fillEl.classList.add('indeterminate');
+            const blob = await zip.generateAsync({ type: 'blob' });
+            fillEl.classList.remove('indeterminate');
+
+            if (dlAborted) {
+                overlay.classList.remove('open');
+                return;
+            }
+
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `firefox-screenshots-${REPO_KEY}.zip`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+            overlay.classList.remove('open');
+        }
+
+        renderVariantGroup();
+        fetchRecentPushes();
         load();
     </script>
 </body>

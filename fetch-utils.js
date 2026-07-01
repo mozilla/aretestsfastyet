@@ -256,7 +256,14 @@ async function fetchData(filename) {
             return fetch(`./data/${mochitestFilename}`);
         }
 
-        // For non-try runs, re-fetch to get the proper error response
-        return fetch(`./data/${filename}`);
+        // No local file — fall back to CI so the page works without generated data.
+        console.log(`No local data for ${filename}, falling back to CI…`);
+        let harness = 'xpcshell';
+        if (filename.startsWith('mochitest-')) {
+            harness = 'mochitest';
+        } else if (filename === 'index.json') {
+            harness = getHarnessType();
+        }
+        return fetchFromCI(harness + '-timings', filename);
     }
 }
