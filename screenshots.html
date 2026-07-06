@@ -454,6 +454,10 @@
         // Full revision SHA when a specific push is selected; null = latest.
         let selectedRevision = params.get('rev') || null;
         let recentPushes = [];
+        // Bumped on every resetDataState() so a stale in-flight load() or
+        // fetchRecentPushes() (from a superseded push/variant switch) can tell
+        // it's no longer current and bail instead of mutating shared state.
+        let dataGeneration = 0;
 
         // Drive the screenshot max-width from the size slider. At the maximum we
         // use 100% so a wide-enough window shows the screenshots at full size
@@ -682,6 +686,7 @@
         // Clear screenshot data and generated controls so load() can be re-run
         // cleanly after a push change.
         function resetDataState() {
+            dataGeneration++;
             allRows = [];
             availableSections.length = 0;
             availableThemes.length = 0;
@@ -800,7 +805,10 @@
         }
 
         async function fetchRecentPushes() {
+            const generation = dataGeneration;
             const TARGET = 20;
+            const PAGE_SIZE = 20;
+            const MAX_PAGES = 15;
 
             const sel = document.getElementById('push-select');
             document.getElementById('push-bar').style.display = 'flex';
@@ -808,45 +816,35 @@
             const repo = REPO === 'try' ? 'try' : 'mozilla-central';
             recentPushes = [];
 
-            // Step 1: get all revision namespaces from the TC index. This gives us
-            // every revision that has any indexed task, without touching Treeherder.
-            // The list is sorted by expires (latest first) as a recency proxy.
-            const nsData = await (async () => {
-                const resp = await fetch(
-                    `${INDEX}/namespaces/gecko.v2.${REPO}.revision`,
-                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
-                );
-                return resp.ok ? resp.json() : null;
-            })();
-            if (!nsData?.namespaces?.length) return;
-            // Sort most-recently-expiring first as a proxy for recency.
-            const revisions = nsData.namespaces
-                .sort((a, b) => b.expires.localeCompare(a.expires))
-                .map(ns => ns.name);
-
-            // Step 2: probe each revision for screenshot tasks, stopping once we
-            // have TARGET hits. Probe in batches of 20 to limit parallelism.
-            const PROBE_BATCH = 20;
+            // Page backwards through Treeherder's time-ordered push list (newest
+            // first), probing each push for screenshot tasks, until we have
+            // TARGET hits or run out of pages to try.
             const thUrl = `https://treeherder.mozilla.org/api/project/${repo}/push/`;
-            for (let i = 0; i < revisions.length && recentPushes.length < TARGET; i += PROBE_BATCH) {
-                const slice = revisions.slice(i, i + PROBE_BATCH);
-                const platformLists = await Promise.all(slice.map(r => screenshotPlatforms(r)));
+            let pushTimestampLte = null;
+            for (let page = 0; page < MAX_PAGES && recentPushes.length < TARGET; page++) {
+                const query = new URLSearchParams({ count: String(PAGE_SIZE) });
+                if (pushTimestampLte !== null) {
+                    query.set('push_timestamp__lte', String(pushTimestampLte));
+                }
+                const data = await fetchJson(`${thUrl}?${query}`);
+                if (generation !== dataGeneration) return;
+                const pushes = data?.results;
+                if (!pushes?.length) break;
 
-                // Step 3: for each hit in this batch, fetch Treeherder metadata
-                // in parallel, then append options in order.
-                const batchHits = slice
-                    .map((revision, j) => platformLists[j].length ? { revision, platforms: platformLists[j] } : null)
-                    .filter(Boolean);
-                const metaList = await Promise.all(batchHits.map(async h => {
-                    const data = await fetchJson(`${thUrl}?revision=${h.revision}&full=true`);
-                    const th = data?.results?.[0];
-                    return th ? { ...th, platforms: h.platforms } : null;
-                }));
-                for (const push of metaList) {
-                    if (!push || recentPushes.length >= TARGET) continue;
+                const platformLists = await Promise.all(
+                    pushes.map(p => screenshotPlatforms(p.revision))
+                );
+                if (generation !== dataGeneration) return;
+                for (let i = 0; i < pushes.length && recentPushes.length < TARGET; i++) {
+                    if (!platformLists[i].length) continue;
+                    const push = { ...pushes[i], platforms: platformLists[i] };
                     recentPushes.push(push);
                     sel.appendChild(makePushOption(push));
                 }
+
+                // Next page ends just before the oldest push seen so far, to
+                // avoid re-fetching it.
+                pushTimestampLte = pushes[pushes.length - 1].push_timestamp - 1;
             }
 
             // If the URL specified a revision outside the result set, pin it as a
@@ -862,6 +860,7 @@
 
         // --- Load -----------------------------------------------------------
         async function load() {
+            const generation = dataGeneration;
             const errorEl = document.getElementById('error');
             let platformData;
             try {
@@ -880,11 +879,13 @@
                     return { ...p, taskId, shots };
                 }));
             } catch (e) {
+                if (generation !== dataGeneration) return;
                 errorEl.style.display = '';
                 errorEl.textContent = `Failed to load screenshots: ${e.message}`;
                 document.getElementById('gallery').innerHTML = '';
                 return;
             }
+            if (generation !== dataGeneration) return;
 
             // Merge every platform's shots into rows keyed by (section, NN).
             const rowsByKey = new Map();
@@ -989,23 +990,43 @@
 
         // --- Download all screenshots as a ZIP ------------------------------
 
-        // Fetch a Taskcluster queue artifact URL, caching the TC→GCS base redirect so
-        // subsequent artifacts from the same task hit GCS directly. Key is everything
-        // up to '/public/' in the URL, which is shared across a task's artifacts.
-        const _resolvedArtifactBases = new Map(); // TC base → GCS base
-        async function fetchTaskArtifact(url) {
-            const cut = url.indexOf('/public/');
-            if (cut !== -1) {
-                const cached = _resolvedArtifactBases.get(url.slice(0, cut));
-                if (cached) return fetch(cached + url.slice(cut));
+        // Every `${QUEUE}/task/{taskId}/artifacts/{artifactPath}` URL 303-redirects
+        // to `https://firefoxci.taskcluster-artifacts.net/{taskId}/{runId}/{artifactPath}`.
+        // Only `runId` isn't already known from the original URL, and it's almost
+        // always 0 (first/only run). So: resolve the redirect for ONE artifact to
+        // learn {origin, runId}, then build every other artifact's direct URL from
+        // the pattern and fetch it straight from the CDN — no per-artifact redirect.
+        const ARTIFACT_URL_RE = /^(.*\/task\/)([^/]+)(\/artifacts\/)(.+)$/;
+
+        function buildDirectArtifactUrl(url, pattern) {
+            const m = pattern && url.match(ARTIFACT_URL_RE);
+            if (!m) return null;
+            const [, , taskId, , artifactPath] = m;
+            return `${pattern.origin}/${taskId}/${pattern.runId}/${artifactPath}`;
+        }
+
+        // Fetches `url` directly if a redirect pattern is already known, falling
+        // back to the redirecting TC URL (and learning the pattern from it) when
+        // there isn't one yet, or the direct guess turns out to be wrong for this
+        // task (e.g. a retriggered task with a non-zero runId).
+        async function fetchArtifact(url, pattern) {
+            const direct = buildDirectArtifactUrl(url, pattern.value);
+            if (direct) {
+                const resp = await fetch(direct);
+                if (resp.ok) return resp;
             }
-            const response = await fetch(url);
-            if (response.url && response.url !== url && cut !== -1) {
-                const gcsCut = response.url.indexOf('/public/');
-                if (gcsCut !== -1)
-                    _resolvedArtifactBases.set(url.slice(0, cut), response.url.slice(0, gcsCut));
+            const resp = await fetch(url);
+            if (resp.ok && !pattern.value) {
+                const m = url.match(ARTIFACT_URL_RE);
+                const idx = m && resp.url.indexOf(`/${m[2]}/`);
+                if (idx >= 0) {
+                    pattern.value = {
+                        origin: resp.url.slice(0, idx),
+                        runId: resp.url.slice(idx + m[2].length + 2).split('/')[0],
+                    };
+                }
             }
-            return response;
+            return resp;
         }
 
         let dlAborted = false;
@@ -1031,7 +1052,7 @@
             }
 
             const total = images.length;
-            let done = 0, failed = 0, idx = 0;
+            let done = 0, failed = 0;
             const zip = new JSZip();
 
             const update = () => {
@@ -1043,26 +1064,34 @@
             };
             update();
 
-            const worker = async () => {
-                while (idx < images.length && !dlAborted) {
-                    const { path, url } = images[idx++];
-                    let ok = false;
-                    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
-                        try {
-                            const resp = await fetchTaskArtifact(url);
-                            if (resp.ok) {
-                                zip.file(path, await resp.blob());
-                                ok = true;
-                            }
-                        } catch {}
-                    }
-                    if (!ok) failed++;
-                    done++;
-                    update();
+            const pattern = { value: null };
+            const fetchOne = async ({ path, url }) => {
+                if (dlAborted) return;
+                let ok = false;
+                for (let attempt = 0; attempt < 3 && !ok && !dlAborted; attempt++) {
+                    try {
+                        const resp = await fetchArtifact(url, pattern);
+                        if (resp.ok) {
+                            zip.file(path, await resp.blob());
+                            ok = true;
+                        }
+                    } catch {}
                 }
+                if (!ok) failed++;
+                done++;
+                update();
             };
 
-            await Promise.all(Array.from({ length: 400 }, worker));
+            // Resolve the redirect pattern from exactly one artifact first, so
+            // every other fetch below goes straight to the CDN with no redirect
+            // round trip. Only then fire the rest, fully in parallel — the
+            // browser's own connection handling is all the throttling needed.
+            if (images.length) {
+                await fetchOne(images[0]);
+                if (!dlAborted) {
+                    await Promise.all(images.slice(1).map(fetchOne));
+                }
+            }
 
             if (dlAborted) {
                 overlay.classList.remove('open');
