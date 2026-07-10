@@ -269,13 +269,17 @@
 
         function taskGroupProfilerUrl(id) {
             const base = `${TC}/api/web-server/v1/task-group/${id}/profile`;
-            return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&thread=0&v=16`;
+            return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&thread=0&v=17`;
         }
 
+        // The web-server profile endpoint synthesizes a profile from the task's live
+        // log (as marker data) plus any resource-usage artifact, for any task kind —
+        // unlike fetching a specific artifact path, which varies by kind and 404s for
+        // kinds (e.g. code-review) that never produce a resource-usage artifact.
         function taskProfilerUrl(taskId, runId, label) {
-            const base = `${TC}/api/queue/v1/task/${taskId}/runs/${runId}/artifacts/public/build/profile_build_resources.json`;
+            const base = `${TC}/api/web-server/v1/task/${taskId}/profile`;
             const name = `${label || 'task'} (${taskId}.${runId})`;
-            return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&profileName=${encodeURIComponent(name)}&thread=0&v=16`;
+            return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&profileName=${encodeURIComponent(name)}&thread=0&v=17`;
         }
 
         function treeherderTryUrl(rev) {
