@@ -207,6 +207,14 @@
                 <div class="loading">Loading…</div>
             </div>
         </div>
+        <div class="kind-row">
+            <div class="chart-container" id="vcs-worker-pool-chart">
+                <div class="loading">Loading…</div>
+            </div>
+            <div class="chart-container" id="vcs-worker-pool-pie">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -568,10 +576,86 @@
                     '<p class="loading">No data for this chart.</p>';
                 return;
             }
-            const { profilerClick = false, seriesColors } = opts;
+            const { profilerClick = false, seriesColors, shapeKey, shapeSymbols, seriesLegendTitle, shapeLegendTitle, seriesLegendSymbol } = opts;
 
             let traces;
-            if (seriesKey) {
+            let xAxisRange = null;
+            if (seriesKey && shapeKey) {
+                // Dual encoding: color = seriesKey (one fixed color per value, shared
+                // across its shapeKey subtraces), symbol = shapeKey. Two separate legends
+                // (native Plotly `legend`/`legend2`) avoid a "pool (type)" cross-product
+                // legend — one entry per seriesKey value, plus a small shape key. Both
+                // legends use dedicated proxy traces so their glyphs don't get confused
+                // with the shapeKey symbols used on the real data points.
+                const seriesLabels = [...new Set(rows.map(r => r[seriesKey]))].sort();
+                const shapeLabels = [...new Set(rows.map(r => r[shapeKey]))].sort();
+                const autoPalette = ['#1f77b4', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
+
+                // Legend-proxy traces need a real coordinate to plot, but plotting it inside
+                // the visible data range adds a visible stray marker (obvious on sparse
+                // series). Park proxies a week before the earliest point and pin the axis
+                // range to the real data so the parked point never renders.
+                let minTime = Infinity, maxTime = -Infinity;
+                for (const r of rows) {
+                    const t = new Date(r[xKey]).getTime();
+                    if (t < minTime) minTime = t;
+                    if (t > maxTime) maxTime = t;
+                }
+                xAxisRange = [new Date(minTime).toISOString(), new Date(maxTime).toISOString()];
+                const offChartX = new Date(minTime - 7 * 24 * 3600 * 1000).toISOString();
+                const offChartY = rows[0][yKey];
+
+                traces = [];
+                seriesLabels.forEach((lbl, i) => {
+                    const color = (seriesColors && seriesColors[lbl]) || autoPalette[i % autoPalette.length];
+                    let hasData = false;
+                    shapeLabels.forEach(sv => {
+                        const sub = rows.filter(r => r[seriesKey] === lbl && r[shapeKey] === sv);
+                        if (!sub.length) return;
+                        hasData = true;
+                        traces.push({
+                            type: 'scattergl', mode: 'markers', name: lbl,
+                            legendgroup: lbl, showlegend: false,
+                            x: sub.map(r => r[xKey]),
+                            y: sub.map(r => r[yKey]),
+                            marker: { size: 5, opacity: 0.65, color, symbol: (shapeSymbols && shapeSymbols[sv]) || 'circle' },
+                            customdata: sub.map(r => ({
+                                taskId:      r.task_id,
+                                runId:       r.run_id ?? 0,
+                                taskGroupId: r.task_group_id,
+                                workerPool:  r.task_queue_id,
+                                label:       r[seriesKey],
+                                shapeVal:    r[shapeKey],
+                                yVal:        r[yKey],
+                                xVal:        r[xKey],
+                            })),
+                            hoverinfo: 'none',
+                            // Non-standard field, read back via closure (not through Plotly's
+                            // gd.data) by the plotly_legendclick handler below to cross-toggle
+                            // legend2 (shape) clicks into these legend (pool) traces.
+                            _shapeVal: sv,
+                        });
+                    });
+                    if (hasData) {
+                        traces.push({
+                            type: 'scattergl', mode: 'markers', name: lbl,
+                            legendgroup: lbl, showlegend: true,
+                            x: [offChartX], y: [offChartY],
+                            marker: { size: 8, color, symbol: seriesLegendSymbol || 'circle' },
+                            legend: 'legend', hoverinfo: 'skip',
+                        });
+                    }
+                });
+                // Proxy traces for the shape (checkout-type) legend.
+                shapeLabels.forEach(sv => {
+                    traces.push({
+                        type: 'scattergl', mode: 'markers', name: sv,
+                        x: [offChartX], y: [offChartY],
+                        marker: { size: 8, color: '#555', symbol: (shapeSymbols && shapeSymbols[sv]) || 'circle' },
+                        legend: 'legend2', showlegend: true, hoverinfo: 'skip',
+                    });
+                });
+            } else if (seriesKey) {
                 const labels = [...new Set(rows.map(r => r[seriesKey]))].sort();
                 traces = labels.map(lbl => {
                     const sub = rows.filter(r => r[seriesKey] === lbl);
@@ -614,10 +698,12 @@
 
             Plotly.newPlot(chartId, traces, {
                 ...PLOTLY_LAYOUT_BASE,
+                ...(shapeKey ? { margin: { ...PLOTLY_LAYOUT_BASE.margin, b: 90 } } : {}),
                 title: { text: title, font: { size: 13 } },
-                xaxis: { type: 'date', title: { text: 'Started' } },
+                xaxis: { type: 'date', title: { text: 'Started' }, ...(xAxisRange ? { range: xAxisRange } : {}) },
                 yaxis: { title: { text: yTitle } },
-                legend: { orientation: 'h', y: -0.2, font: { size: 10 } },
+                legend: { orientation: 'h', y: -0.2, font: { size: 10 }, ...(shapeKey ? { title: { text: seriesLegendTitle || seriesKey, font: { size: 10 } } } : {}) },
+                ...(shapeKey ? { legend2: { orientation: 'h', y: -0.32, font: { size: 10 }, title: { text: shapeLegendTitle || shapeKey, font: { size: 10 } } } } : {}),
                 hovermode: 'closest',
             }, PLOTLY_CONFIG);
 
@@ -632,6 +718,7 @@
                 const date = new Date(cd.xVal).toLocaleString();
                 const durStr = formatDuration(Number(cd.yVal));
                 const lbl = escapeHtml(cd.label || 'decision-task');
+                const typeSuffix = cd.shapeVal ? ` — ${escapeHtml(cd.shapeVal)}` : '';
 
                 function html(bug, rev) {
                     const bugLine = bug === 'loading'
@@ -647,7 +734,7 @@
                     const poolLine = cd.workerPool
                         ? `<span style="font-size:0.9em">${escapeHtml(cd.workerPool)}</span>` : '';
                     return (
-                        `<span><b>${lbl}</b></span>` +
+                        `<span><b>${lbl}</b>${typeSuffix}</span>` +
                         `<span>${date} — ${durStr}</span>` +
                         bugLine +
                         `<div class="tt-sep"></div>` +
@@ -675,6 +762,26 @@
                 if (drag) drag.style.cursor = '';
                 scheduleHideTooltip();
             });
+
+            if (shapeKey) {
+                // legendgroup only toggles traces within the same legend, so clicking a
+                // legend2 (shape) entry doesn't reach the real data traces living under
+                // legend (grouped by seriesKey instead). Cross-toggle manually.
+                chartEl.on('plotly_legendclick', function(ev) {
+                    const clicked = traces[ev.curveNumber];
+                    if (!clicked || clicked.legend !== 'legend2') return; // let default handle pool-legend clicks
+                    const sv = clicked.name;
+                    const isVisible = clicked.visible !== 'legendonly' && clicked.visible !== false;
+                    const newVisible = isVisible ? 'legendonly' : true;
+                    const targets = traces.reduce((acc, t, idx) => {
+                        if (t._shapeVal === sv) acc.push(idx);
+                        return acc;
+                    }, [ev.curveNumber]);
+                    Plotly.restyle(chartId, { visible: newVisible }, targets);
+                    clicked.visible = newVisible;
+                    return false;
+                });
+            }
 
             if (profilerClick) {
                 chartEl.on('plotly_click', function(data) {
@@ -787,6 +894,10 @@
         // ── VCS checkout timing ──────────────────────────────────────────
 
         const VCS_CHECKOUT_TYPE_COLORS = { clone: '#ff7f0e', pull: '#2ca02c' };
+        const VCS_CHECKOUT_TYPE_SYMBOLS = { clone: 'diamond', pull: 'circle' };
+        // Vibrant, high-saturation qualitative palette. Avoids orange/green (already used
+        // for clone/pull) so pool color can't be mistaken for checkout type.
+        const VCS_WORKER_POOL_PALETTE = ['#e6194b', '#4363d8', '#911eb4', '#f032e6', '#00b8d9', '#ffc300', '#c2185b'];
 
         async function renderVcsCharts() {
             const rows = await fetchRows(QUERIES.vcsTiming);
@@ -797,7 +908,21 @@
                 checkoutType: r.vcs_clone_minutes != null ? 'clone' : 'pull',
             }));
 
+            const pools = [...new Set(rows.map(r => r.task_queue_id))].sort();
+            const poolColors = {};
+            pools.forEach((p, i) => { poolColors[p] = VCS_WORKER_POOL_PALETTE[i % VCS_WORKER_POOL_PALETTE.length]; });
+
             makeTaskScatter(rowsWithCheckoutType, 'started', 'vcs_overall_minutes', 'VCS (minutes)', 'checkoutType', 'VCS checkout (by clone vs pull)', 'vcs-overall-chart', { profilerClick: true, seriesColors: VCS_CHECKOUT_TYPE_COLORS });
+            // Worker pool (not task kind) is what actually predicts VCS duration: Windows
+            // pools (win11-*) are far slower than Linux pools for the same clone/update work.
+            // Color = worker pool, shape = clone vs pull, to show both at once.
+            makeTaskScatter(rowsWithCheckoutType, 'started', 'vcs_overall_minutes', 'VCS (minutes)', 'task_queue_id', 'VCS checkout (by worker pool, clone vs pull)', 'vcs-worker-pool-chart', {
+                profilerClick: true,
+                seriesColors: poolColors,
+                shapeKey: 'checkoutType', shapeSymbols: VCS_CHECKOUT_TYPE_SYMBOLS,
+                seriesLegendTitle: 'Worker pool', shapeLegendTitle: 'Checkout type',
+                seriesLegendSymbol: 'square',
+            });
 
             clearLoading('vcs-checkout-type-pie');
             const cloneCount = rowsWithCheckoutType.filter(r => r.checkoutType === 'clone').length;
@@ -813,6 +938,24 @@
             }], {
                 ...PLOTLY_LAYOUT_BASE,
                 title: { text: 'Checkouts: clone vs pull', font: { size: 13 } },
+                margin: { t: 40, r: 10, b: 10, l: 10 },
+                legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
+            }, PLOTLY_CONFIG);
+
+            clearLoading('vcs-worker-pool-pie');
+            const poolCounts = {};
+            for (const r of rows) poolCounts[r.task_queue_id] = (poolCounts[r.task_queue_id] || 0) + 1;
+            Plotly.newPlot('vcs-worker-pool-pie', [{
+                type: 'pie',
+                labels: pools,
+                values: pools.map(p => poolCounts[p]),
+                marker: { colors: pools.map(p => poolColors[p]) },
+                textinfo: 'label+percent',
+                textposition: 'inside',
+                insidetextorientation: 'radial',
+            }], {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Checkouts by worker pool', font: { size: 13 } },
                 margin: { t: 40, r: 10, b: 10, l: 10 },
                 legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
             }, PLOTLY_CONFIG);
