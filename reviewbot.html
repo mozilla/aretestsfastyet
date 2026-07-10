@@ -194,6 +194,19 @@
                 <div class="loading">Loading…</div>
             </div>
         </div>
+
+        <h3>VCS checkout time</h3>
+        <p>Time spent during the VCS phase of each task. Mercurial-only as reviewbot tasks
+            do not currently check out via git. <code>code-review</code> tasks do not perform
+            VCS checkouts.</p>
+        <div class="kind-row">
+            <div class="chart-container" id="vcs-overall-chart">
+                <div class="loading">Loading…</div>
+            </div>
+            <div class="chart-container" id="vcs-checkout-type-pie">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -207,6 +220,7 @@
             sourceTest: { id: 121829, key: 's73SR5yHE8SRifEn5RPSM3NBA0pIWmR4P6QE9jA0' },
             codeReview: { id: 121826, key: 'sHbkU7rPGkJPKDm38S9RDOug29145JzoNkCXygw4' },
             byKind:     { id: 121738, key: 'tUrI1DpiwF3DHbKW9eVsJNx5VhZpjF0KONECMVST' },
+            vcsTiming:  { id: 122746, key: 'bSHN9tDiA4XD3zNaZISdgX3IbtE6fKluXKWTH3lo' },
         };
 
         const TC = 'https://firefox-ci-tc.services.mozilla.com';
@@ -554,18 +568,19 @@
                     '<p class="loading">No data for this chart.</p>';
                 return;
             }
-            const { profilerClick = false } = opts;
+            const { profilerClick = false, seriesColors } = opts;
 
             let traces;
             if (seriesKey) {
                 const labels = [...new Set(rows.map(r => r[seriesKey]))].sort();
                 traces = labels.map(lbl => {
                     const sub = rows.filter(r => r[seriesKey] === lbl);
+                    const color = seriesColors && seriesColors[lbl];
                     return {
                         type: 'scattergl', mode: 'markers', name: lbl,
                         x: sub.map(r => r[xKey]),
                         y: sub.map(r => r[yKey]),
-                        marker: { size: 4, opacity: 0.6 },
+                        marker: color ? { size: 4, opacity: 0.6, color } : { size: 4, opacity: 0.6 },
                         customdata: sub.map(r => ({
                             taskId:      r.task_id,
                             runId:       r.run_id ?? 0,
@@ -769,6 +784,40 @@
             makeTaskScatter(rows, 'started', 'pending_minutes',  'Pending time',     'label', 'Source-test tasks — pending', 'source-test-pending-chart');
         }
 
+        // ── VCS checkout timing ──────────────────────────────────────────
+
+        const VCS_CHECKOUT_TYPE_COLORS = { clone: '#ff7f0e', pull: '#2ca02c' };
+
+        async function renderVcsCharts() {
+            const rows = await fetchRows(QUERIES.vcsTiming);
+            // A checkout that had to clone (cold cache) also runs a pull afterward to
+            // reach the exact target revision; a warm-cache checkout only pulls.
+            const rowsWithCheckoutType = rows.map(r => ({
+                ...r,
+                checkoutType: r.vcs_clone_minutes != null ? 'clone' : 'pull',
+            }));
+
+            makeTaskScatter(rowsWithCheckoutType, 'started', 'vcs_overall_minutes', 'VCS (minutes)', 'checkoutType', 'VCS checkout (by clone vs pull)', 'vcs-overall-chart', { profilerClick: true, seriesColors: VCS_CHECKOUT_TYPE_COLORS });
+
+            clearLoading('vcs-checkout-type-pie');
+            const cloneCount = rowsWithCheckoutType.filter(r => r.checkoutType === 'clone').length;
+            const pullCount = rowsWithCheckoutType.length - cloneCount;
+            Plotly.newPlot('vcs-checkout-type-pie', [{
+                type: 'pie',
+                labels: ['clone', 'pull'],
+                values: [cloneCount, pullCount],
+                marker: { colors: ['clone', 'pull'].map(k => VCS_CHECKOUT_TYPE_COLORS[k]) },
+                textinfo: 'label+percent',
+                textposition: 'inside',
+                insidetextorientation: 'radial',
+            }], {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Checkouts: clone vs pull', font: { size: 13 } },
+                margin: { t: 40, r: 10, b: 10, l: 10 },
+                legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
+            }, PLOTLY_CONFIG);
+        }
+
         // ── Push resolution pie ─────────────────────────────────────────
 
         async function renderResolutionPie() {
@@ -803,6 +852,7 @@
                 renderSourceTestCharts(),
                 renderCodeReviewCharts(),
                 renderByKindCharts(),
+                renderVcsCharts(),
             ]);
             const failed = results.filter(r => r.status === 'rejected');
             if (failed.length) {
