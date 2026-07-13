@@ -103,6 +103,14 @@ const DASHBOARDS = [
             'pushes, and understand which task kinds dominate the pipeline.' },
 
     // --- Tier 2: less frequently used (not yet promoted, or older / specialized). help.html only. ---
+    { file: 'dep-mac-signing-pending.html', tier: 2, title: 'Dep Mac Signing Pending',
+      desc: 'Dep Mac Signing pending (scheduled→started) times per worker pool.',
+      long: 'Dep Mac Signing Pending — how long tasks wait before a dep macOS signing ' +
+            'worker picks them up, i.e. the gap between scheduled and started, for the ' +
+            'dep-{gecko,adhoc,comm,enterprise,mozillavpn}-signing-mac14m2 pools. Daily ' +
+            'p50/p90/p99 trend lines, a per-task scatter, a distribution histogram and a ' +
+            '14-day summary table, so releng can spot signing queue-wait regressions per ' +
+            'pool. Data from mozdata.fxci via STMO.' },
     { file: 'perma-fails.html', tier: 2, title: 'Perma-Fails',
       desc: 'Tests failing ~100% of the time on a given job configuration.',
       long: 'Tests that fail essentially 100% of the time (or more than 50%) on a particular ' +
