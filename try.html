@@ -1401,7 +1401,7 @@ self.onmessage = function(e) {
                 }
             }
 
-            if (isLocal) currentJobRunCounts = jobRunCounts;
+            currentJobRunCounts = jobRunCounts;
             const failures = aggregateFailures(result.timings, globalPlatforms, globalBuildTypes, jobRunCounts);
             currentFailures = failures;
             setProgress(-1);
@@ -1470,30 +1470,19 @@ self.onmessage = function(e) {
             }
         }
 
-        // Count sequential retry passes per test path.
-        const seqRetryPassCounts = new Map();
-        for (const t of allTimings) {
-            if (t.status === 'PASS-SEQUENTIAL') {
-                seqRetryPassCounts.set(t.path, (seqRetryPassCounts.get(t.path) || 0) + 1);
-            }
-        }
-
-        // Group every parsed timing of each failing test by job name and by task run,
-        // for the per-row debugging JSON. Unlike entry.instances this keeps the passing
-        // executions too, so the retries the harness ran are visible. Only built
-        // locally, where the control that copies it exists.
+        // Group every parsed timing of each failing test by job name and by task run.
+        // Unlike entry.instances this keeps the passing executions too, so the reruns
+        // the harness performed are visible.
         const execsByTest = new Map(); // path -> Map<jobName, Map<runKey, timing[]>>
-        if (isLocal) {
-            for (const t of allTimings) {
-                if (!testMap.has(t.path)) continue;
-                if (!execsByTest.has(t.path)) execsByTest.set(t.path, new Map());
-                const byJob = execsByTest.get(t.path);
-                if (!byJob.has(t.jobName)) byJob.set(t.jobName, new Map());
-                const byRun = byJob.get(t.jobName);
-                const runKey = `${t.taskId}.${t.retryId}`;
-                if (!byRun.has(runKey)) byRun.set(runKey, []);
-                byRun.get(runKey).push(t);
-            }
+        for (const t of allTimings) {
+            if (!testMap.has(t.path)) continue;
+            if (!execsByTest.has(t.path)) execsByTest.set(t.path, new Map());
+            const byJob = execsByTest.get(t.path);
+            if (!byJob.has(t.jobName)) byJob.set(t.jobName, new Map());
+            const byRun = byJob.get(t.jobName);
+            const runKey = `${t.taskId}.${t.retryId}`;
+            if (!byRun.has(runKey)) byRun.set(runKey, []);
+            byRun.get(runKey).push(t);
         }
 
         for (const [, entry] of testMap) {
@@ -1515,12 +1504,35 @@ self.onmessage = function(e) {
                 }
             }
             entry.intermittentCount = entry.instances.filter(i => i.intermittent).length;
-            entry.seqRetryPasses = seqRetryPassCounts.get(entry.path) || 0;
-            // Total job count across all job names that ran this test.
-            entry.totalJobs = 0;
+            // How many times the test ran, and across how many job runs. The harness
+            // reruns a test that fails, and each rerun is a separate execution — a
+            // TIMEOUT followed by a PASS in the retry phase is two runs of the test
+            // within one job run — so the run total exceeds the job-run total.
+            entry.totalJobs = 0;   // task runs of the job names that ran this test
+            entry.totalRuns = 0;   // executions of the test itself
+            // Classify each job run by what happened to the test in it. These buckets
+            // count job runs, so they sum to totalJobs, not to the failure count.
+            let failedTwice = 0, passedOnRetry = 0, failedOnce = 0, passed = 0, notAnalyzed = 0;
+            const byJob = execsByTest.get(entry.path);
             for (const jobName of entry.jobs) {
-                entry.totalJobs += jobRunCounts.get(jobName) || 0;
+                const jobRuns = jobRunCounts.get(jobName) || 0;
+                const runs = byJob?.get(jobName);
+                entry.totalJobs += jobRuns;
+                for (const execs of runs?.values() || []) {
+                    entry.totalRuns += execs.length;
+                    const failed = execs.filter(t => isFailureStatus(t.status));
+                    if (!failed.length) { passed++; continue; }
+                    if (execs.some(t => t.isRetry && t.status.startsWith('PASS'))) passedOnRetry++;
+                    else if (failed.length > 1) failedTwice++;
+                    else failedOnce++;
+                }
+                // Runs of this job name whose profile we didn't parse (jobs that passed,
+                // unless "All jobs" is on). Count one run of the test for each.
+                const unseen = Math.max(0, jobRuns - (runs?.size || 0));
+                notAnalyzed += unseen;
+                entry.totalRuns += unseen;
             }
+            entry.outcomes = { failedTwice, passedOnRetry, failedOnce, passed, notAnalyzed };
             // Pre-sort for rendering
             entry.sortedPlatforms = sortedPlatforms(entry.platforms);
             entry.sortedBuildTypes = sortedBuildTypes(entry.buildTypes);
@@ -1726,6 +1738,40 @@ self.onmessage = function(e) {
         }
     }
 
+    // Summarize what happened to the test across the push: how many times it ran, how
+    // often it failed, and how each job run ended. The harness retries a test that
+    // fails, so one job run can hold several executions.
+    function runCountTooltip(test) {
+        const s = n => n === 1 ? '' : 's';
+        const { failedTwice, passedOnRetry, failedOnce, passed, notAnalyzed } = test.outcomes;
+        const jobs = failedTwice + passedOnRetry + failedOnce + passed + notAnalyzed;
+
+        const failures = test.instances.length;
+        const names = test.jobs.size;
+        const lines = [
+            `Ran ${test.totalRuns} time${s(test.totalRuns)} and failed ${failures} ` +
+            `time${s(failures)}, in ${jobs} job${s(jobs)} across ` +
+            `${names} configuration${s(names)}:`,
+        ];
+        const job = n => `${n} job${s(n)}`;
+        if (failedTwice) {
+            lines.push(`• ${job(failedTwice)}: failed, then failed again when retried`);
+        }
+        if (passedOnRetry) {
+            lines.push(`• ${job(passedOnRetry)}: failed, then passed when retried`);
+        }
+        if (failedOnce) {
+            lines.push(`• ${job(failedOnce)}: failed, not retried`);
+        }
+        if (passed) {
+            lines.push(`• ${job(passed)}: passed`);
+        }
+        if (notAnalyzed) {
+            lines.push(`• ${job(notAnalyzed)}: not analyzed`);
+        }
+        return lines.join('\n');
+    }
+
     function renderTestTable(tests, hasRepro, showJobCount) {
         const arrow = c => currentSort.column === c ? (currentSort.ascending ? ' &#9650;' : ' &#9660;') : '';
         const cls = c => currentSort.column === c ? ' class="active"' : '';
@@ -1749,17 +1795,8 @@ self.onmessage = function(e) {
             html += `<tr class="clickable-row${isExpanded ? ' expanded' : ''}" onclick="toggleTest('${escapeAttr(test.path)}')" title="Click to expand">`;
             let countText;
             if (showJobCount) {
-                const failures = test.instances.length;
-                const jobs = test.totalJobs;
-                const runs = jobs + test.seqRetryPasses;
-                const s = n => n > 1 ? 's' : '';
-                let tooltip;
-                if (runs === jobs) {
-                    tooltip = `${failures} failure${s(failures)} out of ${jobs} job${s(jobs)}`;
-                } else {
-                    tooltip = `${failures} failure${s(failures)} out of ${runs} run${s(runs)} across ${jobs} job${s(jobs)}`;
-                }
-                countText = `<span title="${tooltip}">${failures}<span class="all-configs">/${runs}</span></span>`;
+                countText = `<span title="${escapeAttr(runCountTooltip(test))}">${test.instances.length}` +
+                            `<span class="all-configs">/${test.totalRuns}</span></span>`;
             } else {
                 countText = `${test.instances.length}`;
             }
@@ -2845,8 +2882,9 @@ Error: ${msg}`;
             repo: currentRepo,
             derived: {
                 failures: test.instances.length,
+                totalRuns: test.totalRuns,
                 totalJobs: test.totalJobs,
-                seqRetryPasses: test.seqRetryPasses,
+                outcomes: test.outcomes,
                 statuses: Array.from(test.statuses),
             },
             jobs,
