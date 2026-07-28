@@ -419,6 +419,31 @@
             text-decoration: underline;
         }
 
+        .section-header {
+            margin: 20px 0 8px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .no-failures,
+        .failure-table td.no-failures {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        .no-failures .verdict {
+            color: #2e7d32;
+            font-weight: 600;
+        }
+        .no-failures .caveat {
+            display: block;
+            margin-top: 6px;
+            font-size: 12px;
+        }
+        .no-failures .other-failures {
+            color: #b71c1c;
+        }
+
         .history-link {
             font-size: 13px;
             text-decoration: none;
@@ -722,6 +747,8 @@
     let currentRevision = null;
     let currentRepo = 'try';
     let currentJobRunCounts = null; // jobName -> completed runs, for the debug JSON
+    let currentOtherFailedJobs = []; // failed jobs of harnesses this page can't parse
+    let currentTreeherderUrl = '';
 
     // ===== Treeherder API =====
 
@@ -780,6 +807,9 @@
         }
         return jobs;
     }
+
+    // Treeherder job results that mean the job did not pass.
+    const FAILED_JOB_RESULTS = new Set(['testfailed', 'busted', 'exception']);
 
     function isTestJob(jobName) {
         return SUPPORTED_HARNESSES.some(h => jobName.includes(h));
@@ -1293,6 +1323,15 @@ self.onmessage = function(e) {
             );
             const successfulJobNames = new Set(successfulTestJobs.map(j => j.jobName));
 
+            // Failures this page can't dig into: builds, lint, and test harnesses other
+            // than the ones we parse profiles for. Surfaced as a pointer to Treeherder.
+            currentOtherFailedJobs = jobs.filter(j =>
+                j.state === 'completed' &&
+                FAILED_JOB_RESULTS.has(j.result) &&
+                !isTestJob(j.jobName)
+            );
+            currentTreeherderUrl = `${TH_BASE}/jobs?repo=${currentRepo}&revision=${revision}`;
+
             // With the "All jobs" checkbox (?alljobs), also fetch profiles of jobs
             // that ultimately succeeded, so tests that failed initially but passed
             // on retry surface too.
@@ -1305,8 +1344,12 @@ self.onmessage = function(e) {
                     j.state === 'completed' && isTestJob(j.jobName)
                 );
                 setFavicon('#4caf50');
-                setStatus(`No failed test jobs found. ${completedTestJobs.length} test jobs completed successfully out of ${totalJobs} total jobs.`);
+                setStatus(`${completedTestJobs.length} test jobs completed successfully out of ${totalJobs} total jobs.`);
                 setProgress(-1);
+                document.getElementById('results').innerHTML =
+                    `<div class="no-failures">${noFailuresHtml(true)}</div>`;
+                document.getElementById('treeherder-link-container').innerHTML =
+                    `<span class="treeherder-link"><a href="${escapeAttr(currentTreeherderUrl)}" target="_blank">View on Treeherder</a></span>`;
                 document.getElementById('load-btn').disabled = false;
                 return;
             }
@@ -1415,9 +1458,8 @@ self.onmessage = function(e) {
                 j => !jobsWithFailures.has(`${j.taskId}.${j.retryId}`)
             );
 
-            const treeherderUrl = `${TH_BASE}/jobs?repo=${currentRepo}&revision=${revision}`;
             setStatus('');
-            renderResults(failures, totalJobs, failedTestJobs.length, treeherderUrl);
+            renderResults(failures, totalJobs, failedTestJobs.length, currentTreeherderUrl);
             logConsoleAPI();
 
             // Fetch 21-day flakiness data for failed tests (async, updates UI progressively).
@@ -1720,11 +1762,16 @@ self.onmessage = function(e) {
 
         const hasRepro = reproState.size > 0;
 
-        container.innerHTML = renderTestTable(nonIntermittent, hasRepro, false);
+        // Only label the permanent failures when another section follows; a lone
+        // table needs no header.
+        const needsHeader = intermittent.length > 0 || currentUnblamedJobs.length > 0;
+        container.innerHTML =
+            (needsHeader ? '<h3 class="section-header">Permanent failures</h3>' : '') +
+            renderTestTable(nonIntermittent, hasRepro, false);
 
         if (intermittent.length > 0) {
             intermittentContainer.innerHTML =
-                `<h3 style="margin: 20px 0 8px; font-size: 14px; color: #666;">Intermittent failures ${MITTEN}</h3>` +
+                `<h3 class="section-header">Intermittent failures ${MITTEN}</h3>` +
                 renderTestTable(intermittent, hasRepro, true);
         } else {
             intermittentContainer.innerHTML = '';
@@ -1770,6 +1817,25 @@ self.onmessage = function(e) {
             lines.push(`• ${job(notAnalyzed)}: not analyzed`);
         }
         return lines.join('\n');
+    }
+
+    // Empty state for the permanent failures table, and for a push where no test job
+    // failed at all: nothing is blocking the push, as far as the harnesses we parse can
+    // tell. Jobs of other harnesses that failed still need a look, so link Treeherder.
+    function noFailuresHtml(noTestFailuresAtAll = false) {
+        const harnesses = SUPPORTED_HARNESSES.join(' and ');
+        const verdict = noTestFailuresAtAll ? 'No test failures' : 'No permanent failures';
+        let html = `<span class="verdict">${verdict} — the patches might be ready to land.</span>`;
+        const others = currentOtherFailedJobs.length;
+        if (others) {
+            const jobs = others === 1 ? '1 other job' : `${others} other jobs`;
+            html += `<span class="caveat other-failures">But this page only covers ${harnesses}, and ` +
+                    `${jobs} failed: <a href="${escapeAttr(currentTreeherderUrl)}" target="_blank">` +
+                    `check on Treeherder</a>.</span>`;
+        } else {
+            html += `<span class="caveat">This page only covers ${harnesses} failures.</span>`;
+        }
+        return html;
     }
 
     function renderTestTable(tests, hasRepro, showJobCount) {
@@ -1830,7 +1896,10 @@ self.onmessage = function(e) {
 
         if (tests.length === 0) {
             const cols = 7;
-            html += `<tr><td colspan="${cols}" style="text-align: center; color: #666; padding: 20px;">No matching tests found.</td></tr>`;
+            const message = currentSearchTerm
+                ? 'No matching tests found.'
+                : noFailuresHtml();
+            html += `<tr><td colspan="${cols}" class="no-failures">${message}</td></tr>`;
         }
 
         html += '</tbody></table>';
@@ -1875,7 +1944,7 @@ self.onmessage = function(e) {
             }
         }
 
-        let html = '<h3 style="margin: 20px 0 8px; font-size: 14px; color: #666;">Failed jobs with no specific test blamed</h3>';
+        let html = '<h3 class="section-header">Failed jobs with no specific test blamed</h3>';
         html += '<table class="failure-table">';
         html += '<thead><tr>';
         html += '<th class="no-sort" style="width: 24px">#</th>';
