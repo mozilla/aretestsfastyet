@@ -108,6 +108,20 @@
             margin-left: auto;
         }
 
+        .alljobs-checkbox {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            font-size: 13px;
+            color: #444;
+            white-space: nowrap;
+        }
+        .alljobs-checkbox input[type="checkbox"] {
+            width: auto;
+            margin: 0 5px 0 0;
+            cursor: pointer;
+        }
+
         .search-container {
             position: relative;
             display: inline-block;
@@ -659,6 +673,9 @@
                 <label for="revision-input">Revision:</label>
                 <input type="text" id="revision-input" placeholder="Enter a revision (40-char hex, Treeherder URL, or repo:rev)" autofocus>
                 <button id="load-btn" onclick="loadRevision()">Load</button>
+                <label class="alljobs-checkbox" title="Also fetch profiles of test jobs that ultimately succeeded, so tests that failed initially but passed on retry surface too.">
+                    <input type="checkbox" id="alljobs-checkbox" onchange="onAllJobsChange()"> All jobs
+                </label>
                 <span id="status"></span>
                 <span id="treeherder-link-container"></span>
                 <span id="filter-container" style="display:none; margin-left: auto;">
@@ -1212,7 +1229,23 @@ self.onmessage = function(e) {
         } else {
             url.searchParams.delete('filter');
         }
+        if (document.getElementById('alljobs-checkbox').checked) {
+            url.searchParams.set('alljobs', '1');
+        } else {
+            url.searchParams.delete('alljobs');
+        }
         window.history.replaceState(null, '', url);
+    }
+
+    // Toggling "All jobs" changes which jobs get fetched, so reload the push.
+    // Only reload if something is already loaded; otherwise just record the
+    // choice in the URL for the next Load.
+    function onAllJobsChange() {
+        if (currentRevision) {
+            loadRevision();
+        } else {
+            updateUrlState();
+        }
     }
 
     async function loadRevision() {
@@ -1259,9 +1292,10 @@ self.onmessage = function(e) {
             );
             const successfulJobNames = new Set(successfulTestJobs.map(j => j.jobName));
 
-            // With ?alljobs, also fetch profiles of jobs that ultimately succeeded,
-            // so tests that failed initially but passed on retry surface too.
-            const fetchPassing = new URLSearchParams(window.location.search).has('alljobs');
+            // With the "All jobs" checkbox (?alljobs), also fetch profiles of jobs
+            // that ultimately succeeded, so tests that failed initially but passed
+            // on retry surface too.
+            const fetchPassing = document.getElementById('alljobs-checkbox').checked;
             const passingTestJobs = fetchPassing ? successfulTestJobs : [];
             const jobsToProcess = failedTestJobs.concat(passingTestJobs);
 
@@ -3437,6 +3471,10 @@ Error: ${msg}`;
             currentSearchNegate = raw.startsWith('!');
             currentSearchTerm = currentSearchNegate ? raw.slice(1) : raw;
         }
+        // Seed "All jobs" before loading, for the same reason. Set explicitly
+        // rather than only when present, so a browser-preserved checkbox state
+        // can't disagree with the URL after a reload.
+        document.getElementById('alljobs-checkbox').checked = params.has('alljobs');
         if (rev) {
             const prefix = repo && repo !== 'try' ? repo + ':' : '';
             document.getElementById('revision-input').value = prefix + rev;
