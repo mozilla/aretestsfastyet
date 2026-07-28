@@ -680,7 +680,7 @@
                 <span id="treeherder-link-container"></span>
                 <span id="filter-container" style="display:none; margin-left: auto;">
                     <span class="search-container">
-                        <input type="text" id="search-box" placeholder="Filter tests...">
+                        <input type="text" id="search-box" placeholder="Filter tests (f)...">
                         <span class="search-clear" id="search-clear">&times;</span>
                     </span>
                 </span>
@@ -3592,6 +3592,21 @@ Error: ${msg}`;
 
         document.getElementById('revision-input').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') loadRevision();
+        });
+
+        // 'f' focuses the filter box, unless we're already typing somewhere.
+        document.addEventListener('keydown', function(e) {
+            if (e.key !== 'f' || e.ctrlKey || e.metaKey || e.altKey) return;
+            const target = e.target;
+            if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' ||
+                           target.tagName === 'SELECT' || target.isContentEditable)) {
+                return;
+            }
+            const searchBox = document.getElementById('search-box');
+            if (document.getElementById('filter-container').style.display === 'none') return;
+            e.preventDefault();
+            searchBox.focus();
+            searchBox.select();
         });
     });
     </script>
