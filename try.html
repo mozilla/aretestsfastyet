@@ -721,6 +721,7 @@
     let unblamedRenderedKeys = []; // keys in display order from last render
     let currentRevision = null;
     let currentRepo = 'try';
+    let currentJobRunCounts = null; // jobName -> completed runs, for the debug JSON
 
     // ===== Treeherder API =====
 
@@ -1400,6 +1401,7 @@ self.onmessage = function(e) {
                 }
             }
 
+            if (isLocal) currentJobRunCounts = jobRunCounts;
             const failures = aggregateFailures(result.timings, globalPlatforms, globalBuildTypes, jobRunCounts);
             currentFailures = failures;
             setProgress(-1);
@@ -1476,6 +1478,24 @@ self.onmessage = function(e) {
             }
         }
 
+        // Group every parsed timing of each failing test by job name and by task run,
+        // for the per-row debugging JSON. Unlike entry.instances this keeps the passing
+        // executions too, so the retries the harness ran are visible. Only built
+        // locally, where the control that copies it exists.
+        const execsByTest = new Map(); // path -> Map<jobName, Map<runKey, timing[]>>
+        if (isLocal) {
+            for (const t of allTimings) {
+                if (!testMap.has(t.path)) continue;
+                if (!execsByTest.has(t.path)) execsByTest.set(t.path, new Map());
+                const byJob = execsByTest.get(t.path);
+                if (!byJob.has(t.jobName)) byJob.set(t.jobName, new Map());
+                const byRun = byJob.get(t.jobName);
+                const runKey = `${t.taskId}.${t.retryId}`;
+                if (!byRun.has(runKey)) byRun.set(runKey, []);
+                byRun.get(runKey).push(t);
+            }
+        }
+
         for (const [, entry] of testMap) {
             const messages = entry.instances
                 .map(i => i.message)
@@ -1509,7 +1529,7 @@ self.onmessage = function(e) {
         const tests = Array.from(testMap.values());
         tests.sort((a, b) => b.instances.length - a.instances.length);
 
-        return { tests, globalPlatforms, globalBuildTypes };
+        return { tests, globalPlatforms, globalBuildTypes, execsByTest };
     }
 
     // ===== Rendering =====
@@ -1719,7 +1739,7 @@ self.onmessage = function(e) {
         html += `<th class="no-sort" style="width: 55px">Build</th>`;
         html += `<th${cls('flakiness')} onclick="sortTable('flakiness')" style="width: 45px; text-align: right" title="Existing flakiness: failure rate over 21 days on autoland and mozilla-central">${MITTEN}${arrow('flakiness')}</th>`;
         html += `<th${cls('test')} onclick="sortTable('test')">Test${arrow('test')}</th>`;
-        html += `<th class="no-sort" style="width: ${20 + (hasRepro || isLocal ? 18 : 0) + (hasAnyProfile ? 18 : 0)}px"></th>`;
+        html += `<th class="no-sort" style="width: ${20 + (hasRepro || isLocal ? 18 : 0) + (hasAnyProfile ? 18 : 0) + (isLocal ? 18 : 0)}px"></th>`;
         html += '</tr></thead><tbody>';
 
         for (const test of tests) {
@@ -1762,7 +1782,7 @@ self.onmessage = function(e) {
             html += '</td>';
             const rowProfile = findUploadedProfile(test.instances);
             const profilerIcon = rowProfile ? profilerLinkHtml(test.path, null, rowProfile) : '';
-            html += `<td class="repro-cell"><span id="repro-icon-${escapeAttr(test.path)}">${hasRepro ? reproIconHtml(test.path) : ''}</span>${profilerIcon}<span class="copy-cmd" onclick="event.stopPropagation(); copyMachCmd('${escapeAttr(test.path)}', event)" title="Copy mach test command${isLocal ? ' (Alt+click: copy Claude prompt)' : ''}">&#x1F4CB;</span></td>`;
+            html += `<td class="repro-cell"><span id="repro-icon-${escapeAttr(test.path)}">${hasRepro ? reproIconHtml(test.path) : ''}</span>${profilerIcon}<span class="copy-cmd" onclick="event.stopPropagation(); copyMachCmd('${escapeAttr(test.path)}', event)" title="Copy mach test command${isLocal ? ' (Alt+click: copy Claude prompt)' : ''}">&#x1F4CB;</span>${isLocal ? `<span class="copy-cmd" onclick="event.stopPropagation(); copyDebugJson('${escapeAttr(test.path)}', event)" title="Copy debugging JSON: how the failure/run counts were derived, with every parsed execution">&#x1F41B;</span>` : ''}</td>`;
             html += '</tr>';
 
             // Detail rows - one per job, using the same column structure
@@ -2782,6 +2802,57 @@ Error: ${msg}`;
             text = getMachCmd(testPath);
         }
         navigator.clipboard.writeText(text).then(() => {
+            const prev = el.innerHTML;
+            el.innerHTML = '&#x2713;';
+            el.classList.add('copied');
+            setTimeout(() => { el.innerHTML = prev; el.classList.remove('copied'); }, 1000);
+        });
+    }
+
+    // Copies the raw data behind a row's counts: every execution of the test we
+    // parsed, grouped by job name and job run, alongside the derived numbers. Use
+    // it to check what the "failures / runs" ratio is built from.
+    function copyDebugJson(testPath, event) {
+        const el = event.currentTarget;
+        const test = currentFailures?.tests.find(t => t.path === testPath);
+        if (!test) return;
+
+        const byJob = currentFailures.execsByTest.get(testPath);
+        const jobs = [];
+        for (const jobName of test.jobs) {
+            const runs = byJob?.get(jobName);
+            jobs.push({
+                jobName,
+                completedRunsOfThisJobName: currentJobRunCounts?.get(jobName) ?? null,
+                profiledRuns: runs ? runs.size : 0,
+                runs: Array.from(runs || [], ([runKey, execs]) => ({
+                    runKey,
+                    executions: execs.map(t => ({
+                        status: t.status,
+                        isRetry: !!t.isRetry,
+                        startTime: t.timestamp,
+                        durationMs: Math.round(t.duration),
+                        intermittent: !!t.intermittent,
+                        passedOnRetry: !!t.passedOnRetry,
+                    })),
+                })),
+            });
+        }
+
+        const data = {
+            test: test.path,
+            revision: currentRevision,
+            repo: currentRepo,
+            derived: {
+                failures: test.instances.length,
+                totalJobs: test.totalJobs,
+                seqRetryPasses: test.seqRetryPasses,
+                statuses: Array.from(test.statuses),
+            },
+            jobs,
+        };
+
+        navigator.clipboard.writeText(JSON.stringify(data, null, 2)).then(() => {
             const prev = el.innerHTML;
             el.innerHTML = '&#x2713;';
             el.classList.add('copied');
