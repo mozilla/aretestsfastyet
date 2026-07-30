@@ -71,6 +71,194 @@ function findTest(data, testPath) {
 }
 
 /**
+ * Strip the trailing chunk number from a job name so that all chunks of a
+ * config aggregate together. Daily files carry the chunk suffix
+ * ("...-browser-chrome-23"); the 21-day files already omit it. Suffixes that
+ * are not numbers ("-msix", "-swr", "-no-nv") name real config variants and
+ * are kept.
+ */
+function stripChunkSuffix(jobName) {
+    return jobName.replace(/-\d+$/, '');
+}
+
+/**
+ * Per-config failure rates for a test on the configurations it failed on in a
+ * try push.
+ *
+ * The overall rate divides failures from every config by runs from every
+ * config, so a test that always fails on one platform still reads as a couple
+ * of percent. Slicing by config is what makes a perma-fail visible.
+ *
+ * Each config is also measured over a recent window, which separates a test
+ * failing now from one that failed weeks ago and has since been fixed. The
+ * window is as many days as the slowest config needs to accumulate
+ * `minRecentRuns` runs — sized by run count because push volume varies
+ * several-fold over a week, so a fixed number of days measured after a weekend
+ * would rest on very few runs. All configs then share that one day count, so
+ * their recent rates cover the same period and are comparable. Configs too
+ * sparse to reach the minimum get no recent rate rather than widening the
+ * window for everyone, and are reported as `recentDays`.
+ *
+ * Failures are counted twice over: every failure, and only those whose message
+ * matches one seen on try. A test can fail for more than one reason on the same
+ * config, so "this test fails 28% of the time here" and "it fails this way 28%
+ * of the time here" are different claims, and only the second one says the
+ * failure in the push is pre-existing.
+ *
+ * @param {string[]} jobNames - History configs to report on, as job names with
+ *        no chunk suffix. Pass 'all' for every config that ran.
+ * @param {string[]} tryMessages - Failure messages and crash signatures seen on
+ *        try, for the same-message counts. Timeouts and crashes often have no
+ *        message, so pass matchAnyTimeout/matchAnyCrash for those.
+ * @param {number} totalDays - Number of days the file covers (metadata.days),
+ *        needed because day indices count up from the oldest day.
+ * @returns {Array<{ jobName, failCount, runCount, failRate, sameMsgFailCount,
+ *                   sameMsgFailRate, recentDays, recentRunCount,
+ *                   recentFailRate, recentSameMsgFailRate }>}
+ *          sorted by descending failure rate. The recent rates are null for a
+ *          config that never reaches `minRecentRuns`.
+ */
+function computeConfigStats(data, testId, jobNames, minRecentRuns, totalDays, options) {
+    const testGroup = data.testRuns[testId];
+    if (!testGroup || !data.taskInfo) return [];
+
+    const matchAll = jobNames === 'all';
+    const wanted = matchAll ? null : new Set(jobNames);
+    const opts = options || {};
+    const tryMessages = new Set(opts.tryMessages || []);
+    const byJob = new Map(); // jobName -> counts
+
+    function bump(jobName, isFail, sameMsg, day, count) {
+        jobName = stripChunkSuffix(jobName);
+        if (!matchAll && !wanted.has(jobName)) return;
+        let e = byJob.get(jobName);
+        if (!e) {
+            e = { jobName, passCount: 0, failCount: 0, sameMsgFailCount: 0, byDay: new Map() };
+            byJob.set(jobName, e);
+        }
+        if (isFail) e.failCount += count; else e.passCount += count;
+        if (isFail && sameMsg) e.sameMsgFailCount += count;
+        // Bucket by day so the recent window can be taken newest-first below.
+        // Daily files have no days array; treat those as a single day.
+        const key = day === null ? 0 : day;
+        let bucket = e.byDay.get(key);
+        if (!bucket) { bucket = [0, 0, 0]; e.byDay.set(key, bucket); }
+        bucket[isFail ? 1 : 0] += count;
+        if (isFail && sameMsg) bucket[2] += count;
+    }
+
+    for (let statusId = 0; statusId < testGroup.length; statusId++) {
+        const statusGroup = testGroup[statusId];
+        if (!statusGroup) continue;
+
+        const status = data.tables.statuses[statusId];
+        if (status === 'SKIP' || status === 'UNKNOWN') continue;
+        const isPass = status.startsWith('PASS') || status === 'OK' || status === 'EXPECTED-FAIL';
+        // Timeouts and crashes frequently record no message, so for those the
+        // status type standing in for the message is the best available match.
+        const isTimeout = status.startsWith('TIMEOUT');
+        const isCrash = status === 'CRASH';
+        const statusMatches = (isTimeout && opts.matchAnyTimeout) || (isCrash && opts.matchAnyCrash);
+
+        // Whether an entry's message is one of the messages seen on try.
+        function entryMatches(i) {
+            if (isPass) return false;
+            if (statusMatches) return true;
+            const ids = isCrash ? statusGroup.crashSignatureIds : statusGroup.messageIds;
+            const table = isCrash ? data.tables.crashSignatures : data.tables.messages;
+            if (!ids || !table) return false;
+            const id = ids[i];
+            const text = (id !== null && id !== undefined) ? table[id] : null;
+            return text !== null && tryMessages.has(text);
+        }
+
+        // Day indices are delta-encoded: each entry holds the increment from the
+        // previous one, counting up from the oldest day.
+        const days = statusGroup.days;
+        let day = 0;
+        // PASS/SKIP groups attribute each entry with jobNameIds; FAIL, TIMEOUT
+        // and CRASH groups only carry taskIdIds, so the job has to be resolved
+        // through taskInfo.
+        if (statusGroup.jobNameIds) {
+            for (let i = 0; i < statusGroup.jobNameIds.length; i++) {
+                if (days) day += days[i];
+                const jobName = data.tables.jobNames[statusGroup.jobNameIds[i]];
+                if (jobName) bump(jobName, !isPass, entryMatches(i), days ? day : null, getCountAtIndex(statusGroup, i));
+            }
+        } else if (statusGroup.taskIdIds) {
+            for (let i = 0; i < statusGroup.taskIdIds.length; i++) {
+                if (days) day += days[i];
+                const bucket = statusGroup.taskIdIds[i];
+                const taskIds = Array.isArray(bucket) ? bucket : [bucket];
+                const sameMsg = entryMatches(i);
+                for (const taskId of taskIds) {
+                    const jobNameId = data.taskInfo.jobNameIds[taskId];
+                    const jobName = jobNameId !== undefined ? data.tables.jobNames[jobNameId] : null;
+                    if (jobName) bump(jobName, !isPass, sameMsg, days ? day : null, 1);
+                }
+            }
+        }
+    }
+
+    const configs = [];
+    // Anchor the window to the newest day any of these configs ran, so that
+    // "the last N days" means the same period for all of them. Anchoring per
+    // config would give one that stopped running days ago a full recent window
+    // taken from its own last active days, which is not recent at all.
+    let newestDay = -Infinity;
+    for (const e of byJob.values()) {
+        for (const day of e.byDay.keys()) newestDay = Math.max(newestDay, day);
+    }
+
+    // How many days back each config needs to reach minRecentRuns. The widest
+    // of those becomes one window shared by every config, so the rates cover the
+    // same period and can be compared, and so the window can be described once
+    // as a number of days instead of a different run count per config.
+    let windowDays = 1;
+    for (const e of byJob.values()) {
+        let runs = 0, needed = 0;
+        for (const day of [...e.byDay.keys()].sort((a, b) => b - a)) {
+            const [p, f] = e.byDay.get(day);
+            runs += p + f;
+            needed = newestDay - day + 1;
+            if (runs >= minRecentRuns) break;
+        }
+        // A config too sparse to ever reach the minimum must not stretch the
+        // window for everyone else; it simply gets no recent rate below.
+        if (runs >= minRecentRuns) windowDays = Math.max(windowDays, needed);
+    }
+
+    for (const e of byJob.values()) {
+        const runCount = e.passCount + e.failCount;
+        const from = newestDay - windowDays + 1;
+        let recentPass = 0, recentFail = 0, recentSameMsg = 0;
+        for (const [day, [p, f, sm]] of e.byDay) {
+            if (day < from) continue;
+            recentPass += p;
+            recentFail += f;
+            recentSameMsg += sm;
+        }
+        const recentRunCount = recentPass + recentFail;
+        // Below the minimum there is not enough data to build a percentage from.
+        const enough = recentRunCount >= minRecentRuns;
+        configs.push({
+            jobName: e.jobName,
+            failCount: e.failCount,
+            runCount,
+            failRate: runCount > 0 ? (e.failCount / runCount * 100) : 0,
+            sameMsgFailCount: e.sameMsgFailCount,
+            sameMsgFailRate: runCount > 0 ? (e.sameMsgFailCount / runCount * 100) : 0,
+            recentDays: windowDays,
+            recentRunCount,
+            recentFailRate: enough ? (recentFail / recentRunCount * 100) : null,
+            recentSameMsgFailRate: enough ? (recentSameMsg / recentRunCount * 100) : null,
+        });
+    }
+    configs.sort((a, b) => b.failRate - a.failRate);
+    return configs;
+}
+
+/**
  * Compute pass/fail/skip/crash/timeout statistics for a test.
  * @param {object} data - The parsed data file (with tables, testRuns, etc.)
  * @param {number} testId - The test index in data.testRuns

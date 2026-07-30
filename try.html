@@ -466,6 +466,10 @@
         .flakiness-cell.flaky {
             color: #c00;
         }
+        /* Rate computed from only a handful of runs on that configuration. */
+        .flakiness-cell.flaky-few-runs a {
+            border-bottom: 1px dotted currentColor;
+        }
         .flakiness-cell a {
             font-family: monospace;
             font-size: 13px;
@@ -1745,8 +1749,9 @@ self.onmessage = function(e) {
             if (col === 'count') { va = a.instances.length; vb = b.instances.length; }
             else if (col === 'flakiness') {
                 const fa = flakinessCache.get(a.path), fb = flakinessCache.get(b.path);
-                va = fa?.stats ? (fa.stats.failCount + fa.stats.crashCount + fa.stats.timeoutCount) / fa.stats.runCount : -1;
-                vb = fb?.stats ? (fb.stats.failCount + fb.stats.crashCount + fb.stats.timeoutCount) / fb.stats.runCount : -1;
+                // Sort on the same rate the column shows.
+                va = fa?.stats ? pickHeadlineRate(fa.stats, fa.configs).rate : -1;
+                vb = fb?.stats ? pickHeadlineRate(fb.stats, fb.configs).rate : -1;
             }
             else if (col === 'test') { va = a.path; vb = b.path; }
             else if (col === 'status') {
@@ -1780,8 +1785,8 @@ self.onmessage = function(e) {
         loadVisibleReproLogs();
 
         // Restore cached flakiness data after re-render.
-        for (const [path, { stats, hasMatchingMessage }] of flakinessCache) {
-            updateFlakinessDisplay(path, stats, hasMatchingMessage);
+        for (const [path, { stats, hasMatchingMessage, configs, totalDays }] of flakinessCache) {
+            updateFlakinessDisplay(path, stats, hasMatchingMessage, configs, totalDays);
         }
     }
 
@@ -1849,7 +1854,7 @@ self.onmessage = function(e) {
         html += `<th${cls('status')} onclick="sortTable('status')" style="width: 65px">Status${arrow('status')}</th>`;
         html += `<th class="no-sort" style="width: 55px">OS</th>`;
         html += `<th class="no-sort" style="width: 55px">Build</th>`;
-        html += `<th${cls('flakiness')} onclick="sortTable('flakiness')" style="width: 45px; text-align: right" title="Existing flakiness: failure rate over 21 days on autoland and mozilla-central">${MITTEN}${arrow('flakiness')}</th>`;
+        html += `<th${cls('flakiness')} onclick="sortTable('flakiness')" style="width: 45px; text-align: right" title="Existing flakiness: how often this same failure already happens on autoland and mozilla-central, on the configurations this test failed on in this push. Hover a value for the per-configuration rates.">${MITTEN}${arrow('flakiness')}</th>`;
         html += `<th${cls('test')} onclick="sortTable('test')">Test${arrow('test')}</th>`;
         html += `<th class="no-sort" style="width: ${20 + (hasRepro || isLocal ? 18 : 0) + (hasAnyProfile ? 18 : 0) + (isLocal ? 18 : 0)}px"></th>`;
         html += '</tr></thead><tbody>';
@@ -2554,33 +2559,52 @@ self.onmessage = function(e) {
 
     // ===== 21-day flakiness data =====
 
-    const flakinessCache = new Map(); // testPath -> { stats, hasMatchingMessage }
+    const flakinessCache = new Map(); // testPath -> { stats, hasMatchingMessage, configs }
     let flakinessWorker = null;
+
+    // A regression that landed a couple of days ago is still visible over the
+    // full history, but heavily diluted by the weeks when the test was passing.
+    // This window tells "failing right now" apart from "failed a while ago".
+    // Sized in runs, not days: push volume varies several-fold over a week, so a
+    // fixed number of days would be sparse when measured after a weekend. This
+    // is a floor — the window reaches back as far as it needs to hold this many
+    // runs, and a configuration that never reaches it gets no recent rate.
+    const MIN_RECENT_RUNS = 100;
+
+    // Fallback for display only, when a data file carries no metadata.days.
+    const HISTORY_DAYS = 21;
+
+    // A test can fail on dozens of configurations; past a handful the tooltip
+    // stops being readable and the remaining rows say nothing new.
+    const MAX_TOOLTIP_CONFIGS = 4;
 
     function initFlakinessWorker() {
         if (flakinessWorker) return flakinessWorker;
         // Embed shared helpers (already loaded via <script>) in the worker.
-        const sharedCode = [getChunkIndex, getCountAtIndex, findTest, computeTestStats]
+        const sharedCode = [getChunkIndex, getCountAtIndex, findTest, computeTestStats,
+                            stripChunkSuffix, computeConfigStats]
             .map(fn => fn.toString()).join('\n');
         const workerCode = sharedCode + `
+const MIN_RECENT_RUNS = ${MIN_RECENT_RUNS};
 self.onmessage = function(e) {
     const { buffer, tests } = e.data;
     try {
         const json = new TextDecoder().decode(buffer);
         const data = JSON.parse(json);
         const results = [];
-        for (const { path, tryMessages, hasTimeout, hasCrash } of tests) {
+        for (const { path, tryMessages, hasTimeout, hasCrash, jobNames } of tests) {
             const testInfo = findTest(data, path);
             if (!testInfo) { results.push({ path, found: false }); continue; }
             const stats = computeTestStats(data, testInfo.testId);
-            // Timeouts and crashes don't always have messages in the data files,
-            // so also match by checking if history has the same status type.
-            const hasMatchingMessage = stats.failureMessages.some(m => tryMessages.includes(m))
-                || (hasTimeout && stats.timeoutCount > 0)
-                || (hasCrash && stats.crashCount > 0);
             // Strip failureMessages to avoid transferring large strings back.
             delete stats.failureMessages;
-            results.push({ path, found: true, stats, hasMatchingMessage });
+            const totalDays = data.metadata ? data.metadata.days : 0;
+            const configs = computeConfigStats(data, testInfo.testId, jobNames, MIN_RECENT_RUNS, totalDays,
+                { tryMessages, matchAnyTimeout: hasTimeout, matchAnyCrash: hasCrash });
+            // Whether history shows this same failure on the configurations the
+            // push ran, so this agrees with the rates shown in the tooltip.
+            const hasMatchingMessage = configs.some(c => c.sameMsgFailCount > 0);
+            results.push({ path, found: true, stats, hasMatchingMessage, configs, totalDays });
         }
         self.postMessage({ results });
     } catch (err) {
@@ -2600,7 +2624,7 @@ self.onmessage = function(e) {
             };
             worker.addEventListener('message', handler);
             // Convert tryMessages Sets to arrays for structured clone.
-            const testsForWorker = tests.map(t => ({ path: t.path, tryMessages: [...t.tryMessages], hasTimeout: t.hasTimeout, hasCrash: t.hasCrash }));
+            const testsForWorker = tests.map(t => ({ path: t.path, tryMessages: [...t.tryMessages], hasTimeout: t.hasTimeout, hasCrash: t.hasCrash, jobNames: t.jobNames }));
             worker.postMessage({ buffer, tests: testsForWorker }, [buffer]);
         });
     }
@@ -2613,13 +2637,18 @@ self.onmessage = function(e) {
             const tryMessages = new Set();
             let hasTimeout = false;
             let hasCrash = false;
+            // Report history for exactly the configurations this test failed on
+            // in this push. Try job names match the history ones once the chunk
+            // suffix is dropped, so they can be compared directly.
+            const jobNames = new Set();
             for (const inst of test.instances) {
                 if (inst.message) tryMessages.add(inst.message);
                 if (inst.crashSignature) tryMessages.add(inst.crashSignature);
                 if (inst.status.startsWith('TIMEOUT')) hasTimeout = true;
                 if (inst.status.startsWith('CRASH')) hasCrash = true;
+                jobNames.add(stripChunkSuffix(inst.jobName));
             }
-            return { path: test.path, tryMessages, hasTimeout, hasCrash };
+            return { path: test.path, tryMessages, hasTimeout, hasCrash, jobNames: [...jobNames] };
         });
 
         // Group tests by chunk file (harness + chunkHex).
@@ -2661,8 +2690,8 @@ self.onmessage = function(e) {
                     else {
                         for (const r of result.results) {
                             if (!r.found) { notFound.push(workerTests.find(t => t.path === r.path)); continue; }
-                            flakinessCache.set(r.path, { stats: r.stats, hasMatchingMessage: r.hasMatchingMessage });
-                            updateFlakinessDisplay(r.path, r.stats, r.hasMatchingMessage);
+                            flakinessCache.set(r.path, { stats: r.stats, hasMatchingMessage: r.hasMatchingMessage, configs: r.configs, totalDays: r.totalDays });
+                            updateFlakinessDisplay(r.path, r.stats, r.hasMatchingMessage, r.configs, r.totalDays);
                         }
                     }
                 } catch (e) {
@@ -2723,7 +2752,100 @@ self.onmessage = function(e) {
         return rate.toFixed(1) + '%';
     }
 
-    function updateFlakinessDisplay(testPath, stats, hasMatchingMessage) {
+    // The rate to show in the column. The configurations are the ones this test
+    // failed on in this push, so any of them answers "was this already failing
+    // before my push?"; where they disagree, the worst one is the answer that
+    // matters. Prefer each config's recent window, which reflects the state of
+    // the tree now, and fall back to the full history for configs that never
+    // reach the minimum sample.
+    //
+    // The rate counts failures with the same message as the push, which is what
+    // makes a failure pre-existing. A test failing often for an unrelated reason
+    // says nothing about the failure being triaged, so the all-failure rate is
+    // relegated to the tooltip.
+    function pickHeadlineRate(stats, configs) {
+        const overall = stats.runCount > 0
+            ? ((stats.failCount + stats.crashCount + stats.timeoutCount) / stats.runCount * 100) : 0;
+        const rateOf = c => c.recentSameMsgFailRate !== null
+            ? { rate: c.recentSameMsgFailRate, runs: c.recentRunCount, days: c.recentDays, recent: true }
+            : { rate: c.sameMsgFailRate, runs: c.runCount, recent: false };
+
+        // Compare configs on the low end of a rough confidence interval rather
+        // than the raw rate, so a config with a few hundred runs is not beaten by
+        // one with a hundred that happened to land a bit higher.
+        const score = r => r.runs > 0 ? r.rate - 100 / Math.sqrt(r.runs) : 0;
+        let best = null, bestScore = -Infinity;
+        for (const c of configs || []) {
+            const r = rateOf(c);
+            const s = score(r);
+            if (!best || s > bestScore) {
+                best = { ...r, jobName: c.jobName };
+                bestScore = s;
+            }
+        }
+        // Nothing in history failed the same way: fall back to the overall rate,
+        // which at least says how flaky the test is in general.
+        if (!best || best.rate === 0) return { rate: overall, runs: stats.runCount, scope: 'overall' };
+        // Flag a rate built from fewer runs than a percentage really warrants.
+        return { ...best, scope: 'config', lowConfidence: best.runs < MIN_RECENT_RUNS };
+    }
+
+    function flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDays) {
+        const overall = stats.runCount > 0
+            ? ((stats.failCount + stats.crashCount + stats.timeoutCount) / stats.runCount * 100) : 0;
+        const all = totalDays || HISTORY_DAYS;
+        const lines = [];
+
+        // Lead with the verdict: whether history shows this same failure at all
+        // is what decides if the push is to blame.
+        lines.push(hasMatchingMessage
+            ? 'This failure already happens without your changes.'
+            : 'This exact failure was never seen in history — it looks new.', '');
+        if (headline.scope === 'config') {
+            // Keep the numbers together on one line and give the job name its own,
+            // since it is the only part long enough to need the room.
+            const span = headline.recent ? dayCount(headline.days) : `${all} days`;
+            lines.push(`It fails this way ${formatFailRate(headline.rate)} of the time over ${span} on` +
+                (headline.lowConfidence ? ` (only ${headline.runs} runs, so approximate)` : ''),
+                `${headline.jobName}`);
+        }
+
+        // One line per configuration, most-failing first. Long job names and
+        // stacked numbers both wrap badly in a tooltip, so this keeps a single
+        // rate per line and lets the name run to the end.
+        const rateFor = c => c.recentSameMsgFailRate !== null
+            ? { rate: c.recentSameMsgFailRate, runs: c.recentRunCount }
+            : { rate: c.sameMsgFailRate, runs: c.runCount };
+        // Only configs that show this failure say anything here; the rest would
+        // be a list of zeroes under a "same failure" heading.
+        const shown = (configs || []).map(c => ({ ...rateFor(c), jobName: c.jobName, recentDays: c.recentDays }))
+            .filter(c => c.rate > 0)
+            .sort((a, b) => b.rate - a.rate);
+        if (shown.length) {
+            lines.push('', `Same failure over ${dayCount(shown[0].recentDays)}, by configuration:`);
+            for (const c of shown.slice(0, MAX_TOOLTIP_CONFIGS)) {
+                // Tooltips render in a proportional font, so columns cannot be
+                // aligned with padding. Lead with the rate instead, which reads
+                // down the list without needing to line up.
+                lines.push(`  ${formatFailRate(c.rate)} of ${c.runs} runs — ${c.jobName}`);
+            }
+            const hidden = shown.length - MAX_TOOLTIP_CONFIGS;
+            if (hidden > 0) {
+                lines.push(`  and ${hidden} more configuration${hidden === 1 ? '' : 's'}`);
+            }
+        }
+
+        lines.push('', `Any failure, all platforms, ${all} days: ${formatFailRate(overall)} of ${stats.runCount} runs.`);
+        // Sections add their own leading blank, so drop the runs that collapse
+        // into when a section above them is absent.
+        return lines.filter((line, i) => line !== '' || lines[i - 1] !== '').join('\n');
+    }
+
+    function dayCount(days) {
+        return days === 1 ? 'the last day' : `the last ${days} days`;
+    }
+
+    function updateFlakinessDisplay(testPath, stats, hasMatchingMessage, configs, totalDays) {
         const el = document.getElementById(`flakiness-${testPath}`);
         if (!el) return;
 
@@ -2741,16 +2863,14 @@ self.onmessage = function(e) {
 
         if (failRate === 0) {
             el.className = 'flakiness-cell flaky-new';
-            el.innerHTML = `<a href="${escapeAttr(histUrl)}" target="_blank" onclick="event.stopPropagation()" title="${stats.runCount} runs, 100% pass rate over 21 days — this failure is new">&#x26a0;&#xfe0f;</a>`;
+            el.innerHTML = `<a href="${escapeAttr(histUrl)}" target="_blank" onclick="event.stopPropagation()" title="${stats.runCount} runs, 100% pass rate over ${totalDays || HISTORY_DAYS} days — this failure is new">&#x26a0;&#xfe0f;</a>`;
         } else {
-            const pct = formatFailRate(failRate);
-            if (hasMatchingMessage) {
-                el.className = 'flakiness-cell flaky-msg';
-                el.innerHTML = `<a href="${escapeAttr(histUrl)}" target="_blank" onclick="event.stopPropagation()" title="${pct} failure rate over 21 days (${stats.runCount} runs) — same failure message seen in history">${MITTEN}${pct}</a>`;
-            } else {
-                el.className = 'flakiness-cell flaky';
-                el.innerHTML = `<a href="${escapeAttr(histUrl)}" target="_blank" onclick="event.stopPropagation()" title="${pct} failure rate over 21 days (${stats.runCount} runs)">${pct}</a>`;
-            }
+            const headline = pickHeadlineRate(stats, configs);
+            const pct = formatFailRate(headline.rate);
+            const title = flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDays);
+            el.className = 'flakiness-cell ' + (hasMatchingMessage ? 'flaky-msg' : 'flaky')
+                + (headline.lowConfidence ? ' flaky-few-runs' : '');
+            el.innerHTML = `<a href="${escapeAttr(histUrl)}" target="_blank" onclick="event.stopPropagation()" title="${escapeAttr(title)}">${hasMatchingMessage ? MITTEN : ''}${pct}</a>`;
         }
     }
 
