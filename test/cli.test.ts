@@ -115,6 +115,53 @@ function json(stdout: string): Record<string, unknown> {
     return JSON.parse(stdout) as Record<string, unknown>;
 }
 
+// --- the exit-code table is a contract, so it is pinned to literals -------
+
+test('the exit codes are the literal numbers CLI.md documents', () => {
+    // Pinned to literals on purpose. Every other assertion in this file
+    // compares against `ExitCode.Usage` and friends, which means mutating the
+    // constant moves the code and the test together — a mutation changing
+    // `Usage: 1` to `Usage: 0` survived the whole suite. These values are a
+    // published contract that scripts branch on, so the numbers themselves
+    // have to be asserted somewhere.
+    assert.equal(ExitCode.Success, 0);
+    assert.equal(ExitCode.Usage, 1);
+    assert.equal(ExitCode.NotFound, 2);
+    assert.equal(ExitCode.Upstream, 3);
+    // No producer yet — `fx-tests crash` in step 5 is the first — but the
+    // value is part of the same table and the 3/4 split is the reason the
+    // table exists at all.
+    assert.equal(ExitCode.Gone, 4);
+});
+
+test('a usage error exits with the literal 1', async () => {
+    const { code } = await invoke(['test', TEST_PATH, '--json', '--markdown']);
+    assert.equal(code, 1);
+});
+
+test('a not-found exits with the literal 2', async () => {
+    const { code } = await invoke(['test', 'dom/base/test/test_nonexistent90.js']);
+    assert.equal(code, 2);
+});
+
+test('a transient upstream failure exits with the literal 3', async () => {
+    const flaky: DataSource = {
+        name: 'flaky',
+        fetch(name) {
+            return Promise.reject(new DataFetchError(name, 'ECONNRESET'));
+        },
+    };
+    const { code } = await invoke(['summary', '--harness', 'xpcshell'], {
+        source: flaky as DataSource & { requested: string[] },
+    });
+    assert.equal(code, 3);
+});
+
+test('success exits with the literal 0', async () => {
+    const { code } = await invoke(['test', TEST_PATH, '--json']);
+    assert.equal(code, 0);
+});
+
 // --- argument parsing and exit codes -------------------------------------
 
 test('--json and --markdown together is a usage error, not one winning', async () => {
@@ -337,6 +384,179 @@ test('every date printed carries its weekday', async () => {
     // measures a 2.6x difference in volume between them.
     assert.match(stdout, /2026-08-03 \(Mon\)/);
     assert.match(stdout, /2026-07-14 \(Tue\)/);
+});
+
+// --- the perma-fail verdict, which the fixtures cannot produce -------------
+
+/**
+ * A bucket file with one test that never passes on one of its two configs.
+ *
+ * Hand-built, and the comment says why: **no test in either bucket fixture
+ * has a config with a 100% failure rate** — the highest anywhere is under
+ * 20% — so the perma-fail branch of the verdict is unreachable from fixture
+ * data. A mutation making `permaFails` permanently empty survived the entire
+ * suite for exactly that reason.
+ *
+ * That branch is the single most important thing `fx-tests test` says: an
+ * overall pass rate of 96% hides a config where the test has never once
+ * passed, and CLI.md lists "a test's overall failure rate understates a
+ * single-config perma-fail" among the traps the tool exists to prevent.
+ *
+ * The shape is copied from `xpcshell-00.json`: `durations` groups carry
+ * `jobNameIds`, `task-ids` groups carry nested `taskIdIds` plus `messageIds`,
+ * and every group carries delta-encoded `days`.
+ */
+function permaFailBucket(): string {
+    const days = 3;
+    return JSON.stringify({
+        metadata: {
+            startDate: '2026-08-01',
+            endDate: '2026-08-03',
+            days,
+            startTime: 1_785_000_000,
+            generatedAt: '2026-08-04T03:00:00.000Z',
+            totalTestCount: 1,
+            testsWithFailures: 1,
+            totalBuckets: 64,
+            bucketIndex: 0,
+            aggregatedFrom: [],
+        },
+        tables: {
+            jobNames: [
+                'test-linux2404-64/debug-xpcshell',
+                'test-windows11-64/opt-xpcshell',
+                'test-macosx1500-64/debug-xpcshell',
+            ],
+            testPaths: ['dom/base/test/unit'],
+            testNames: ['test_permafail.js'],
+            repositories: ['mozilla-central'],
+            // Order matters only in that entries are indexed by position.
+            statuses: ['PASS', 'FAIL'],
+            taskIds: [
+                'AAAAAAAAAAAAAAAAAAAAAA.0',
+                'BBBBBBBBBBBBBBBBBBBBBB.0',
+                'CCCCCCCCCCCCCCCCCCCCCC.0',
+                // 99 macOS tasks, so that config reaches 99% without hitting
+                // 100. Generated rather than written out.
+                ...Array.from({ length: 99 }, (_, i) => `M${String(i).padStart(21, '0')}.0`),
+            ],
+            messages: ['assertion failed: everything is broken here'],
+            crashSignatures: [],
+            components: ['Core :: DOM'],
+            commitIds: ['abc123'],
+        },
+        taskInfo: {
+            repositoryIds: Array.from({ length: 102 }, () => 0),
+            // Tasks 0-2 are the Windows config, which never passes. Tasks 3-4
+            // are macOS, which fails 2 of its 3 runs — 67%, deliberately
+            // between the 50% a plausible-looking threshold might use and the
+            // 100% the rule actually requires. Without a config in that band,
+            // loosening the threshold to >= 50 changes nothing observable.
+            jobNameIds: [1, 1, 1, ...Array.from({ length: 99 }, () => 2)],
+            commitIds: Array.from({ length: 102 }, () => 0),
+            chunks: Array.from({ length: 102 }, () => null),
+        },
+        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+        testRuns: [
+            [
+                // PASS: 30 runs, all on linux, none on windows.
+                {
+                    durations: [
+                        Array.from({ length: 10 }, () => 1000),
+                        Array.from({ length: 10 }, () => 1100),
+                        Array.from({ length: 10 }, () => 1200),
+                        // The single macOS pass. With 99 macOS failures
+                        // below, that config sits at 99% — the closest a
+                        // config can get to perma-failing without being one.
+                        [1300],
+                    ],
+                    days: [0, 1, 1, 0],
+                    jobNameIds: [0, 0, 0, 2],
+                },
+                // FAIL: three on windows (3 runs, 3 failures — 100%) and 99
+                // on macOS (100 runs, 99 failures — 99%).
+                {
+                    taskIdIds: [
+                        [0],
+                        [1],
+                        [2],
+                        Array.from({ length: 99 }, (_, i) => 3 + i),
+                    ],
+                    days: [0, 1, 1, 0],
+                    messageIds: [0, 0, 0, 0],
+                },
+            ],
+        ],
+    });
+}
+
+/** A source serving only the synthetic perma-fail bucket. */
+function permaFailSource(): DataSource & { requested: string[] } {
+    const requested: string[] = [];
+    return {
+        name: 'perma-fixture',
+        requested,
+        fetch(fileName: DataFileName): Promise<Uint8Array> {
+            requested.push(`${fileName.index}/${fileName.filename}`);
+            return Promise.resolve(new TextEncoder().encode(permaFailBucket()));
+        },
+    };
+}
+
+test('a config that never passes is reported as a perma-fail, not as 91% healthy', async () => {
+    const { code, stdout } = await invoke(
+        ['test', 'dom/base/test/unit/test_permafail.js', '--json'],
+        { source: permaFailSource() }
+    );
+    assert.equal(code, 0);
+    const result = json(stdout);
+    const totals = result['totals'] as Record<string, number>;
+    assert.equal(totals['passCount'], 31);
+    assert.equal(totals['failCount'], 102);
+
+    // And the verdict must not. This is the number CLI.md warns the overall
+    // rate hides.
+    const verdict = result['verdict'] as { kind: string; summary: string };
+    assert.equal(verdict.kind, 'perma-fail');
+    assert.match(verdict.summary, /Never passed on 1 configuration/);
+    assert.match(verdict.summary, /test-windows11-64\/opt-xpcshell \(3\/3\)/);
+
+    const configs = result['configs'] as { jobName: string; failRate: number }[];
+    const windows = configs.find((config) => config.jobName.includes('windows'));
+    assert.ok(windows !== undefined);
+    assert.equal(windows.failRate, 100);
+
+    // The macOS config fails 99 of its 100 runs and is still not a
+    // perma-fail. "Fails almost always" and "has never once passed" are
+    // different findings, and only the second says the config is simply
+    // broken — so the threshold is exactly 100, not merely "high". Pinned at
+    // 99% because a looser threshold anywhere below that would otherwise go
+    // unnoticed.
+    const macos = configs.find((config) => config.jobName.includes('macosx'));
+    assert.ok(macos !== undefined);
+    assert.equal(Math.round(macos.failRate), 99);
+    assert.doesNotMatch(verdict.summary, /macosx/, 'a 67% config is not a perma-fail');
+    assert.match(verdict.summary, /Never passed on 1 configuration/);
+});
+
+test('the perma-fail verdict appears in the text output and points at --coverage', async () => {
+    const { stdout } = await invoke(['test', 'dom/base/test/unit/test_permafail.js'], {
+        source: permaFailSource(),
+    });
+    assert.match(stdout, /Verdict: perma-fail\./);
+    assert.match(stdout, /Never passed on 1 configuration/);
+    // No invented denominator: computeConfigStats only returns configs that
+    // ran, so the verdict points at --coverage instead of claiming a total.
+    assert.match(stdout, /--coverage for every config it runs on/);
+    assert.doesNotMatch(stdout, /perma-fails on 1 of 1 configuration/);
+});
+
+test('a test with failures but none perma-failing reads as intermittent', async () => {
+    // The other side of the same branch: without this, a mutation forcing
+    // every failing test to "perma-fail" would also survive.
+    const { stdout } = await invoke(['test', TEST_PATH, '--json']);
+    const verdict = json(stdout)['verdict'] as { kind: string };
+    assert.equal(verdict.kind, 'intermittent');
 });
 
 // --- --day / --since are filters, not a different file --------------------
@@ -710,6 +930,90 @@ test('markdown escapes a pipe in a message rather than splitting the row', async
     }
 });
 
+test('percent() renders "no rate to state" as a dash, never as 0%', async () => {
+    // `null` and `0` are different claims: "too few runs to say" against "no
+    // failures". config-stats.ts returns `null` deliberately for the first,
+    // and collapsing it to 0.0% in the formatter throws that away at the last
+    // step — a column of confident zeroes for configs that were never
+    // measured. A mutation removing the null branch survived the suite.
+    const { percent } = await import('../cli/format/text.ts');
+    assert.equal(percent(null), '—');
+    assert.equal(percent(undefined), '—');
+    assert.equal(percent(0), '0.0%');
+    assert.notEqual(percent(null), percent(0), 'null must not render like zero');
+    assert.equal(percent(8.14), '8.1%');
+    assert.equal(percent(8.14, 2), '8.14%');
+});
+
+test('a config with too few recent runs prints a dash rather than 0.0%', async () => {
+    const { stdout } = await invoke(['test', TEST_PATH, '--json']);
+    const configs = json(stdout)['configs'] as { recentFailRate: number | null }[];
+    // The JSON keeps `null`; the text column must not turn it into a number.
+    // Whether the fixture has such a config depends on the window, so this
+    // asserts the mapping rather than requiring one to exist.
+    const { percent } = await import('../cli/format/text.ts');
+    for (const config of configs) {
+        const cell = percent(config.recentFailRate);
+        if (config.recentFailRate === null) {
+            assert.equal(cell, '—');
+        } else {
+            assert.match(cell, /^\d+\.\d%$/);
+        }
+    }
+});
+
+test('truncate() cuts to the width and marks the cut', async () => {
+    // CLI.md's frugality rule has two halves — fewer rows, and a truncated
+    // message column — and only the row half was tested. A no-op `truncate`
+    // survived: the fixture messages are short enough that nothing visibly
+    // changed, so the guard has to be asserted on its own.
+    const { truncate } = await import('../cli/format/text.ts');
+    assert.equal(truncate('short', 10), 'short');
+    assert.equal(truncate('exactlyten', 10), 'exactlyten');
+    const cut = truncate('a message far longer than the column', 10);
+    assert.equal(cut.length, 10, 'the result never exceeds the width');
+    assert.ok(cut.endsWith('…'), `the cut must be visible: ${cut}`);
+    assert.equal(cut, 'a message…');
+    // 0 means "no limit", matching --limit 0.
+    assert.equal(truncate('unbounded', 0), 'unbounded');
+});
+
+test('a long failure message is truncated in the text table', async () => {
+    // End to end, with a message the fixture does not have: built through the
+    // try path, which is where a real stack-trace-bearing message arrives.
+    const streams = captureStreams();
+    const longMessage = `LEADING ${'x'.repeat(400)} TRAILING`;
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', message: longMessage, start: 1, end: 2 },
+            ]),
+        }),
+    });
+    assert.match(streams.stdout, /LEADING/, 'the start of the message survives');
+    assert.doesNotMatch(streams.stdout, /TRAILING/, 'the end is cut');
+    assert.match(streams.stdout, /…/, 'and the cut is marked');
+    for (const line of streams.stdout.split('\n')) {
+        assert.ok(line.length < 300, `no line may run away: ${line.length} chars`);
+    }
+});
+
+test('markdown also states what a truncated list left out', async () => {
+    const md = await import('../cli/format/markdown.ts');
+    // Every format has to say a list is partial, not just the text one.
+    assert.equal(md.moreLine(5, 5), null);
+    assert.equal(md.moreLine(5, 7), null);
+    const line = md.moreLine(50, 3);
+    assert.ok(line !== null);
+    assert.match(line, /47 more/);
+    assert.match(line, /--limit 0/);
+});
+
 test('markdown escaping is exercised directly, since no fixture message has a pipe', async () => {
     // The end-to-end markdown test above cannot catch a broken escaper:
     // measured, zero of the 13 messages in either bucket fixture contain a
@@ -831,6 +1135,49 @@ test('dates marks weekend days', async () => {
 });
 
 // --- cache ----------------------------------------------------------------
+
+test('the cache keys on the file name, so two files do not share an entry', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'fx-tests-cache-'));
+    try {
+        const cache = diskCache({ directory });
+        const { cachedSource } = await import('../cli/cache.ts');
+        const source = fixtureSource();
+        const wrapped = cachedSource(source, cache);
+        const streams = captureStreams();
+        // Both harnesses, so two different files go through one cache. A
+        // constant cache key passes every single-file test — the entry is
+        // written and read back correctly — and only shows up as one file
+        // being served in place of another.
+        await run({ argv: ['summary', '--json'], streams, source: wrapped, cache });
+        const entries = await cache.list();
+        assert.equal(entries.length, 2, 'two files must occupy two entries');
+        assert.deepEqual(
+            entries.map((entry) => entry.key).sort(),
+            [
+                'mochitest-timings/mochitest-stats.json',
+                'xpcshell-timings/xpcshell-stats.json',
+            ]
+        );
+
+        // And the consequence that matters: a second run served entirely from
+        // cache must still report each harness's own numbers. Under a shared
+        // key one of them silently becomes a copy of the other.
+        const first = json(streams.stdout);
+        const warmStreams = captureStreams();
+        await run({ argv: ['summary', '--json'], streams: warmStreams, source: wrapped, cache });
+        assert.equal(source.requested.length, 2, 'the warm run fetched nothing');
+        const second = json(warmStreams.stdout);
+        assert.deepEqual(second, first, 'the cached answer matches the fetched one');
+        const harnesses = second['harnesses'] as { harness: string; current: Record<string, number> }[];
+        assert.notDeepEqual(
+            harnesses[0]!.current,
+            harnesses[1]!.current,
+            'xpcshell and mochitest must not report identical numbers'
+        );
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
 
 test('the cache serves a second read with no further fetch', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'fx-tests-cache-'));
@@ -1142,6 +1489,93 @@ test('try does not report a no-message failure as a perma-fail when central fail
     assert.equal(perma.length, 0);
     assert.equal(known.length, 1);
     assert.equal(known[0]!.messageComparable, false);
+});
+
+/**
+ * The message the fixture test already fails with on central.
+ *
+ * Taken verbatim from `xpcshell-00.json`'s `FAIL-PARALLEL` and
+ * `FAIL-SEQUENTIAL` groups for `TEST_PATH`, so a push reporting it is
+ * reporting the *same* failure central already sees.
+ */
+const CENTRAL_FAILURE_MESSAGE =
+    'NS_ERROR_FILE_CORRUPTED: Component returned failure code: 0x8052000b ' +
+    '(NS_ERROR_FILE_CORRUPTED) [nsIPrefService.readUserPrefsFromFile]';
+
+test('try does NOT call it a perma-fail when central fails with the same message', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            // Fails in the only run, never passed on rerun, and reports the
+            // message central already fails with. Everything about it looks
+            // like a perma-fail except the one thing that decides it.
+            TASK1: profileWith([
+                {
+                    type: 'Test',
+                    test: TEST_PATH,
+                    status: 'FAIL',
+                    message: CENTRAL_FAILURE_MESSAGE,
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const perma = result['permaFails'] as { path: string }[];
+    const known = result['knownIntermittents'] as {
+        messageComparable: boolean;
+        central: { sameMessageFailCount: number };
+    }[];
+
+    // The assertion the whole same-message rule exists for, and the direction
+    // that was unguarded: `messageComparable` protected against calling an
+    // *uncomparable* failure a perma-fail, but nothing protected against
+    // calling a *matched* one a perma-fail. Removing
+    // `sameMessageFailCount === 0` produced 15 false "almost certainly yours"
+    // verdicts on autoland push 7c06165ae50f70 with the suite fully green —
+    // one of them against a test failing 922 of 8,386 runs on central with
+    // the identical message.
+    assert.deepEqual(perma, [], 'a same-message central failure is not the patch’s fault');
+    assert.equal(known.length, 1);
+    assert.equal(known[0]!.messageComparable, true);
+    assert.ok(
+        known[0]!.central.sameMessageFailCount > 0,
+        'and the same-message count is what exonerated it'
+    );
+});
+
+test('try text output states the same-message rate that exonerated a failure', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                {
+                    type: 'Test',
+                    test: TEST_PATH,
+                    status: 'FAIL',
+                    message: CENTRAL_FAILURE_MESSAGE,
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    assert.match(streams.stdout, /PERMA-FAILS \(0\)/);
+    assert.match(streams.stdout, /KNOWN INTERMITTENTS \(1\)/);
+    // Both rates in the table, so a reader can see it is flaky *this way* and
+    // not merely flaky.
+    assert.match(streams.stdout, /same msg/);
 });
 
 test('try marks a matching message as comparable and reports both rates', async () => {
