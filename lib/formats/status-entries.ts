@@ -315,6 +315,30 @@ function at<T>(array: readonly T[], i: number, key: string, status: string): T {
 }
 
 /**
+ * Reads a *nested* entry — one whose slot is itself an array — and checks that
+ * it is one.
+ *
+ * The length check in `entryCount()` cannot catch a nested array that has been
+ * flattened, because flattening a group whose buckets all hold one element
+ * leaves the length unchanged: `[[7]]` and `[7]` are both length 1. The
+ * difference only shows in the element type, and it matters — the nested form
+ * means "one bucket holding one run" and the flat form would be read as a
+ * bucket that is a number, whose `.length` is `undefined`.
+ *
+ * Without this the decoder reached `indexes.slice is not a function`, which is
+ * a `TypeError` from three frames deep rather than a statement about the data.
+ */
+function nestedAt(array: readonly unknown[], i: number, key: string, status: string): unknown[] {
+    const value = at(array, i, key, status);
+    if (!Array.isArray(value)) {
+        throw new UnknownStatusGroupShapeError(status, [
+            `${key}[${i}] is ${typeof value}, expected an array of per-run values`,
+        ]);
+    }
+    return value;
+}
+
+/**
  * The total number of runs in a status group.
  *
  * This is what `computeTestStats()` (`common-test-data.js:263`) open-codes as
@@ -460,7 +484,12 @@ export function* iterateStatusGroup(
                 break;
             }
             case 'durations': {
-                const bucket = at(g['durations'] as number[][], i, 'durations', status);
+                const bucket = nestedAt(
+                    g['durations'] as number[][],
+                    i,
+                    'durations',
+                    status
+                ) as number[];
                 yield decorate(
                     {
                         day: dayValue,
@@ -474,7 +503,12 @@ export function* iterateStatusGroup(
                 break;
             }
             case 'task-ids': {
-                const indexes = at(g['taskIdIds'] as number[][], i, 'taskIdIds', status);
+                const indexes = nestedAt(
+                    g['taskIdIds'] as number[][],
+                    i,
+                    'taskIdIds',
+                    status
+                ) as number[];
                 const entry: StatusEntry = {
                     day: dayValue,
                     count: indexes.length,
@@ -485,12 +519,12 @@ export function* iterateStatusGroup(
                     ),
                 };
                 if (rawMinidumps !== undefined) {
-                    entry.minidumps = at(
+                    entry.minidumps = nestedAt(
                         rawMinidumps as (string | null)[][],
                         i,
                         'minidumps',
                         status
-                    ).slice();
+                    ).slice() as (string | null)[];
                 }
                 yield decorate(entry, i);
                 break;
