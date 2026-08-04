@@ -1,0 +1,1330 @@
+/**
+ * `fx-tests test <path>` — everything about one test.
+ *
+ * The workhorse, and the command that has to answer "why is this test failing,
+ * and is it my fault?" without the caller having to know anything about the
+ * data.
+ *
+ * Reads **one 64-bucket file**: 21 days of history for ~3.5 MB, against a
+ * daily file's ~37 MB and 5× the heap (`FORMATS.md`). `--day` and `--since`
+ * are filters on that same file, not a reason to fetch another one — every
+ * status group carries a delta-encoded `days` array, so a day range costs
+ * nothing extra. See `cli/data.ts` for why that matters.
+ *
+ * ## What the default output does and does not show
+ *
+ * `CLI.md`'s design goal is "answers, not dumps": a verdict first, then the
+ * numbers behind it, then the failing configurations. Passing configurations
+ * are behind `--coverage` because the default question is "what is broken",
+ * and a 34-row table where 31 rows say `ok` buries the three that do not.
+ *
+ * Execution detail follows `PLAN.md` §5's assumption: the verdict mentions
+ * initial-vs-rerun and parallel-vs-sequential only **when they change the
+ * interpretation**, and the full breakdown is behind `--executions`. A test
+ * that fails 20 times in parallel and once sequentially is a different bug
+ * from one that fails evenly, and saying so in the verdict is worth one line;
+ * printing both tables always is not.
+ */
+
+import { chunkOfTask } from '../../lib/formats/buckets.ts';
+import type { DecodedTimingFile, RunEntry } from '../../lib/formats/decode.ts';
+import { parseTaskId } from '../../lib/formats/tables.ts';
+import {
+    type ModeBreakdown,
+    addToModeBreakdown,
+    countRerunsByTask,
+    emptyModeBreakdown,
+    hasModeAxis,
+} from '../../lib/model/execution.ts';
+import { classifyStatus } from '../../lib/model/status.ts';
+import {
+    type ConfigStats,
+    canAttributeConfigs,
+    computeConfigStats,
+} from '../../lib/query/config-stats.ts';
+import {
+    configUniverse,
+    coverageOf,
+    platformsCovered,
+} from '../../lib/query/coverage.ts';
+import {
+    type TestStats,
+    computeTestStats,
+    configFilter,
+    crashSignatureCounts,
+    failureMessageCounts,
+    inDayRange,
+} from '../../lib/query/test-stats.ts';
+import {
+    resourceUsageProfileUrl,
+    uploadedProfileUrl,
+} from '../../lib/links.ts';
+import { type OptionSpecs, type ParsedArgs, boolOption, numberOption } from '../args.ts';
+import { type CommandContext, emit, progress } from '../context.ts';
+import { notFoundError, usageError } from '../errors.ts';
+import { toJson } from '../format/json.ts';
+import * as md from '../format/markdown.ts';
+import {
+    applyLimit,
+    count as fmtCount,
+    dateWithWeekday,
+    joinLines,
+    moreLine,
+    percent,
+    table,
+    truncate,
+} from '../format/text.ts';
+import { harnessMissHint, harnessMissMessage, resolveHarness } from '../options.ts';
+import { type DayWindow, dateOfDayIndex, loadBucketForTest, resolveDayWindow } from '../data.ts';
+
+/** Options `test` adds to the globals. */
+export const TEST_OPTIONS: OptionSpecs = {
+    coverage: {
+        type: 'boolean',
+        describe: 'Every config the test ran on, passing ones included.',
+    },
+    executions: {
+        type: 'boolean',
+        describe: 'Break failures down by rerun and by execution mode.',
+    },
+    'recent-days': {
+        type: 'number',
+        placeholder: '<n>',
+        describe: 'Override the automatically-sized recent window.',
+    },
+    'task-ids': { type: 'boolean', describe: 'Print the task IDs behind each failure.' },
+    profiles: {
+        type: 'boolean',
+        describe: 'Print raw profile artifact URLs for each failure.',
+    },
+    durations: {
+        type: 'boolean',
+        describe: 'Per-config run-time distribution from the pass durations.',
+    },
+    history: { type: 'boolean', describe: 'A per-day sparkline of pass/fail counts.' },
+};
+
+/** The default number of failing-config rows and messages shown. */
+const DEFAULT_LIMIT = 10;
+
+/** The `--json` shape `CLI.md` documents. */
+export interface TestJson {
+    test: string;
+    path: string;
+    component: string | null;
+    harness: string;
+    metadata: {
+        family: string;
+        generatedAt: string;
+        startDate: string;
+        endDate: string;
+        dayCount: number;
+        singleDay: boolean;
+        dataSource: string;
+    };
+    totals: TestStats;
+    verdict: Verdict;
+    configs: ConfigStats[];
+    /**
+     * Whether the file can attribute runs to configurations at all.
+     *
+     * `configs: []` means two different things — "no config failed" and "this
+     * file cannot say" — and only this field separates them. `issues.json`
+     * has no `taskInfo`, so every per-config query over it is empty regardless
+     * of the test.
+     */
+    canAttributeConfigs: boolean;
+    /** The window `configs`' recent rates were computed over. */
+    recentWindow: { days: number; minRuns: number } | null;
+    messages: { message: string; count: number }[];
+    crashSignatures: { signature: string; count: number }[];
+    skips: { message: string; count: number }[];
+    coverage?: CoverageJson;
+    executions?: ExecutionsJson;
+    durations?: DurationsJson[];
+    history?: HistoryJson[];
+    taskIds?: TaskIdJson[];
+    profiles?: ProfileJson[];
+}
+
+/** The verdict, computed once and rendered by every format. */
+export interface Verdict {
+    /** The one-word answer. */
+    kind: 'passing' | 'intermittent' | 'perma-fail' | 'skipped-everywhere' | 'no-data';
+    /** The sentence shown under the totals. */
+    summary: string;
+    /** Extra clauses that change the interpretation, per `PLAN.md` §5. */
+    notes: string[];
+}
+
+interface CoverageJson {
+    attributedPasses: boolean;
+    configs: {
+        jobName: string;
+        state: string;
+        runCount: number;
+        passCount: number;
+        failCount: number;
+        skipCount: number;
+        skipMessages: { message: string; count: number }[];
+    }[];
+    platforms: { platform: string; configCount: number }[];
+    neverScheduled: string[] | null;
+}
+
+interface ExecutionsJson {
+    /** Null when the data records no mode axis — mochitest. See below. */
+    modeAxis: {
+        failures: ModeBreakdown;
+        runs: ModeBreakdown;
+        /** Failure rate per mode, `null` where the mode had no runs. */
+        failRate: { parallel: number | null; sequential: number | null; unrecorded: number | null };
+    } | null;
+    reruns: { jobs: number; runs: number; jobsWithRerun: number };
+}
+
+interface DurationsJson {
+    jobName: string;
+    runCount: number;
+    min: number;
+    median: number;
+    p95: number;
+    max: number;
+}
+
+interface HistoryJson {
+    date: string;
+    pass: number;
+    fail: number;
+    timeout: number;
+    crash: number;
+    skip: number;
+}
+
+interface TaskIdJson {
+    taskId: string;
+    retryId: number;
+    jobName: string | null;
+    chunk: number | null;
+    status: string;
+    day: string | null;
+    message: string | null;
+}
+
+interface ProfileJson {
+    taskId: string;
+    retryId: number;
+    jobName: string | null;
+    /** Always available: derivable from the task ID alone. */
+    resourceUsage: string;
+    /**
+     * The per-test failure profile, when the failure message named one.
+     * Absent otherwise — the filename is not derivable and `CLI.md` says to
+     * emit nothing rather than guess.
+     */
+    testProfile?: string;
+}
+
+/** Runs the command. */
+export async function runTest(context: CommandContext, args: ParsedArgs): Promise<void> {
+    const testPath = args.positionals[0];
+    if (testPath === undefined) {
+        throw usageError(
+            'test requires a path',
+            'Usage: fx-tests test <path>, e.g. fx-tests test netwerk/test/unit/test_bug1195415.js'
+        );
+    }
+    if (args.positionals.length > 1) {
+        throw usageError(
+            `test takes one path, got ${args.positionals.length}: ${args.positionals.join(', ')}`
+        );
+    }
+
+    const { harness, inferred } = resolveHarness(testPath, context.globals.harness);
+    progress(context, `Reading ${harness} bucket for ${testPath}…`);
+    const { file, decoded } = await loadBucketForTest(context, harness, testPath);
+
+    const identity = decoded.findTest(testPath);
+    if (identity === null) {
+        // The message names the harness and says it was inferred, because the
+        // symptom of a misclassified `test_foo.js` is identical to a typo.
+        // `CLI.md` specifies this wording for exactly that reason.
+        throw notFoundError(
+            harnessMissMessage(testPath, harness, inferred),
+            harnessMissHint(harness, inferred)
+        );
+    }
+
+    const window = resolveDayWindow(context.globals, decoded);
+    const jobFilter = configFilter(context.globals.config, context.globals.excludeConfig);
+    const hasConfigFilter =
+        context.globals.config.length > 0 || context.globals.excludeConfig.length > 0;
+
+    const statsOptions = {
+        ...(window.range === null ? {} : { dayRange: window.range }),
+        ...(hasConfigFilter ? { jobFilter } : {}),
+    };
+
+    const totals = computeTestStats(decoded, identity.testId, statsOptions);
+
+    const recentDays = numberOption(args, 'recent-days');
+    const configs = computeConfigStats(decoded, identity.testId, {
+        ...(window.range === null ? {} : { dayRange: window.range }),
+        ...(recentDays === undefined ? {} : { recentDays }),
+    }).filter((config) => !hasConfigFilter || jobFilter(config.jobName));
+
+    const entries = [...decoded.runsOfTest(identity.testId)].filter((entry) =>
+        inDayRange(entry.day, window.range ?? undefined)
+    );
+    const filteredEntries = hasConfigFilter
+        ? entries.filter((entry) => {
+              const jobName = jobNameOf(decoded, entry);
+              return jobName === null ? false : jobFilter(jobName);
+          })
+        : entries;
+
+    const messages = [...failureMessageCounts(decoded, identity.testId, statsOptions)]
+        .map(([message, count]) => ({ message: message ?? '(no message recorded)', count }))
+        .sort((a, b) => b.count - a.count);
+    const crashSignatures = [...crashSignatureCounts(decoded, identity.testId, statsOptions)]
+        .map(([signature, count]) => ({
+            signature: signature ?? '(no signature recorded)',
+            count,
+        }))
+        .sort((a, b) => b.count - a.count);
+    const skips = collectSkips(filteredEntries);
+
+    const failingConfigs = configs.filter((config) => config.failCount > 0);
+    const verdict = computeVerdict(totals, failingConfigs, filteredEntries, decoded);
+
+    const result: TestJson = {
+        test: identity.name,
+        path: identity.fullPath,
+        component: identity.component,
+        harness,
+        metadata: {
+            family: decoded.family,
+            generatedAt: file.metadata.generatedAt,
+            startDate: window.startDate,
+            endDate: window.endDate,
+            dayCount: window.dayCount,
+            singleDay: window.singleDay,
+            dataSource: context.source.name,
+        },
+        totals,
+        verdict,
+        configs: failingConfigs,
+        canAttributeConfigs: canAttributeConfigs(decoded),
+        recentWindow:
+            configs.length === 0 || window.singleDay
+                ? null
+                : { days: configs[0]!.recentDays, minRuns: 20 },
+        messages,
+        crashSignatures,
+        skips,
+    };
+
+    if (boolOption(args, 'coverage')) {
+        result.coverage = buildCoverage(
+            decoded,
+            identity.testId,
+            window,
+            hasConfigFilter ? jobFilter : undefined
+        );
+    }
+    if (boolOption(args, 'executions')) {
+        result.executions = buildExecutions(decoded, filteredEntries);
+    }
+    if (boolOption(args, 'durations')) {
+        result.durations = buildDurations(decoded, filteredEntries);
+    }
+    if (boolOption(args, 'history')) {
+        result.history = buildHistory(decoded, filteredEntries, window);
+    }
+    if (boolOption(args, 'task-ids')) {
+        result.taskIds = buildTaskIds(file, decoded, filteredEntries, window);
+    }
+    if (boolOption(args, 'profiles')) {
+        result.profiles = buildProfiles(decoded, filteredEntries);
+    }
+
+    if (context.globals.format === 'json') {
+        emit(context, toJson(result));
+        return;
+    }
+    const limit = context.globals.limit ?? DEFAULT_LIMIT;
+    emit(
+        context,
+        context.globals.format === 'markdown'
+            ? renderMarkdown(result, limit)
+            : renderText(result, limit)
+    );
+}
+
+/** The job a run entry belongs to, whichever way the shape records it. */
+function jobNameOf(file: DecodedTimingFile, entry: RunEntry): string | null {
+    if (entry.jobName !== undefined) {
+        return entry.jobName;
+    }
+    const first = entry.taskIdIndexes?.[0];
+    return first === undefined ? null : file.jobNameOfTaskIndex(first);
+}
+
+/** Skip messages with counts, `run-if` already excluded by the aggregate. */
+function collectSkips(entries: readonly RunEntry[]): { message: string; count: number }[] {
+    const counts = new Map<string, number>();
+    for (const entry of entries) {
+        if (classifyStatus(entry.status).kind !== 'skip') {
+            continue;
+        }
+        const message = entry.message ?? '(no reason recorded)';
+        counts.set(message, (counts.get(message) ?? 0) + entry.count);
+    }
+    return [...counts]
+        .map(([message, count]) => ({ message, count }))
+        .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * The verdict, and the notes that qualify it.
+ *
+ * The ordering matters: a test that perma-fails on one config is reported as a
+ * perma-fail even when its overall pass rate is 99%, because the overall rate
+ * is exactly the number that hides it. `CLI.md`'s worked example makes the same
+ * point — "a test's overall failure rate understates a single-config
+ * perma-fail" is listed as one of the traps `guide` exists to warn about.
+ */
+function computeVerdict(
+    totals: TestStats,
+    failingConfigs: readonly ConfigStats[],
+    entries: readonly RunEntry[],
+    file: DecodedTimingFile
+): Verdict {
+    const notes: string[] = [];
+
+    if (totals.runCount === 0) {
+        return {
+            kind: totals.skipCount > 0 ? 'skipped-everywhere' : 'no-data',
+            summary:
+                totals.skipCount > 0
+                    ? `skipped everywhere in this window (${fmtCount(totals.skipCount)} skipped runs, no runs at all).`
+                    : 'no runs recorded in this window.',
+            notes,
+        };
+    }
+
+    const permaFails = failingConfigs.filter((config) => config.failRate >= 100);
+    const worst = failingConfigs[0];
+
+    // Mode skew is a note rather than a section: it changes what the failure
+    // means (a race with neighbours rather than a broken test) and costs one
+    // line. The full table is behind --executions.
+    const modeNote = modeSkewNote(entries, file);
+    if (modeNote !== null) {
+        notes.push(modeNote);
+    }
+    const rerunNote = rerunNoteOf(entries);
+    if (rerunNote !== null) {
+        notes.push(rerunNote);
+    }
+
+    if (permaFails.length > 0) {
+        // No "n of m configurations" here: `computeConfigStats` returns only
+        // the configs that ran this test, so any denominator built from it
+        // would silently exclude configs that only ever passed. `--coverage`
+        // is where the full matrix lives, and the verdict points at it rather
+        // than inventing a total.
+        return {
+            kind: 'perma-fail',
+            summary:
+                `perma-fail. Never passed on ${permaFails.length} ` +
+                `configuration${permaFails.length === 1 ? '' : 's'}: ` +
+                permaFails
+                    .slice(0, 3)
+                    .map((config) => `${config.jobName} (${config.failCount}/${config.runCount})`)
+                    .join(', ') +
+                (permaFails.length > 3 ? `, and ${permaFails.length - 3} more` : '') +
+                '. Use --coverage for every config it runs on.',
+            notes,
+        };
+    }
+
+    if (failingConfigs.length === 0) {
+        return {
+            kind: 'passing',
+            summary:
+                `passing. ${fmtCount(totals.passCount)} of ${fmtCount(totals.runCount)} runs passed` +
+                (totals.expectedFailCount > 0
+                    ? `, plus ${fmtCount(totals.expectedFailCount)} expected failures`
+                    : '') +
+                '.',
+            notes,
+        };
+    }
+
+    return {
+        kind: 'intermittent',
+        summary:
+            `intermittent. Fails on ${failingConfigs.length} ` +
+            `configuration${failingConfigs.length === 1 ? '' : 's'}; ` +
+            (worst === undefined
+                ? ''
+                : `worst is ${worst.jobName} at ${percent(worst.failRate)} ` +
+                  `(${worst.failCount}/${worst.runCount})`) +
+            '.',
+        notes,
+    };
+}
+
+/**
+ * A note when failures skew strongly to one execution mode.
+ *
+ * The threshold is deliberately conservative: a mode has to carry at least
+ * four fifths of the failures *and* the other mode has to have had a
+ * meaningful number of runs, otherwise "fails only in parallel" would fire for
+ * a test that simply never ran sequentially. `FORMATS.md` is explicit that
+ * plain `PASS` is its own bucket rather than the sum of the two modes, so the
+ * unrecorded bucket is kept separate and never folded into either.
+ */
+function modeSkewNote(entries: readonly RunEntry[], file: DecodedTimingFile): string | null {
+    if (!hasModeAxis(file.statuses)) {
+        return null;
+    }
+    const failures = emptyModeBreakdown();
+    const runs = emptyModeBreakdown();
+    for (const entry of entries) {
+        const { kind } = classifyStatus(entry.status);
+        if (kind === 'skip' || kind === 'unknown') {
+            continue;
+        }
+        addToModeBreakdown(runs, entry.status, entry.count);
+        if (kind === 'fail' || kind === 'timeout' || kind === 'crash') {
+            addToModeBreakdown(failures, entry.status, entry.count);
+        }
+    }
+    const total = failures.parallel + failures.sequential;
+    if (total < 5) {
+        return null;
+    }
+    if (failures.parallel >= total * 0.8 && runs.sequential >= 20) {
+        const parallelRate = runs.parallel > 0 ? (failures.parallel / runs.parallel) * 100 : 0;
+        const sequentialRate =
+            runs.sequential > 0 ? (failures.sequential / runs.sequential) * 100 : 0;
+        return (
+            `Fails almost only in parallel: ${failures.parallel} of ${total} mode-recorded ` +
+            `failures, ${percent(parallelRate)} of parallel runs against ` +
+            `${percent(sequentialRate)} of sequential ones (--executions for the breakdown).`
+        );
+    }
+    if (failures.sequential >= total * 0.8 && runs.parallel >= 20) {
+        return (
+            `Fails almost only in sequential execution: ${failures.sequential} of ${total} ` +
+            `mode-recorded failures (--executions for the breakdown).`
+        );
+    }
+    return null;
+}
+
+/** A note when failures were reruns within the same job. */
+function rerunNoteOf(entries: readonly RunEntry[]): string | null {
+    const failing = entries.filter((entry) => {
+        const { kind } = classifyStatus(entry.status);
+        return kind === 'fail' || kind === 'timeout' || kind === 'crash';
+    });
+    const reruns = countRerunsByTask(failing);
+    if (reruns.jobsWithRerun === 0 || reruns.jobs === 0) {
+        return null;
+    }
+    return (
+        `${reruns.jobsWithRerun} of ${reruns.jobs} failing jobs saw the failure more than ` +
+        `once, which within a job is a harness rerun (--executions for the breakdown).`
+    );
+}
+
+/** The `--coverage` matrix. */
+function buildCoverage(
+    file: DecodedTimingFile,
+    testId: number,
+    window: DayWindow,
+    jobFilter: ((jobName: string) => boolean) | undefined
+): CoverageJson {
+    const coverage = coverageOf(file, testId, {
+        ...(window.range === null ? {} : { dayRange: window.range }),
+        ...(jobFilter === undefined ? {} : { jobFilter }),
+        universe: configUniverse(file),
+    });
+    const platforms = platformsCovered(coverage);
+    return {
+        attributedPasses: coverage.attributedPasses,
+        configs: coverage.configs.map((config) => ({
+            jobName: config.jobName,
+            state: config.state,
+            runCount: config.runCount,
+            passCount: config.passCount,
+            failCount: config.failCount + config.timeoutCount + config.crashCount,
+            skipCount: config.skipCount,
+            skipMessages: [...config.skipMessages].map(([message, count]) => ({
+                message,
+                count,
+            })),
+        })),
+        platforms: [...platforms].map(([platform, configCount]) => ({
+            platform,
+            configCount,
+        })),
+        neverScheduled: coverage.neverScheduled,
+    };
+}
+
+/**
+ * The `--executions` breakdown.
+ *
+ * Two partitions of the *same* failures, and the reason they are reported as
+ * two blocks rather than one table: initial-vs-rerun and
+ * parallel-vs-sequential are **not additive**. `CLI.md` says so explicitly and
+ * the layout follows.
+ *
+ * `modeAxis` is `null` for mochitest, where the suffixes do not exist at all
+ * (`FORMATS.md`). Reporting zeros there would be a misleading table with one
+ * row; the renderer says the axis is absent instead.
+ */
+function buildExecutions(
+    file: DecodedTimingFile,
+    entries: readonly RunEntry[]
+): ExecutionsJson {
+    const failing = entries.filter((entry) => {
+        const { kind } = classifyStatus(entry.status);
+        return kind === 'fail' || kind === 'timeout' || kind === 'crash';
+    });
+    const reruns = countRerunsByTask(failing);
+
+    if (!hasModeAxis(file.statuses)) {
+        return {
+            modeAxis: null,
+            reruns: { jobs: reruns.jobs, runs: reruns.runs, jobsWithRerun: reruns.jobsWithRerun },
+        };
+    }
+
+    const failures = emptyModeBreakdown();
+    const runs = emptyModeBreakdown();
+    for (const entry of entries) {
+        const { kind } = classifyStatus(entry.status);
+        if (kind === 'skip' || kind === 'unknown') {
+            continue;
+        }
+        addToModeBreakdown(runs, entry.status, entry.count);
+        if (kind === 'fail' || kind === 'timeout' || kind === 'crash') {
+            addToModeBreakdown(failures, entry.status, entry.count);
+        }
+    }
+    const rateOf = (fails: number, total: number): number | null =>
+        total > 0 ? (fails / total) * 100 : null;
+
+    return {
+        modeAxis: {
+            failures,
+            runs,
+            failRate: {
+                parallel: rateOf(failures.parallel, runs.parallel),
+                sequential: rateOf(failures.sequential, runs.sequential),
+                unrecorded: rateOf(failures.unrecorded, runs.unrecorded),
+            },
+        },
+        reruns: { jobs: reruns.jobs, runs: reruns.runs, jobsWithRerun: reruns.jobsWithRerun },
+    };
+}
+
+/** Per-config duration distribution, from the pass durations. */
+function buildDurations(
+    file: DecodedTimingFile,
+    entries: readonly RunEntry[]
+): DurationsJson[] {
+    const byJob = new Map<string, number[]>();
+    for (const entry of entries) {
+        if (entry.durations === undefined || entry.durations.length === 0) {
+            continue;
+        }
+        const jobName = jobNameOf(file, entry);
+        if (jobName === null) {
+            continue;
+        }
+        const list = byJob.get(jobName) ?? [];
+        list.push(...entry.durations);
+        byJob.set(jobName, list);
+    }
+    const rows: DurationsJson[] = [];
+    for (const [jobName, durations] of byJob) {
+        durations.sort((a, b) => a - b);
+        rows.push({
+            jobName,
+            runCount: durations.length,
+            min: durations[0]!,
+            median: quantile(durations, 0.5),
+            p95: quantile(durations, 0.95),
+            max: durations[durations.length - 1]!,
+        });
+    }
+    return rows.sort((a, b) => b.median - a.median || a.jobName.localeCompare(b.jobName));
+}
+
+/** The nearest-rank quantile of a sorted array. */
+function quantile(sorted: readonly number[], q: number): number {
+    if (sorted.length === 0) {
+        throw new Error('quantile of an empty array');
+    }
+    const rank = Math.ceil(q * sorted.length);
+    return sorted[Math.min(sorted.length - 1, Math.max(0, rank - 1))]!;
+}
+
+/** Per-day pass/fail counts, for `--history`. */
+function buildHistory(
+    file: DecodedTimingFile,
+    entries: readonly RunEntry[],
+    window: DayWindow
+): HistoryJson[] {
+    const days = file.days;
+    if (days === null) {
+        return [];
+    }
+    const from = window.range?.from ?? 0;
+    const to = window.range?.to ?? days - 1;
+    const rows = new Map<number, HistoryJson>();
+    for (let day = from; day <= to; day++) {
+        rows.set(day, {
+            date: dateOfDayIndex(file.endDate, days, day),
+            pass: 0,
+            fail: 0,
+            timeout: 0,
+            crash: 0,
+            skip: 0,
+        });
+    }
+    for (const entry of entries) {
+        if (entry.day === null) {
+            continue;
+        }
+        const row = rows.get(entry.day);
+        if (row === undefined) {
+            continue;
+        }
+        const { kind } = classifyStatus(entry.status);
+        switch (kind) {
+            case 'pass':
+            case 'expected-fail':
+                row.pass += entry.count;
+                break;
+            case 'fail':
+                row.fail += entry.count;
+                break;
+            case 'timeout':
+                row.timeout += entry.count;
+                break;
+            case 'crash':
+                row.crash += entry.count;
+                break;
+            case 'skip':
+                row.skip += entry.count;
+                break;
+            case 'unknown':
+                break;
+        }
+    }
+    return [...rows.values()];
+}
+
+/** The task IDs behind each failure, for `--task-ids`. */
+function buildTaskIds(
+    raw: { taskInfo: { chunks?: (number | null)[] | undefined } },
+    file: DecodedTimingFile,
+    entries: readonly RunEntry[],
+    window: DayWindow
+): TaskIdJson[] {
+    const rows: TaskIdJson[] = [];
+    const days = file.days;
+    for (const entry of entries) {
+        const { kind } = classifyStatus(entry.status);
+        if (kind !== 'fail' && kind !== 'timeout' && kind !== 'crash') {
+            continue;
+        }
+        if (entry.taskIds === undefined) {
+            continue;
+        }
+        entry.taskIds.forEach((raw2, i) => {
+            const { taskId, retryId } = parseTaskId(raw2);
+            const taskIdIndex = entry.taskIdIndexes?.[i];
+            rows.push({
+                taskId,
+                retryId,
+                jobName:
+                    taskIdIndex === undefined ? null : file.jobNameOfTaskIndex(taskIdIndex),
+                chunk:
+                    taskIdIndex === undefined
+                        ? null
+                        : chunkOfTask(raw as never, taskIdIndex),
+                status: entry.status,
+                day:
+                    entry.day === null || days === null
+                        ? null
+                        : dateOfDayIndex(file.endDate, days, entry.day),
+                message: entry.message ?? null,
+            });
+        });
+    }
+    void window;
+    return rows;
+}
+
+/**
+ * Raw profile URLs, for `--profiles`.
+ *
+ * **Raw artifact URLs, not `profiler.firefox.com/from-url/…`.** `CLI.md` is
+ * explicit: the consumer is `profiler-cli`, which downloads and queries the
+ * profile itself, and a front-end URL is useless to it. `lib/links.ts` keeps
+ * the two apart and this uses the raw side.
+ *
+ * Two kinds with different availability. The resource-usage profile is
+ * derivable from the task ID and is always emitted. The per-test failure
+ * profile's filename appears only in the failure message, so it is emitted
+ * only when the message names one — **no guessing**, per `CLI.md`.
+ */
+function buildProfiles(
+    file: DecodedTimingFile,
+    entries: readonly RunEntry[]
+): ProfileJson[] {
+    const rows: ProfileJson[] = [];
+    const seen = new Set<string>();
+    for (const entry of entries) {
+        const { kind } = classifyStatus(entry.status);
+        if (kind !== 'fail' && kind !== 'timeout' && kind !== 'crash') {
+            continue;
+        }
+        if (entry.taskIds === undefined) {
+            continue;
+        }
+        entry.taskIds.forEach((rawTaskId, i) => {
+            const { taskId, retryId } = parseTaskId(rawTaskId);
+            const key = `${taskId}.${retryId}`;
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            const taskIdIndex = entry.taskIdIndexes?.[i];
+            const row: ProfileJson = {
+                taskId,
+                retryId,
+                jobName:
+                    taskIdIndex === undefined ? null : file.jobNameOfTaskIndex(taskIdIndex),
+                resourceUsage: resourceUsageProfileUrl(taskId, retryId),
+            };
+            const testProfile = uploadedProfileUrl(taskId, retryId, entry.message);
+            if (testProfile !== null) {
+                row.testProfile = testProfile;
+            }
+            rows.push(row);
+        });
+    }
+    return rows;
+}
+
+// --- rendering -----------------------------------------------------------
+
+/** Plain text, as `CLI.md` lays it out. */
+function renderText(result: TestJson, limit: number): string {
+    const lines: (string | null)[] = [];
+    const { metadata, totals } = result;
+
+    lines.push(`${result.test} — ${dirOf(result.path)}`);
+    if (result.component !== null) {
+        lines.push(`Component: ${result.component}`);
+    }
+    lines.push(
+        `Data: ${result.harness}, ${describeWindow(metadata)}, ` +
+            `generated ${metadata.generatedAt}`
+    );
+    lines.push('');
+    lines.push(
+        `  ${fmtCount(totals.runCount)} runs   ` +
+            `${fmtCount(totals.passCount)} pass (${percent(totals.passRate, 2)})   ` +
+            `${fmtCount(totals.failCount)} fail   ` +
+            `${fmtCount(totals.timeoutCount)} timeout   ` +
+            `${fmtCount(totals.crashCount)} crash   ` +
+            `${fmtCount(totals.skipCount)} skip`
+    );
+    if (totals.expectedFailCount > 0) {
+        lines.push(`  ${fmtCount(totals.expectedFailCount)} expected failures`);
+    }
+    if (totals.unknownCount > 0) {
+        // Never silently folded into pass or fail: a job that reported no
+        // outcome did not pass. `FORMATS.md` measured zero of these in 21
+        // days, so seeing this line means the generator emitted something new.
+        lines.push(
+            `  ${fmtCount(totals.unknownCount)} runs of an unrecognized status ` +
+                `(not counted as pass or fail)`
+        );
+    }
+    lines.push('');
+    lines.push(`Verdict: ${result.verdict.summary}`);
+    for (const note of result.verdict.notes) {
+        lines.push(`  ${note}`);
+    }
+
+    if (result.configs.length > 0) {
+        lines.push('');
+        const shown = applyLimit(result.configs, limit);
+        const header = result.recentWindow === null
+            ? 'Failing configurations'
+            : `Failing configurations (recent = last ${result.recentWindow.days}d, ` +
+              `sized so the sparsest config has ${result.recentWindow.minRuns}+ runs)`;
+        lines.push(header);
+        lines.push(
+            ...table(
+                [
+                    { header: 'Configuration' },
+                    { header: 'fail rate', align: 'right' },
+                    { header: 'fails', align: 'right' },
+                    { header: 'recent', align: 'right' },
+                    { header: 'runs', align: 'right' },
+                ],
+                shown.map((config) => [
+                    config.jobName,
+                    percent(config.failRate),
+                    String(config.failCount),
+                    // `null` prints as `—`, not `0.0%`: "too few runs to say"
+                    // and "no failures" are different claims and the column
+                    // must not conflate them.
+                    percent(config.recentFailRate),
+                    String(config.runCount),
+                ])
+            )
+        );
+        lines.push(moreLine(result.configs.length, shown.length));
+    } else if (totals.failCount + totals.timeoutCount + totals.crashCount > 0) {
+        lines.push('');
+        // `computeConfigStats` returns [] both when no config failed and when
+        // the file cannot attribute runs to configs at all. Those are
+        // different answers and `canAttributeConfigs()` is what tells them
+        // apart — printing "no failing configurations" for a file that simply
+        // cannot say would be the confidently-wrong number this project keeps
+        // producing.
+        lines.push(
+            result.canAttributeConfigs
+                ? '  (no failing configuration in this window, though the totals show failures —'
+                : '  (this file does not attribute runs to configurations, so the failing-config'
+        );
+        lines.push(
+            result.canAttributeConfigs
+                ? '   the failures could not be attributed to a job)'
+                : '   table cannot be built from it)'
+        );
+    }
+
+    if (result.messages.length > 0) {
+        lines.push('');
+        lines.push('Failure messages');
+        const shown = applyLimit(result.messages, limit);
+        for (const entry of shown) {
+            lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine(entry.message), 100)}`);
+        }
+        lines.push(moreLine(result.messages.length, shown.length));
+    }
+
+    if (result.crashSignatures.length > 0) {
+        lines.push('');
+        lines.push('Crash signatures');
+        const shown = applyLimit(result.crashSignatures, limit);
+        for (const entry of shown) {
+            lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(entry.signature, 100)}`);
+        }
+        lines.push(moreLine(result.crashSignatures.length, shown.length));
+    }
+
+    if (result.skips.length > 0) {
+        lines.push('');
+        lines.push('Skips');
+        const shown = applyLimit(result.skips, limit);
+        for (const entry of shown) {
+            lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine(entry.message), 100)}`);
+        }
+        lines.push(moreLine(result.skips.length, shown.length));
+    }
+
+    if (result.coverage !== undefined) {
+        lines.push('');
+        lines.push(...renderCoverageText(result.coverage, limit));
+    }
+    if (result.executions !== undefined) {
+        lines.push('');
+        lines.push(...renderExecutionsText(result.executions));
+    }
+    if (result.durations !== undefined) {
+        lines.push('');
+        lines.push('Durations (ms, from passing runs)');
+        const shown = applyLimit(result.durations, limit);
+        lines.push(
+            ...table(
+                [
+                    { header: 'Configuration' },
+                    { header: 'runs', align: 'right' },
+                    { header: 'min', align: 'right' },
+                    { header: 'median', align: 'right' },
+                    { header: 'p95', align: 'right' },
+                    { header: 'max', align: 'right' },
+                ],
+                shown.map((row) => [
+                    row.jobName,
+                    String(row.runCount),
+                    String(Math.round(row.min)),
+                    String(Math.round(row.median)),
+                    String(Math.round(row.p95)),
+                    String(Math.round(row.max)),
+                ])
+            )
+        );
+        lines.push(moreLine(result.durations.length, shown.length));
+    }
+    if (result.history !== undefined) {
+        lines.push('');
+        lines.push('History (pass/fail per day)');
+        for (const row of result.history) {
+            const bar = row.fail + row.timeout + row.crash > 0 ? '!' : '·';
+            lines.push(
+                `  ${dateWithWeekday(row.date)}  ${bar}  ` +
+                    `${String(row.pass).padStart(5)} pass  ` +
+                    `${String(row.fail).padStart(4)} fail  ` +
+                    `${String(row.timeout).padStart(3)} timeout  ` +
+                    `${String(row.crash).padStart(3)} crash  ` +
+                    `${String(row.skip).padStart(5)} skip`
+            );
+        }
+    }
+    if (result.taskIds !== undefined) {
+        lines.push('');
+        lines.push('Task IDs');
+        const shown = applyLimit(result.taskIds, limit);
+        for (const row of shown) {
+            lines.push(
+                `  ${row.taskId}.${row.retryId}  ${row.status.padEnd(18)} ` +
+                    `${row.day ?? '—'}  ${row.jobName ?? '(unknown job)'}` +
+                    (row.chunk === null ? '' : ` chunk ${row.chunk}`)
+            );
+        }
+        lines.push(moreLine(result.taskIds.length, shown.length));
+    }
+    if (result.profiles !== undefined) {
+        lines.push('');
+        lines.push('Profiles (raw artifact URLs, for profiler-cli)');
+        const shown = applyLimit(result.profiles, limit);
+        for (const row of shown) {
+            lines.push(`  ${row.taskId}.${row.retryId}  ${row.jobName ?? '(unknown job)'}`);
+            lines.push(`    resource-usage: ${row.resourceUsage}`);
+            if (row.testProfile !== undefined) {
+                lines.push(`    test profile:   ${row.testProfile}`);
+            }
+        }
+        lines.push(moreLine(result.profiles.length, shown.length));
+        if (shown.every((row) => row.testProfile === undefined)) {
+            // The absence is worth a line: "no per-test profile" and "the
+            // command forgot to look" are indistinguishable otherwise, and
+            // `CLI.md` says to emit nothing rather than guess a filename.
+            lines.push(
+                '  (no per-test failure profile was named in any failure message)'
+            );
+        }
+    }
+
+    return joinLines(lines);
+}
+
+/** The coverage table. */
+function renderCoverageText(coverage: CoverageJson, limit: number): string[] {
+    const lines: (string | null)[] = [];
+    if (!coverage.attributedPasses) {
+        // The refusal `CLI.md` asks for: `computeConfigStats` returns [] on
+        // `issues.json` and that is not "no configs failed".
+        return [
+            'Coverage is not available from this file: it does not attribute passing runs',
+            'to a configuration, so the table would show only the failing configs.',
+        ];
+    }
+    lines.push('Coverage');
+    const shown = applyLimit(coverage.configs, limit);
+    lines.push(
+        ...table(
+            [
+                { header: 'Configuration' },
+                { header: 'runs', align: 'right' },
+                { header: 'pass', align: 'right' },
+                { header: 'fail', align: 'right' },
+                { header: 'skip', align: 'right' },
+                { header: 'status' },
+            ],
+            shown.map((config) => [
+                config.jobName,
+                String(config.runCount),
+                String(config.passCount),
+                String(config.failCount),
+                String(config.skipCount),
+                config.state,
+            ])
+        )
+    );
+    lines.push(moreLine(coverage.configs.length, shown.length));
+    for (const config of shown) {
+        for (const skip of config.skipMessages) {
+            lines.push(`      ${config.jobName}: ${truncate(oneLine(skip.message), 80)}`);
+        }
+    }
+    if (coverage.platforms.length > 0) {
+        lines.push('');
+        lines.push(
+            `${coverage.configs.length} configs, ${coverage.platforms.length} platforms: ` +
+                coverage.platforms
+                    .map((entry) => `${entry.platform} (${entry.configCount})`)
+                    .join(', ')
+        );
+    }
+    if (coverage.neverScheduled !== null && coverage.neverScheduled.length > 0) {
+        lines.push(
+            `Never scheduled on ${coverage.neverScheduled.length} configs that run this suite: ` +
+                coverage.neverScheduled.slice(0, 5).join(', ') +
+                (coverage.neverScheduled.length > 5 ? ', …' : '')
+        );
+    }
+    return lines.filter((line): line is string => line !== null);
+}
+
+/** The `--executions` blocks. */
+function renderExecutionsText(executions: ExecutionsJson): string[] {
+    const lines: string[] = ['Executions'];
+    const { reruns } = executions;
+
+    if (reruns.jobs === 0) {
+        lines.push('  No failing runs with task attribution, so no rerun analysis.');
+    } else {
+        lines.push(
+            `  ${reruns.runs} failing runs across ${reruns.jobs} jobs; ` +
+                `${reruns.jobsWithRerun} of those jobs saw the failure more than once.`
+        );
+        lines.push(
+            '  A repeat within one job is a harness rerun. The aggregates record no order,'
+        );
+        lines.push(
+            '  so this counts repetition rather than labelling a run initial or rerun.'
+        );
+    }
+
+    lines.push('');
+    if (executions.modeAxis === null) {
+        // Saying so rather than printing a one-row table, exactly as
+        // `FORMATS.md` asks: mochitest has no mode axis at all.
+        lines.push('  By execution mode: not recorded for this harness.');
+        lines.push(
+            '  The -PARALLEL/-SEQUENTIAL status suffixes are xpcshell-only, so there is'
+        );
+        lines.push('  no parallel-vs-sequential split to report here.');
+        return lines;
+    }
+
+    const { failures, runs, failRate } = executions.modeAxis;
+    lines.push('  By execution mode');
+    lines.push(
+        ...table(
+            [
+                { header: 'mode' },
+                { header: 'failures', align: 'right' },
+                { header: 'runs', align: 'right' },
+                { header: 'rate', align: 'right' },
+            ],
+            [
+                ['parallel', String(failures.parallel), String(runs.parallel), percent(failRate.parallel)],
+                [
+                    'sequential',
+                    String(failures.sequential),
+                    String(runs.sequential),
+                    percent(failRate.sequential),
+                ],
+                [
+                    'not recorded',
+                    String(failures.unrecorded),
+                    String(runs.unrecorded),
+                    percent(failRate.unrecorded),
+                ],
+            ],
+            '    '
+        )
+    );
+    lines.push(
+        '    "not recorded" is its own bucket, not the sum of the other two: plain PASS'
+    );
+    lines.push('    coexists with PASS-PARALLEL and PASS-SEQUENTIAL in the same file.');
+    lines.push('');
+    lines.push(
+        '  The two blocks partition the same failures two ways; they are not additive.'
+    );
+    return lines;
+}
+
+/** Markdown, for pasting into a bug. */
+function renderMarkdown(result: TestJson, limit: number): string {
+    const lines: (string | null)[] = [];
+    const { metadata, totals } = result;
+    lines.push(md.heading(`${result.test}`, 1));
+    lines.push('');
+    lines.push(`${md.code(result.path)}`);
+    if (result.component !== null) {
+        lines.push('');
+        lines.push(`**Component:** ${result.component}`);
+    }
+    lines.push('');
+    lines.push(
+        `**Data:** ${result.harness}, ${describeWindow(metadata)}, generated ${metadata.generatedAt}`
+    );
+    lines.push('');
+    lines.push(
+        ...md.table(
+            [
+                { header: 'runs', align: 'right' },
+                { header: 'pass', align: 'right' },
+                { header: 'fail', align: 'right' },
+                { header: 'timeout', align: 'right' },
+                { header: 'crash', align: 'right' },
+                { header: 'skip', align: 'right' },
+            ],
+            [
+                [
+                    fmtCount(totals.runCount),
+                    `${fmtCount(totals.passCount)} (${percent(totals.passRate, 2)})`,
+                    fmtCount(totals.failCount),
+                    fmtCount(totals.timeoutCount),
+                    fmtCount(totals.crashCount),
+                    fmtCount(totals.skipCount),
+                ],
+            ]
+        )
+    );
+    lines.push('');
+    lines.push(`**Verdict:** ${result.verdict.summary}`);
+    for (const note of result.verdict.notes) {
+        lines.push('');
+        lines.push(note);
+    }
+
+    if (result.configs.length > 0) {
+        lines.push('');
+        lines.push(md.heading('Failing configurations'));
+        lines.push('');
+        const shown = applyLimit(result.configs, limit);
+        lines.push(
+            ...md.table(
+                [
+                    { header: 'Configuration' },
+                    { header: 'fail rate', align: 'right' },
+                    { header: 'fails', align: 'right' },
+                    { header: 'recent', align: 'right' },
+                    { header: 'runs', align: 'right' },
+                ],
+                shown.map((config) => [
+                    config.jobName,
+                    percent(config.failRate),
+                    String(config.failCount),
+                    percent(config.recentFailRate),
+                    String(config.runCount),
+                ])
+            )
+        );
+        lines.push(md.moreLine(result.configs.length, shown.length));
+    }
+
+    if (result.messages.length > 0) {
+        lines.push('');
+        lines.push(md.heading('Failure messages'));
+        lines.push('');
+        const shown = applyLimit(result.messages, limit);
+        lines.push(
+            ...md.table(
+                [{ header: 'count', align: 'right' }, { header: 'message' }],
+                shown.map((entry) => [String(entry.count), oneLine(entry.message)])
+            )
+        );
+        lines.push(md.moreLine(result.messages.length, shown.length));
+    }
+
+    if (result.skips.length > 0) {
+        lines.push('');
+        lines.push(md.heading('Skips'));
+        lines.push('');
+        const shown = applyLimit(result.skips, limit);
+        lines.push(
+            ...md.table(
+                [{ header: 'count', align: 'right' }, { header: 'reason' }],
+                shown.map((entry) => [String(entry.count), oneLine(entry.message)])
+            )
+        );
+        lines.push(md.moreLine(result.skips.length, shown.length));
+    }
+
+    if (result.coverage !== undefined) {
+        lines.push('');
+        lines.push(md.heading('Coverage'));
+        lines.push('');
+        if (!result.coverage.attributedPasses) {
+            lines.push(
+                'Not available from this file: it does not attribute passing runs to a configuration.'
+            );
+        } else {
+            const shown = applyLimit(result.coverage.configs, limit);
+            lines.push(
+                ...md.table(
+                    [
+                        { header: 'Configuration' },
+                        { header: 'runs', align: 'right' },
+                        { header: 'pass', align: 'right' },
+                        { header: 'fail', align: 'right' },
+                        { header: 'skip', align: 'right' },
+                        { header: 'status' },
+                    ],
+                    shown.map((config) => [
+                        config.jobName,
+                        String(config.runCount),
+                        String(config.passCount),
+                        String(config.failCount),
+                        String(config.skipCount),
+                        config.state,
+                    ])
+                )
+            );
+            lines.push(md.moreLine(result.coverage.configs.length, shown.length));
+        }
+    }
+
+    if (result.executions !== undefined) {
+        lines.push('');
+        lines.push(md.heading('Executions'));
+        lines.push('');
+        lines.push(...renderExecutionsText(result.executions).slice(1).map((line) => line.trim()));
+    }
+
+    return joinLines(lines);
+}
+
+/** The header's window phrase. */
+function describeWindow(metadata: TestJson['metadata']): string {
+    if (metadata.singleDay) {
+        return `${dateWithWeekday(metadata.endDate)} only`;
+    }
+    return (
+        `${metadata.dayCount} days (${dateWithWeekday(metadata.startDate)} … ` +
+        `${dateWithWeekday(metadata.endDate)})`
+    );
+}
+
+/** The directory a test lives in. */
+function dirOf(path: string): string {
+    const slash = path.lastIndexOf('/');
+    return slash === -1 ? '.' : path.slice(0, slash);
+}
+
+/** Collapses a multi-line message onto one line for a table cell. */
+function oneLine(value: string): string {
+    return value.replace(/\s*\r?\n\s*/g, ' ⏎ ').trim();
+}
