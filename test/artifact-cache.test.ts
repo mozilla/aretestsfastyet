@@ -704,6 +704,22 @@ async function bucketSource(): Promise<DataSource & { requested: string[] }> {
     };
 }
 
+/** A source serving just `index.json`, for a command that reads no artifacts. */
+async function datesSource(): Promise<DataSource> {
+    const { readFile } = await import('node:fs/promises');
+    return {
+        name: 'fixtures',
+        async fetch(name: DataFileName): Promise<Uint8Array> {
+            if (name.filename !== 'index.json') {
+                throw new DataFileNotFoundError(name);
+            }
+            return new Uint8Array(
+                await readFile(new URL('./fixtures/index.json', import.meta.url))
+            );
+        },
+    };
+}
+
 /** The test whose failures the runs below report. Present in `xpcshell-00.json`. */
 const E2E_TEST_PATH = 'dom/indexedDB/test/unit/test_rename_objectStore_errors.js';
 
@@ -824,14 +840,18 @@ test('a command that reads no artifacts says nothing about them', async () => {
         const { run } = await import('../cli/main.ts');
         const { captureStreams } = await import('../cli/context.ts');
         const streams = captureStreams();
+        // A command that runs all the way through dispatch, not `cache`, which
+        // returns before the reporting is reached. That distinction is what
+        // the test is for: with `cache` here, a mutation deleting the
+        // zero-artifact guard survived, and the mutant prints "All 0 job
+        // profiles came from the cache" on the end of every command's output.
         await run({
-            argv: ['cache', '--size'],
+            argv: ['dates', '--harness', 'xpcshell', '--json'],
             streams,
+            source: await datesSource(),
             cache: diskCache({ directory }),
         });
-        // Every other command must be unaffected: a run that read no profiles
-        // must not report on profiles.
-        assert.doesNotMatch(streams.stderr, /job profiles/);
+        assert.doesNotMatch(streams.stderr, /job profiles/, streams.stderr);
     });
 });
 
