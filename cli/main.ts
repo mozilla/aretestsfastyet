@@ -270,6 +270,8 @@ export async function run(options: RunOptions): Promise<ExitCodeValue> {
 
 /** Parses, builds the context, and hands off to a command. */
 async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
+    artifactHits = 0;
+    artifactMisses = 0;
     const argv = [...options.argv];
     const { streams } = options;
 
@@ -387,6 +389,7 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
     }
 
     await command.run(context, args);
+    reportArtifactCacheUse(globals, streams);
 
     // Task artifacts are the only entries nothing supersedes — a new push adds
     // 46 more profiles rather than replacing any — so the budget is enforced
@@ -420,8 +423,52 @@ function buildArtifactFetcher(
         return http;
     }
     return cachedArtifactFetcher(http, cache, {
+        onHit: () => {
+            artifactHits++;
+        },
+        onMiss: () => {
+            artifactMisses++;
+        },
         onWarning: (message) => streams.err(`warning: ${message}\n`),
     });
+}
+
+/**
+ * How many artifacts this run read from disk, and how many it downloaded.
+ *
+ * Module state, which is worth justifying rather than leaving as a smell:
+ * `run()` is single-invocation per process and the counters are reset at the
+ * top of `dispatch()`, so the alternative — threading a counter through
+ * `CommandContext` into `try.ts` — would add a field to the interface every
+ * command shares in order to report on something only one of them does.
+ */
+let artifactHits = 0;
+let artifactMisses = 0;
+
+/**
+ * Says where this run's artifacts came from, once the answer is known.
+ *
+ * The progress line cannot: it is printed before the first fetch, so it says
+ * "Reading 46 job profiles" whether they come from the network or from disk.
+ * Saying which afterwards is what answers "is the cache working?" without
+ * anyone having to instrument a fetch — the question this whole change was
+ * reported as.
+ *
+ * Silent when nothing was read, so every other command is unaffected.
+ */
+function reportArtifactCacheUse(globals: ReturnType<typeof readGlobalOptions>, streams: OutputStreams): void {
+    const total = artifactHits + artifactMisses;
+    if (total === 0 || globals.quiet) {
+        return;
+    }
+    streams.err(
+        artifactMisses === 0
+            ? `All ${total} job profiles came from the cache; nothing was downloaded.\n`
+            : artifactHits === 0
+              ? `Downloaded ${total} job profiles; a second run will read them from the cache.\n`
+              : `Read ${artifactHits} of ${total} job profiles from the cache, ` +
+                `downloaded ${artifactMisses}.\n`
+    );
 }
 
 /**

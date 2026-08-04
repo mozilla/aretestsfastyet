@@ -778,6 +778,63 @@ test('a second fx-tests try run makes zero artifact requests', async () => {
     });
 });
 
+test('the run says where its profiles came from', async () => {
+    await withCacheDir(async (directory) => {
+        const profiles = {
+            [`https://firefox-ci-tc.services.mozilla.com/api/queue/v1/task/TASKONE/runs/0/artifacts/public/test_info/profile_resource-usage.json`]:
+                tinyProfile(E2E_TEST_PATH),
+            [`https://firefox-ci-tc.services.mozilla.com/api/queue/v1/task/TASKTWO/runs/0/artifacts/public/test_info/profile_resource-usage.json`]:
+                tinyProfile(E2E_TEST_PATH),
+        };
+        const http = countingFetcher(profiles);
+        const { run } = await import('../cli/main.ts');
+        const { captureStreams } = await import('../cli/context.ts');
+
+        const cold = captureStreams();
+        await run({
+            argv: ['try', '7d16bff8', '--json'],
+            streams: cold,
+            source: await bucketSource(),
+            cache: diskCache({ directory }),
+            treeherder: e2eTreeherder(),
+            httpFetchUrl: http,
+        });
+        assert.match(cold.stderr, /Downloaded 2 job profiles/);
+
+        // The line the bug was reported against says "Reading 46 job
+        // profiles" on both runs, because it is printed before the first
+        // fetch and cannot know. Saying afterwards which it was is what
+        // answers "is the cache working?" without instrumenting a fetch.
+        const warm = captureStreams();
+        await run({
+            argv: ['try', '7d16bff8', '--json'],
+            streams: warm,
+            source: await bucketSource(),
+            cache: diskCache({ directory }),
+            treeherder: e2eTreeherder(),
+            httpFetchUrl: http,
+        });
+        assert.match(warm.stderr, /All 2 job profiles came from the cache/);
+        assert.doesNotMatch(warm.stderr, /Downloaded/);
+    });
+});
+
+test('a command that reads no artifacts says nothing about them', async () => {
+    await withCacheDir(async (directory) => {
+        const { run } = await import('../cli/main.ts');
+        const { captureStreams } = await import('../cli/context.ts');
+        const streams = captureStreams();
+        await run({
+            argv: ['cache', '--size'],
+            streams,
+            cache: diskCache({ directory }),
+        });
+        // Every other command must be unaffected: a run that read no profiles
+        // must not report on profiles.
+        assert.doesNotMatch(streams.stderr, /job profiles/);
+    });
+});
+
 test('--no-cache makes fx-tests try re-fetch every artifact', async () => {
     await withCacheDir(async (directory) => {
         const http = countingFetcher({

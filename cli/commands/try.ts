@@ -252,9 +252,15 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
 
     let timings: TestTiming[] = [];
     if (failedTestJobs.length > 0) {
+        // "Reading", not "Fetching": the profiles are cached on disk after the
+        // first run, so a warm run reads all 46 and downloads none. Printing
+        // "Fetching 46 job profiles" there is what made the caching look
+        // broken when it was working — it is the line the bug was reported
+        // against. The command cannot say which it will be before it starts,
+        // so it says the thing that is true either way.
         progress(
             context,
-            `Fetching ${failedTestJobs.length} job profiles (one per failed test job)…`
+            `Reading ${failedTestJobs.length} job profiles (one per failed test job)…`
         );
         timings = await collectTimings(
             context,
