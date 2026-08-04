@@ -890,8 +890,16 @@ function aggregateFailures(
         failureCount: number;
         /** Per config: the runs of it in which this test failed. */
         failedRunsByJobName: Map<string, Set<string>>;
-        /** Per config: whether the harness's in-job rerun ever passed there. */
-        passedOnRerunByJobName: Map<string, boolean>;
+        /**
+         * The configs where the harness's in-job rerun passed.
+         *
+         * A set, not a `Map<string, boolean>`. It only ever held `true`, so
+         * every read had to compare against it and every derivation had to
+         * filter it — code that looked like it was deciding something and
+         * could not decide anything, which two mutations confirmed by
+         * surviving. Absence is the other case.
+         */
+        passedOnRerunConfigs: Set<string>;
         messages: Map<string, number>;
         statuses: Set<string>;
         modes: Set<string>;
@@ -908,7 +916,7 @@ function aggregateFailures(
                 path: timing.path,
                 failureCount: 0,
                 failedRunsByJobName: new Map(),
-                passedOnRerunByJobName: new Map(),
+                passedOnRerunConfigs: new Set(),
                 messages: new Map(),
                 statuses: new Set(),
                 modes: new Set(),
@@ -927,7 +935,7 @@ function aggregateFailures(
             entry.messages.set(timing.message, (entry.messages.get(timing.message) ?? 0) + 1);
         }
         if (passedOnRerunByRun.get(runKeyOf(timing))?.has(timing.path) === true) {
-            entry.passedOnRerunByJobName.set(timing.jobName, true);
+            entry.passedOnRerunConfigs.add(timing.jobName);
         }
         const suffix = /-(PARALLEL|SEQUENTIAL)$/.exec(timing.status)?.[1];
         entry.modes.add(suffix ?? 'UNRECORDED');
@@ -969,7 +977,7 @@ function aggregateFailures(
         // here reads like it is doing that work and does none: removing it
         // changes no output on any input, which a mutation confirmed.
         const permaFailingConfigs = jobNames.filter((jobName) => {
-            if (entry.passedOnRerunByJobName.get(jobName) === true) {
+            if (entry.passedOnRerunConfigs.has(jobName)) {
                 return false;
             }
             const runsOfConfig = runsPerJobName.get(jobName) ?? 0;
@@ -977,10 +985,7 @@ function aggregateFailures(
             return runsOfConfig > 0 && failed >= runsOfConfig;
         });
 
-        const passedOnRerunConfigs = [...entry.passedOnRerunByJobName]
-            .filter(([, passed]) => passed)
-            .map(([jobName]) => jobName)
-            .sort();
+        const passedOnRerunConfigs = [...entry.passedOnRerunConfigs].sort();
 
         failures.push({
             path: entry.path,
@@ -1453,14 +1458,18 @@ function section(
         // and perma-failed on one has to say which one — that is the config to
         // reproduce on.
         //
-        // Also printed when the harness's rerun went green somewhere, even if
-        // that leaves nothing else to distinguish: the next line names those
-        // configs, and without this one it would be the only per-config fact
-        // on the row and would read as contradicting the section it is in.
+        // No extra clause is needed for the rerun case, though it looks like
+        // one would be: a row that says where the rerun passed must also say
+        // where the test failed every run, or it states only the first and
+        // reads as contradicting its own section. That is already guaranteed.
+        // `passedOnRerunConfigs` is a subset of `jobNames`, and
+        // `permaFailingConfigs` excludes every config in it, so a non-empty
+        // `passedOnRerunConfigs` forces the strict inequality below. An
+        // explicit `|| passedOnRerunConfigs.length > 0` was tried and a
+        // mutation removing it changed no output on any input.
         if (
             failure.permaFailingConfigs.length > 0 &&
-            (failure.permaFailingConfigs.length < failure.jobNames.length ||
-                failure.passedOnRerunConfigs.length > 0)
+            failure.permaFailingConfigs.length < failure.jobNames.length
         ) {
             const every = failure.permaFailingConfigs;
             lines.push(

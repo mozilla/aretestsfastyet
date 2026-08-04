@@ -90,11 +90,14 @@ mutate cli/commands/try.ts \
     '    return `Passed when the harness reran it in the same job — intermittent.`;' \
     'the rerun sentence names no configuration'
 
-# The filter that decides which configs go in the sentence.
+# Which configs go in the sentence. The accumulator is a Set, so membership
+# is the whole answer; it used to be a Map<string, boolean> that only ever
+# held true, and the filter over it survived mutation because it could not
+# decide anything. Mutating the membership test is the real question.
 mutate cli/commands/try.ts \
-    '            .filter(([, passed]) => passed)' \
-    '            .filter(() => true)' \
-    'configs the rerun did not rescue are named as rescued'
+    '            if (entry.passedOnRerunConfigs.has(jobName)) {' \
+    '            if (!entry.passedOnRerunConfigs.has(jobName)) {' \
+    'the configs the rerun rescued and did not are swapped'
 
 # The line is emitted at all.
 mutate cli/commands/try.ts \
@@ -102,12 +105,19 @@ mutate cli/commands/try.ts \
     '    if (configs.length >= 0) {' \
     'the rerun line is never printed'
 
-# The perma-failing config has to be named alongside it, or the row states
-# only where the rerun passed and reads as contradicting its own section.
+# Not mutated: an `|| failure.passedOnRerunConfigs.length > 0` clause on the
+# "failed every run on" condition, so that a row naming where the rerun passed
+# always also names where the test failed every run. It was tried and it
+# survived, because it is unreachable: `passedOnRerunConfigs` is a subset of
+# `jobNames` and `permaFailingConfigs` excludes every member of it, so a
+# non-empty `passedOnRerunConfigs` already forces the strict inequality. The
+# clause has been removed rather than pinned.
+
+# The condition that does the work, which the above rests on.
 mutate cli/commands/try.ts \
-    '                failure.passedOnRerunConfigs.length > 0)' \
-    '                false)' \
-    'the permanent config is unnamed when the rerun rescued another'
+    '            failure.permaFailingConfigs.length < failure.jobNames.length' \
+    '            failure.permaFailingConfigs.length <= failure.jobNames.length' \
+    'the permanent configs are relisted when they are all of them'
 
 # --- 3: the streamed-profile diagnostic ---------------------------------
 
