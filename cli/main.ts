@@ -18,6 +18,7 @@ import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
 import { CRASH_OPTIONS, runCrash } from './commands/crash.ts';
 import { runDates } from './commands/dates.ts';
 import { ERRORS_OPTIONS, runErrors } from './commands/errors.ts';
+import { GUIDE_OPTIONS, runGuide } from './commands/guide.ts';
 import {
     CRASHES_OPTIONS,
     FAILURES_OPTIONS,
@@ -122,6 +123,13 @@ const COMMANDS: CommandSpec[] = [
         run: runSummary,
     },
     {
+        name: 'guide',
+        summary: 'What this data can and cannot tell you. Read this first.',
+        usage: 'fx-tests guide',
+        options: GUIDE_OPTIONS,
+        run: runGuide,
+    },
+    {
         name: 'dates',
         summary: 'Which dates have published data.',
         usage: 'fx-tests dates [options]',
@@ -149,9 +157,7 @@ const COMMANDS: CommandSpec[] = [
  * the wrong signal entirely; this list shrank twice while step 4 was being
  * reviewed.
  */
-export const PLANNED_COMMANDS: Record<string, string> = {
-    guide: 'orientation for an agent',
-};
+export const PLANNED_COMMANDS: Record<string, string> = {};
 
 /** What `run()` needs from its caller. */
 export interface RunOptions {
@@ -383,10 +389,13 @@ export function topLevelHelp(): string {
         '',
         'Commands:',
         ...COMMANDS.map((c) => `  ${c.name.padEnd(width)}  ${c.summary}`),
+        // Omitted entirely when everything `CLI.md` documents has landed, which
+        // it now has. An empty "Planned:" heading reads as a rendering fault.
+        ...(Object.keys(PLANNED_COMMANDS).length === 0
+            ? []
+            : ['', 'Planned (docs/CLI.md, not implemented yet):', `  ${Object.keys(PLANNED_COMMANDS).join(', ')}`]),
         '',
-        'Planned (docs/CLI.md, not implemented yet):',
-        `  ${Object.keys(PLANNED_COMMANDS).join(', ')}`,
-        '',
+        'New here? Run `fx-tests guide` — it covers what this data cannot tell you.',
         'Run `fx-tests <command> --help` for a command’s options.',
         'Global options are documented in docs/CLI.md.',
         '',

@@ -222,8 +222,12 @@ test('a command CLI.md specifies but has not landed says so, rather than "unknow
     // behaviour, which outlives any particular name.
     const { PLANNED_COMMANDS } = await import('../cli/main.ts');
     const planned = Object.entries(PLANNED_COMMANDS);
-    assert.ok(planned.length > 0, 'CLI.md still documents unimplemented commands');
-
+    // Step 5 landed the last of them, so this is now legitimately empty and the
+    // loop below is a no-op. Kept rather than deleted: `CLI.md` will document a
+    // command before it exists again, and the branch it guards — "documented
+    // but unlanded" must not read as "unknown command" — still exists in
+    // `dispatch()`. `the planned-command branch is still wired up` below is
+    // what keeps that branch covered while the list is empty.
     for (const [name, description] of planned) {
         const { code, stderr } = await invoke([name]);
         assert.equal(code, ExitCode.Usage, name);
@@ -233,6 +237,25 @@ test('a command CLI.md specifies but has not landed says so, rather than "unknow
         // And the distinction that matters: not "unknown command", which would
         // send someone who read the spec correctly looking for a typo.
         assert.doesNotMatch(stderr, /unknown command/, name);
+    }
+});
+
+test('the planned-command branch is still wired up, with the list empty', async () => {
+    // With `PLANNED_COMMANDS` empty the loop above covers nothing, so the
+    // branch would rot untested until the next unlanded command appeared — and
+    // then be discovered broken. This drives it directly by injecting an entry,
+    // which is the only way to exercise it while everything is implemented.
+    const main = await import('../cli/main.ts');
+    const planned = main.PLANNED_COMMANDS as Record<string, string>;
+    planned['futurecommand'] = 'something CLI.md will describe one day';
+    try {
+        const { code, stderr } = await invoke(['futurecommand']);
+        assert.equal(code, ExitCode.Usage);
+        assert.match(stderr, /not implemented yet/);
+        assert.match(stderr, /something CLI.md will describe one day/);
+        assert.doesNotMatch(stderr, /unknown command/);
+    } finally {
+        delete planned['futurecommand'];
     }
 });
 
