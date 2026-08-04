@@ -1441,9 +1441,9 @@ test('the try test column truncates paths from the left', async () => {
         }),
     });
     const basename = MOCHITEST_PATH.slice(MOCHITEST_PATH.lastIndexOf('/') + 1);
-    // The table *row*, not merely the output: the full-path footer below the
-    // table also contains the basename, so asserting on the whole of stdout
-    // would pass with the column still cutting the filename off.
+    // The table *row*, not merely the output: any full-path footer below the
+    // table would also contain the basename, so asserting on the whole of
+    // stdout would pass with the column still cutting the filename off.
     const row = streams.stdout
         .split('\n')
         .map((line) => line.trim())
@@ -1455,13 +1455,20 @@ test('the try test column truncates paths from the left', async () => {
     const cell = (row.split(/\s{2,}/).find(
         (part) => part.startsWith('…/') || part === MOCHITEST_PATH
     ) ?? '');
-    assert.ok(cell.startsWith('…/'), `the 73-character path must be shortened: ${cell}`);
+    // The column sizes itself to the paths it is given, so this 73-character
+    // path — which the old hardcoded 60 would have cut — now appears whole. If
+    // a path ever does exceed the cap the cut comes off the front, so either
+    // way the filename survives and the value stays copyable.
+    assert.ok(
+        cell === MOCHITEST_PATH || cell.startsWith('…/'),
+        `the path is whole, or cut at the front: ${cell}`
+    );
     assert.ok(
         cell.endsWith(basename),
         `the filename must survive in the table row: ${cell}`
     );
-    // And the full path is present too, so it can be copied into the next
-    // command. That is the whole purpose of the output.
+    // And the full path is present, so it can be copied into the next command.
+    // That is the whole purpose of the output.
     assert.ok(
         streams.stdout.includes(MOCHITEST_PATH),
         'the full path must be obtainable from the default output'

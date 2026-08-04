@@ -902,7 +902,7 @@ test('crashes groups by signature and counts distinct tests', async () => {
 });
 
 test('issues --group-by message is a different query, not a regrouping', async () => {
-    const byTest = await invoke(['issues', '--json', '--limit', '0']);
+    const byTest = await invoke(['issues', '--json', '--limit', '0', '--group-by', 'test']);
     const byMessage = await invoke(['issues', '--json', '--limit', '0', '--group-by', 'message']);
     const testRows = json(byTest.stdout)['rows'] as Record<string, unknown>[];
     const messageRows = json(byMessage.stdout)['rows'] as Record<string, unknown>[];
@@ -928,18 +928,23 @@ test('issues --group-by component and directory aggregate rather than list tests
     }
 });
 
-test('issues does not count skips by default: a skipped test is not a failing one', async () => {
-    // `fx-tests skips` is its own command, and folding skips into the default
-    // `issues` view would put every platform-scoped test in the triage list.
-    const byDefault = await invoke(['issues', '--json', '--limit', '0']);
-    assert.deepEqual(json(byDefault.stdout)['types'], ['fail', 'timeout', 'crash']);
+test('issues counts all four outcomes by default, as the dashboard does', async () => {
+    // `issues.html:626-638` has four "Count as issues" checkboxes — failures,
+    // timeouts, crashes and skips — and every one of them is `checked` on load.
+    // The CLI used to omit skips, which ranked components against a different
+    // definition of "issue" than the page the data comes from. Skips are the
+    // largest of the four in this data, so the omission changed the order.
+    const byDefault = await invoke(['issues', '--json', '--limit', '0', '--group-by', 'test']);
+    assert.deepEqual(json(byDefault.stdout)['types'], ['fail', 'timeout', 'crash', 'skip']);
 
     // Every test in this fixture that has skips also has failures, so the two
     // row *sets* happen to coincide here and comparing them would prove
     // nothing. What does discriminate is `--type skip` alone: it must keep only
     // tests that were actually skipped, and the fixture has three tests with
     // failures and no skips at all for it to drop.
-    const skipOnly = await invoke(['issues', '--json', '--limit', '0', '--type', 'skip']);
+    const skipOnly = await invoke([
+        'issues', '--json', '--limit', '0', '--group-by', 'test', '--type', 'skip',
+    ]);
     const skipRows = json(skipOnly.stdout)['rows'] as { test: string; skipCount: number }[];
     assert.ok(skipRows.length > 0, 'the fixture must have skipped tests');
     assert.ok(skipRows.every((row) => row.skipCount > 0));
@@ -951,6 +956,77 @@ test('issues does not count skips by default: a skipped test is not a failing on
     assert.ok(
         skipRows.length < defaultRows.length,
         '--type skip must be a strictly narrower set here'
+    );
+});
+
+test('issues defaults to the component ranking, not a flat list of tests', async () => {
+    // The reported bug: `fx-tests issues` printed "a few random tests" because
+    // it led with a per-test list, while `issues.html:888` hardcodes the
+    // components view ("Always use components view for issues page") and sorts
+    // it by issue count (`:663`). Triage starts by finding the area to look at.
+    const { stdout } = await invoke(['issues', '--json', '--limit', '0']);
+    const result = json(stdout);
+    assert.equal(result['groupBy'], 'component', 'the default view is by component');
+    assert.equal(result['sort'], 'issues', 'ranked by issue count, as the page is');
+
+    const rows = result['rows'] as {
+        key: string;
+        issueCount: number;
+        testCount: number;
+        totalTestCount: number;
+    }[];
+    assert.ok(rows.length > 0, 'the fixture must produce component rows');
+    // Ranked descending by issue count, and by a margin — an accidentally
+    // ordered list of equal values would satisfy a non-strict check.
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            rows[i - 1]!.issueCount >= rows[i]!.issueCount,
+            `component ${i} outranks its predecessor: ${JSON.stringify(rows.slice(i - 1, i + 1))}`
+        );
+    }
+    assert.ok(
+        rows[0]!.issueCount > rows[rows.length - 1]!.issueCount,
+        'the ranking must actually discriminate, not be a tie'
+    );
+    // "N tests with issues, out of M" — the denominator covers clean tests too,
+    // as the page's does (`:2010` accumulates before `:2016` filters).
+    for (const row of rows) {
+        assert.ok(row.testCount > 0, `a listed component has an affected test: ${row.key}`);
+        assert.ok(
+            row.totalTestCount >= row.testCount,
+            `the "out of" total includes the affected tests: ${JSON.stringify(row)}`
+        );
+    }
+});
+
+test('issues --type narrows the union and changes the ranking', async () => {
+    // The checkboxes are togglable and turning one off must move the ranking,
+    // as it does on the page. Skips dominate this data, so dropping them is the
+    // case most likely to reorder — and the one that would silently do nothing
+    // if `--type` were only filtering rows rather than feeding the count.
+    const all = await invoke(['issues', '--json', '--limit', '0']);
+    const noSkips = await invoke([
+        'issues', '--json', '--limit', '0', '--type', 'fail,timeout,crash',
+    ]);
+    const allRows = json(all.stdout)['rows'] as { key: string; issueCount: number }[];
+    const fewerRows = json(noSkips.stdout)['rows'] as { key: string; issueCount: number }[];
+    assert.deepEqual(json(noSkips.stdout)['types'], ['fail', 'timeout', 'crash']);
+
+    const skipsOf = (rows: { key: string; issueCount: number }[]): Map<string, number> =>
+        new Map(rows.map((row) => [row.key, row.issueCount]));
+    const withSkips = skipsOf(allRows);
+    const without = skipsOf(fewerRows);
+    // Every component's total must drop or hold — never rise — when a type is
+    // removed from the union.
+    for (const [key, count] of without) {
+        assert.ok(
+            count <= (withSkips.get(key) ?? Infinity),
+            `${key} counted more issues with fewer types enabled`
+        );
+    }
+    assert.ok(
+        [...without].some(([key, count]) => count < (withSkips.get(key) ?? 0)),
+        'dropping skips must reduce some component total, or --type is decorative'
     );
 });
 
@@ -979,21 +1055,58 @@ test('issues --min-rate accepts a fraction and filters on it', async () => {
 });
 
 test('issues --sort changes the order', async () => {
-    const byRate = await invoke(['issues', '--json', '--limit', '0']);
-    const byName = await invoke(['issues', '--json', '--limit', '0', '--sort', 'name']);
-    const rateRows = (json(byRate.stdout)['rows'] as { test: string }[]).map((r) => r.test);
+    const perTest = ['issues', '--json', '--limit', '0', '--group-by', 'test'];
+    const byIssues = await invoke(perTest);
+    const byName = await invoke([...perTest, '--sort', 'name']);
+    const byRate = await invoke([...perTest, '--sort', 'rate']);
+    const issueRows = (json(byIssues.stdout)['rows'] as { test: string }[]).map((r) => r.test);
     const nameRows = (json(byName.stdout)['rows'] as { test: string }[]).map((r) => r.test);
+    const rateRows = (json(byRate.stdout)['rows'] as { test: string }[]).map((r) => r.test);
     assert.deepEqual(nameRows, [...nameRows].sort());
-    assert.notDeepEqual(rateRows, nameRows, '--sort name must reorder');
+    assert.notDeepEqual(issueRows, nameRows, '--sort name must reorder');
+    // The default is now issue count, so `--sort rate` has to be a real re-sort
+    // rather than the identity it used to be.
+    assert.notDeepEqual(issueRows, rateRows, '--sort rate must differ from the default');
+    const issueCounts = (
+        json(byIssues.stdout)['rows'] as { issueCount: number }[]
+    ).map((r) => r.issueCount);
+    for (let i = 1; i < issueCounts.length; i++) {
+        assert.ok(issueCounts[i - 1]! >= issueCounts[i]!, 'the default order is by issue count');
+    }
+});
+
+test('issues --sort works on the component ranking too', async () => {
+    const byIssues = await invoke(['issues', '--json', '--limit', '0']);
+    const byName = await invoke(['issues', '--json', '--limit', '0', '--sort', 'name']);
+    const byRate = await invoke(['issues', '--json', '--limit', '0', '--sort', 'rate']);
+    const keys = (out: string): string[] =>
+        (json(out)['rows'] as { key: string }[]).map((row) => row.key);
+    assert.deepEqual(keys(byName.stdout), [...keys(byName.stdout)].sort());
+    assert.notDeepEqual(keys(byIssues.stdout), keys(byName.stdout));
+    const rates = (json(byRate.stdout)['rows'] as { issueRate: number }[]).map((r) => r.issueRate);
+    for (let i = 1; i < rates.length; i++) {
+        assert.ok(rates[i - 1]! >= rates[i]!, '--sort rate orders components by issue rate');
+    }
 });
 
 test('issues --path and --component narrow the set', async () => {
-    const all = await invoke(['issues', '--json', '--limit', '0']);
-    const scoped = await invoke(['issues', '--json', '--limit', '0', '--path', 'netwerk/']);
+    const perTest = ['issues', '--json', '--limit', '0', '--group-by', 'test'];
+    const all = await invoke(perTest);
+    const scoped = await invoke([...perTest, '--path', 'netwerk/']);
     const rows = json(scoped.stdout)['rows'] as { test: string }[];
     assert.ok(rows.length > 0);
     assert.ok(rows.every((row) => row.test.startsWith('netwerk/')));
     assert.ok(rows.length < (json(all.stdout)['rows'] as unknown[]).length);
+
+    // `--component` on the default (component) view narrows to the named
+    // component rather than silently returning everything.
+    const byComponent = await invoke(['issues', '--json', '--limit', '0', '--component', 'Network']);
+    const groups = json(byComponent.stdout)['rows'] as { key: string }[];
+    assert.ok(groups.length > 0, '--component must match something in the fixture');
+    assert.ok(
+        groups.every((group) => group.key.toLowerCase().includes('network')),
+        `--component must drop non-matching components: ${JSON.stringify(groups.map((g) => g.key))}`
+    );
 });
 
 test('skips says the aggregate already dropped run-if, rather than "excluded 0"', async () => {
@@ -1081,74 +1194,101 @@ test('the tree-wide commands say what they truncated', async () => {
  * longest test path is 83 characters against a 62-character column, so the
  * columns below do truncate and this is not a vacuous assertion.
  */
-test('the tree-wide path columns keep the filename, not the directories', async () => {
-    for (const argv of [
-        ['issues', '--limit', '20'],
-        ['skips', '--limit', '20'],
-    ]) {
-        const { stdout } = await invoke(argv);
-        // The first column of every data row, whether or not it was shortened.
-        // Reading only the shortened ones would miss the failure mode
-        // entirely: with a tail cut the row starts with `toolkit/…` and ends
-        // with `…`, so a filter for lines *starting* with `…` skips it.
-        const paths = stdout
-            .split('\n')
-            // A data row's first cell is a lone token with no spaces in it,
-            // which rules out the prose header and the "… n more" footer.
-            .map((line) => line.trim().split(/\s{2,}/)[0] ?? '')
-            .filter((cell) => cell.length > 0 && !/\s/.test(cell))
-            // …and it is a path: it has a slash and a file extension, or it
-            // was shortened from one.
-            .filter((cell) => /\//.test(cell) && /\.\w+$|…$/.test(cell));
+/**
+ * Every path a tree-wide command prints must be copyable into the next one.
+ *
+ * This is the bug the owner reported twice: paths were cut to a hardcoded 56 or
+ * 62 columns with no way to recover them, so the output could not feed
+ * `fx-tests test <path>`. A previous fix added left-truncation and a recovery
+ * block to `try` **only**, and the four tree-wide commands kept shipping
+ * unusable paths — the test that should have caught it looked at `try` alone.
+ *
+ * So this asserts the property that actually matters, on every such command:
+ * for each row, the whole path is obtainable from the default output. The
+ * column now sizes itself to the longest path present, so normally nothing is
+ * cut at all; if a cap ever bites, the recovery block must carry the full value.
+ */
+test('every command that prints a test path prints a usable one', async () => {
+    const commands: [string[], (row: Record<string, unknown>) => string][] = [
+        [['issues', '--group-by', 'test'], (row) => String(row['test'])],
+        [['skips'], (row) => String(row['test'])],
+        [['manifests'], (row) => String(row['manifest'])],
+    ];
+    for (const [argv, pathOf] of commands) {
+        // The JSON is the source of truth for what the rows *are* — it is
+        // documented never to truncate — and the text output is what has to
+        // make each of them recoverable.
+        const { stdout: raw } = await invoke([...argv, '--json', '--limit', '10']);
+        const rows = json(raw)['rows'] as Record<string, unknown>[];
+        assert.ok(rows.length > 0, `${argv[0]}: fixture produced no rows`);
+        const paths = rows.map(pathOf);
+        assert.ok(
+            paths.some((path) => path.includes('/')),
+            `${argv[0]}: expected real paths, got ${JSON.stringify(paths.slice(0, 3))}`
+        );
 
-        const shortened = paths.filter((cell) => cell.includes('…'));
-        assert.ok(shortened.length > 0, `${argv[0]}: expected some path to be shortened`);
-        for (const cell of shortened) {
-            // The cut is at the front and the filename is whole. A cut tail —
-            // `toolkit/components/extensions/test/xpcshell/test_ext_conte…` —
-            // is the bug: unpasteable, ungreppable, and indistinguishable from
-            // its neighbours.
+        const { stdout } = await invoke([...argv, '--limit', '10']);
+        for (const path of paths) {
+            // Present *verbatim* somewhere in the output — in the column when
+            // it fits, in the `full paths` block when it did not. A cell ending
+            // in `…` satisfies neither, which is the whole point.
             assert.ok(
-                cell.startsWith('…/'),
-                `${argv[0]}: a shortened path must be cut at the front: ${cell}`
-            );
-            assert.doesNotMatch(
-                cell,
-                /…$/,
-                `${argv[0]}: the filename must not be the part cut: ${cell}`
-            );
-            assert.match(
-                cell,
-                /\/[^/…]+\.\w+$/,
-                `${argv[0]}: a whole filename must survive: ${cell}`
+                stdout.includes(path),
+                `${argv[0]}: the full path must be obtainable from the default output: ${path}`
             );
         }
     }
 });
 
-test('the manifests column keeps the manifest filename', async () => {
-    const { stdout } = await invoke(['manifests', '--limit', '0', '--sort', 'name']);
-    const cut = stdout
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.startsWith('…/'));
-    assert.ok(cut.length > 0, 'expected some manifest path to be shortened');
-    for (const line of cut) {
-        const manifest = line.split(/\s{2,}/)[0] ?? '';
-        // The last segment survives whole — a `.toml`/`.ini` filename for a
-        // Gecko manifest, a directory name for a WPT one. What must never
-        // happen is the cut landing inside it.
-        assert.doesNotMatch(
-            manifest,
-            /…$/,
-            `the last segment must not be the part cut: ${line}`
-        );
-        assert.match(
-            manifest,
-            /^…\/[^/]+$|^…\/.*\/[^/…]+$/,
-            `a shortened manifest keeps whole trailing segments: ${line}`
-        );
-    }
+test('a path too long for the cap is cut at the front and recovered below', async () => {
+    // The fallback, exercised directly: with auto-sizing the real data no
+    // longer truncates, so nothing end-to-end would cover the cap any more.
+    const { table: renderTable, tableWithPaths, fullPathLines, PATH_COLUMN_CAP } = await import(
+        '../cli/format/text.ts'
+    );
+    const long = `dom/${'nested/'.repeat(30)}test_something_specific.js`;
+    assert.ok(long.length > PATH_COLUMN_CAP, 'the fixture path must exceed the cap');
+
+    const rendered = tableWithPaths(
+        [{ header: 'Test', path: true }, { header: 'n', align: 'right' }],
+        [[long, '1'], ['dom/short/test_a.js', '2']]
+    );
+    const row = rendered.lines.find((line) => line.includes('…')) ?? '';
+    assert.ok(row.includes('…/'), `the cut is at the front: ${row}`);
+    assert.ok(
+        row.includes('test_something_specific.js'),
+        `the filename survives the cut: ${row}`
+    );
+    // And the full value comes back, so it is still copyable.
+    assert.deepEqual(rendered.shortenedPaths, [long]);
+    const recovery = fullPathLines(rendered.shortenedPaths);
+    assert.match(recovery[0]!, /full paths \(1 shortened above\):/);
+    assert.ok(recovery.some((line) => line.includes(long)), 'the whole path is printed back');
+
+    // A path that fits is neither cut nor listed — the block is a fallback,
+    // not something every table carries.
+    const short = tableWithPaths([{ header: 'Test', path: true }], [['dom/test_a.js']]);
+    assert.deepEqual(short.shortenedPaths, []);
+    assert.deepEqual(fullPathLines(short.shortenedPaths), []);
+    // `table()` is the same renderer, so it cannot drift from the above.
+    assert.deepEqual(
+        renderTable([{ header: 'Test', path: true }], [['dom/test_a.js']]),
+        short.lines
+    );
+});
+
+test('a path column sizes itself to the longest path, not to a constant', async () => {
+    const { tableWithPaths } = await import('../cli/format/text.ts');
+    // 83 characters: longer than both constants this replaced (56 and 62), and
+    // well under the cap, so it must survive whole.
+    const path = `browser/components/${'x'.repeat(20)}/test/browser/browser_a_long_name.js`;
+    assert.ok(path.length > 62 && path.length < 128);
+    const rendered = tableWithPaths([{ header: 'Test', path: true }], [[path]]);
+    assert.deepEqual(rendered.shortenedPaths, [], 'a path under the cap is never shortened');
+    assert.ok(
+        rendered.lines.some((line) => line.includes(path)),
+        `the whole ${path.length}-character path must appear: ${rendered.lines.join('\n')}`
+    );
 });
 
 test('--markdown emits a real table from every command, not a fenced block', async () => {
@@ -1217,4 +1357,106 @@ test('--json and text agree on the numbers they both report', async () => {
     const asText = await invoke(['errors', '--limit', '1']);
     const row = (json(asJson.stdout)['rows'] as { count: number }[])[0]!;
     assert.match(asText.stdout, new RegExp(row.count.toLocaleString('en-US').replace('.', '\\.')));
+});
+
+/**
+ * A ranked list must say what it is ranked by.
+ *
+ * `fx-tests issues` was correctly sorted by rate and still read as "a few
+ * random tests, without sorting", because nothing in the output said so. A
+ * reader who does not already know cannot tell an ordered list from an
+ * arbitrary one, so the header carries the marker — the same `▼`/`▲` the
+ * dashboards put on their sort buttons (`failures.html:632`).
+ */
+test('every ranked command marks the column it is ordered by', async () => {
+    const commands = [
+        ['issues'],
+        ['issues', '--group-by', 'test'],
+        ['issues', '--group-by', 'directory'],
+        ['failures'],
+        ['crashes'],
+        ['skips'],
+        ['manifests'],
+    ];
+    for (const argv of commands) {
+        const { stdout } = await invoke([...argv, '--limit', '3']);
+        const marked = stdout
+            .split('\n')
+            .filter((line) => line.includes('▼') || line.includes('▲'));
+        assert.equal(
+            marked.length,
+            1,
+            `${argv.join(' ')}: expected exactly one sort marker, got ${marked.length}: ${marked.join(' | ')}`
+        );
+        // On the header row, not in the data. The marker must sit in a cell
+        // that is a *column name*: checked by confirming the marked token also
+        // appears as a header in the `--json` view's ordering, and that the
+        // line below it is a data row. Shape checks like "contains no digit"
+        // would be wrong here — `manifests` has a column called `p95`.
+        const lines = stdout.split('\n');
+        const markerIndex = lines.findIndex((line) => line.includes('▼') || line.includes('▲'));
+        const marker = lines[markerIndex]!;
+        // The marked cell, without its arrow.
+        const markedColumn = marker
+            .split(/\s{2,}/)
+            .map((cell) => cell.trim())
+            .find((cell) => cell.endsWith('▼') || cell.endsWith('▲'))!
+            .replace(/\s*[▼▲]$/, '');
+        assert.ok(
+            markedColumn.length > 0,
+            `${argv.join(' ')}: the marker must annotate a named column`
+        );
+        // A header row is followed by data, and is not itself data: no cell in
+        // it may be a formatted number, which is what a data row leads with.
+        const below = lines[markerIndex + 1];
+        assert.ok(
+            below !== undefined && below.trim().length > 0,
+            `${argv.join(' ')}: the marked row must be followed by a data row`
+        );
+        assert.doesNotMatch(
+            markedColumn,
+            /^[\d,]+$/,
+            `${argv.join(' ')}: the marker landed on a value, not a column name: ${markedColumn}`
+        );
+    }
+});
+
+test('the sort marker follows --sort rather than being hardcoded', async () => {
+    // A marker that always names the same column would be worse than none: it
+    // would assert an order the command did not produce.
+    const byName = await invoke(['issues', '--limit', '3', '--sort', 'name']);
+    const nameHeader = byName.stdout
+        .split('\n')
+        .find((line) => line.includes('▲') || line.includes('▼'))!;
+    assert.match(nameHeader, /Component ▲/, `--sort name marks the key column, ascending`);
+
+    const byRate = await invoke(['issues', '--limit', '3', '--sort', 'rate']);
+    const rateHeader = byRate.stdout
+        .split('\n')
+        .find((line) => line.includes('▲') || line.includes('▼'))!;
+    assert.match(rateHeader, /rate ▼/, '--sort rate marks the rate column, descending');
+
+    const byIssues = await invoke(['issues', '--limit', '3']);
+    const issuesHeader = byIssues.stdout
+        .split('\n')
+        .find((line) => line.includes('▲') || line.includes('▼'))!;
+    assert.match(issuesHeader, /issues ▼/, 'the default marks the issue-count column');
+});
+
+test('--markdown carries the sort marker too', async () => {
+    // A table pasted into a bug has even less context than one in a terminal.
+    const { stdout } = await invoke(['issues', '--markdown', '--limit', '2']);
+    const header = stdout.split('\n').find((line) => line.startsWith('| Component'))!;
+    assert.match(header, /issues ▼/, `the Markdown header states the order: ${header}`);
+});
+
+test('an empty result says what was searched, not just "no match"', async () => {
+    // "No test matched." alone cannot distinguish a healthy tree from a
+    // mistyped --path, and those want opposite next actions.
+    const { stdout } = await invoke(['issues', '--path', 'no/such/directory/']);
+    assert.match(stdout, /No test matched\./);
+    assert.match(stdout, /Searched [\d,]+ tests/, 'it names the population it searched');
+    assert.match(stdout, /--path/, 'it names the filter most likely to be at fault');
+    // And it does not offer to narrow a set that is already empty.
+    assert.doesNotMatch(stdout, /Drill in with/);
 });

@@ -26,6 +26,38 @@ message column, and say what they truncated (`… 47 more (--limit 0 for all)`)
 rather than silently cutting off. This is why the default is not `--json`:
 the table-encoded JSON for one test is far larger than its prose summary.
 
+That frugality is about **row counts and message columns**, never about the
+identifiers a reader has to copy — see below.
+
+**Identifiers stay copyable; prose gets truncated.** A test path, a manifest
+path and a configuration name are things you paste into the next command. A
+failure message is prose to skim. They therefore get opposite treatment, and
+the table renderer enforces it rather than each command remembering:
+
+- A **path or identifier column sizes itself to the longest value in the rows
+  being printed**, so in normal use nothing is cut at all. Measured over real
+  `issues` output, the widest test path at the default limit is 97 characters
+  and the whole-file worst case is 125; the hardcoded 56- and 62-column limits
+  this replaced were narrower than the p90 of 81, discarding information for no
+  benefit.
+- A generous cap (128) exists only so one pathological value cannot push the
+  numeric columns off a terminal. When it bites, the cut comes off the
+  **front** (`…/test/browser/browser_ml_heuristics.js`) so the filename
+  survives, and the full values are reprinted below the table as
+  `full paths (n shortened above):`. That block is a rare fallback, not
+  something every table carries.
+- A **message column** still truncates from the right, with a trailing `…`.
+
+`--json` never truncates anything, in any command.
+
+**A ranked list says what it is ranked by.** Every table marks its ordering
+column in the header with `▼` (descending) or `▲` (ascending), the same arrows
+the dashboards put on their sort buttons. `fx-tests issues` was correctly sorted
+and still read as "a few random tests, without sorting", because nothing in the
+output said so — a reader who does not already know cannot tell an ordered list
+from an arbitrary one. The marker follows `--sort`, so it always names the order
+actually produced.
+
 **Answers, not dumps.** `fx-tests test <path>` leads with a verdict — is this
 test failing, is it perma-failing on one config, has it been failing for
 three days or three weeks — because that is the question being asked. The
@@ -519,16 +551,42 @@ to those, which is `null` when central attributed no runs to them.
 
 ### `fx-tests issues` — what is failing right now, across the tree
 
-The triage view. Every non-passing outcome over the window, grouped.
+The triage view, and **it leads with components rather than tests** — the same
+question `issues.html` answers, which hardcodes the components view
+(`issues.html:888`) and ranks it by issue count (`:663`). Triage starts by
+finding the area worth looking at; a flat per-test list makes the reader do
+that aggregation themselves.
 
 ```
-$ fx-tests issues --component "Core :: Storage: IndexedDB" --limit 5
+$ fx-tests issues --limit 5
+
+xpcshell issues by component — 21 days (2026-07-14 (Tue) … 2026-08-03 (Mon)), 4,838 tests in the file
+  Counting fail, timeout, crash, skip as issues (all four, as issues.html does; --type narrows it).
+
+  Component                              issues ▼    tests       runs    fail  timeout  crash     skip   rate
+  WebExtensions :: General                584,427  393/396  6,131,520  10,158   16,460  5,273  552,536   8.7%
+  Core :: Networking                      465,363  628/677  7,560,251  16,705   14,697    283  433,678   5.8%
+  Firefox :: Search                       161,929  111/120    590,210      62    1,041    531  160,295  21.6%
+  …
 ```
+
+The `tests` column is "with issues / in the component", as the page's "(393
+tests with issues, out of 402)" — 393 of 396 is a component in trouble, 3 of
+396 is three bad tests, and one number cannot tell them apart.
+
+**An "issue" is a union of four outcomes, all counted by default.** The page has
+four "Count as issues" checkboxes — failures, timeouts, crashes and skips — and
+every one of them is checked on load (`:626-638`). `--type` narrows that union,
+and because it feeds the count rather than merely filtering rows, narrowing it
+reorders the ranking. Skips dominate this data, so `--type fail,timeout,crash`
+is a substantially different view.
 
 Options: `--component <substring>`, `--path <prefix>` (directory subtree),
-`--type <fail|timeout|crash|skip>` (repeatable), `--min-rate <pct>`,
-`--sort <rate|count|name>`, `--group-by <test|component|directory|message>`.
+`--type <fail|timeout|crash|skip>` (repeatable, default all four),
+`--min-rate <pct>`, `--sort <issues|rate|count|name>` (default `issues`),
+`--group-by <component|test|directory|message>` (default `component`).
 
+`--group-by test` is the per-test list, ranked by the same issue count.
 `--group-by message` is the "one bug, many tests" view: a single harness
 change or infra fault often shows up as the same message across dozens of
 tests, and grouping by message makes that one line instead of thirty.
