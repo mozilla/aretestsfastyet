@@ -25,10 +25,64 @@ export interface Column {
      */
     maxWidth?: number;
     /**
-     * Treat cells as slash-separated paths, so `maxWidth` drops leading
-     * directories rather than the basename. See `truncatePath()`.
+     * Treat cells as slash-separated paths.
+     *
+     * A path is an identifier to copy, not prose to skim, so it gets rules a
+     * message column does not:
+     *
+     * - **The width is measured, not declared.** The column grows to the
+     *   longest path actually in the rows being printed, up to
+     *   `PATH_COLUMN_CAP`. A caller does not pass `maxWidth` for a path column
+     *   and cannot get it wrong. The hardcoded 56 and 62 this replaced were
+     *   discarding information for no benefit: measured over real `issues`
+     *   output the widest path at the default limit is 97 characters and the
+     *   p90 is 81, so both constants were truncating the common case.
+     * - **The cut, when the cap does bite, comes off the front**, so the
+     *   basename survives (`truncatePath()`).
+     * - **Whatever is still shortened is recoverable**: `tableWithPaths()`
+     *   collects it for the full-path block. With auto-sizing that is a rare
+     *   fallback rather than the normal path.
      */
     path?: boolean;
+    /**
+     * Mark this column as the one the rows are ordered by.
+     *
+     * The header gets a `▼`/`▲` suffix, because a ranked list that does not
+     * say what it is ranked by is indistinguishable from an arbitrary one —
+     * which is exactly how `issues`, correctly sorted by rate, was read as
+     * "a few random tests, without sorting".
+     */
+    sort?: 'desc' | 'asc';
+}
+
+/**
+ * The most characters a path column may take, when auto-sizing is not enough.
+ *
+ * Chosen from the measured distribution rather than from tradition: over the
+ * whole `xpcshell-issues.json` file (4,054 rows) the longest test path is 125
+ * characters, and at the default 20-row limit it is 97. 128 therefore clears
+ * every real path in the data, and exists only so that one pathological value
+ * cannot push the numeric columns off a terminal — not as a routine limit.
+ */
+export const PATH_COLUMN_CAP = 128;
+
+/**
+ * A rendered table plus the full values of whatever its path columns shortened.
+ *
+ * The two travel together deliberately. The bug this replaced was one command
+ * doing truncation *and* recovery while four did only truncation, so recovery
+ * lived in a command and could be forgotten. Here the renderer that shortens a
+ * path is the same code that reports it, and a caller that renders a table gets
+ * the recovered paths whether or not it remembered to want them.
+ */
+export interface TableWithPaths {
+    /** The table's lines, header first. */
+    lines: string[];
+    /**
+     * Full values of the cells a path column shortened, in row order and
+     * de-duplicated. Empty when nothing was cut.
+     */
+    shortenedPaths: string[];
 }
 
 /**
@@ -42,22 +96,62 @@ export function table(
     rows: readonly (readonly string[])[],
     indent = '  '
 ): string[] {
+    return tableWithPaths(columns, rows, indent).lines;
+}
+
+/**
+ * Renders aligned columns and reports the paths it shortened.
+ *
+ * Use this — or `tableSection()`, which also prints the recovery block —
+ * wherever a column is a path. `table()` is the same renderer for the tables
+ * that have none.
+ */
+export function tableWithPaths(
+    columns: readonly Column[],
+    rows: readonly (readonly string[])[],
+    indent = '  '
+): TableWithPaths {
     if (rows.length === 0) {
-        return [];
+        return { lines: [], shortenedPaths: [] };
     }
+    const shortened: string[] = [];
+    // A path column sizes itself to the widest path it is actually given,
+    // capped. Measuring beats declaring: the constants this replaced (56, 62)
+    // were narrower than the real data's p90 of 81, so they truncated the
+    // common case for no benefit, and every command had to remember its own.
+    const pathWidths = columns.map((column, i) =>
+        column.path === true
+            ? Math.min(
+                  PATH_COLUMN_CAP,
+                  Math.max(0, ...rows.map((row) => (row[i] ?? '').length))
+              )
+            : undefined
+    );
     const cells = rows.map((row) =>
         row.map((cell, i) => {
             const column = columns[i];
-            const max = column?.maxWidth;
+            const max = column?.path === true ? pathWidths[i] : column?.maxWidth;
             if (max === undefined) {
                 return cell;
             }
-            return column?.path === true ? truncatePath(cell, max) : truncate(cell, max);
+            if (column?.path !== true) {
+                return truncate(cell, max);
+            }
+            const cut = truncatePath(cell, max);
+            // Recorded from the comparison, not from a length test the caller
+            // repeats: whether the cell was shortened is something only the
+            // truncation knows, and re-deriving it elsewhere is how the two
+            // halves drifted apart in the first place.
+            if (cut !== cell && !shortened.includes(cell)) {
+                shortened.push(cell);
+            }
+            return cut;
         })
     );
-    const widths = columns.map((column, i) =>
+    const headers = columns.map(headerLabel);
+    const widths = columns.map((_column, i) =>
         Math.max(
-            column.header.length,
+            headers[i]!.length,
             ...cells.map((row) => (row[i] ?? '').length)
         )
     );
@@ -80,7 +174,63 @@ export function table(
         return (indent + parts.join('  ')).trimEnd();
     };
 
-    return [line(columns.map((c) => c.header)), ...cells.map(line)];
+    return { lines: [line(headers), ...cells.map(line)], shortenedPaths: shortened };
+}
+
+/**
+ * A column's header, with the sort marker when it is the ordering column.
+ *
+ * `▼` for descending, `▲` for ascending — one character, no legend needed, and
+ * it appears in the same place a reader is already looking to find out what the
+ * column means.
+ */
+function headerLabel(column: Column): string {
+    if (column.sort === undefined) {
+        return column.header;
+    }
+    return `${column.header} ${column.sort === 'desc' ? '▼' : '▲'}`;
+}
+
+/**
+ * The full-path recovery block: the paths a table shortened, ready to copy.
+ *
+ * The table keeps the basename so rows can be told apart and grepped for, but
+ * `fx-tests test <path>` takes the whole path, and output that cannot feed the
+ * next command is the defect this exists to prevent. Returns no lines when
+ * nothing was cut.
+ */
+export function fullPathLines(shortenedPaths: readonly string[], indent = '  '): string[] {
+    if (shortenedPaths.length === 0) {
+        return [];
+    }
+    return [
+        `${indent}full paths (${shortenedPaths.length} shortened above):`,
+        ...shortenedPaths.map((path) => `${indent}  ${path}`),
+    ];
+}
+
+/**
+ * A table, its `… n more` line and its full-path recovery block, in order.
+ *
+ * The single entry point for "print a table of rows, some of which are paths".
+ * Truncation and recovery cannot be separated here: a caller gets both or
+ * neither, which is the structural version of the convention that four
+ * commands failed to follow.
+ */
+export function tableSection(
+    columns: readonly Column[],
+    rows: readonly (readonly string[])[],
+    options: { total: number; shown: number; indent?: string }
+): string[] {
+    const indent = options.indent ?? '  ';
+    const rendered = tableWithPaths(columns, rows, indent);
+    const lines = [...rendered.lines];
+    const more = moreLine(options.total, options.shown, indent);
+    if (more !== null) {
+        lines.push(more);
+    }
+    lines.push(...fullPathLines(rendered.shortenedPaths, indent));
+    return lines;
 }
 
 /** Truncates with a trailing `…`, so the cut is visible. */

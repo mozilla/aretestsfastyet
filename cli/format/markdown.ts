@@ -20,6 +20,12 @@
 export interface MarkdownColumn {
     header: string;
     align?: 'left' | 'right';
+    /**
+     * The sort marker, carried over from the text `Column` so a pasted table
+     * says what it is ranked by too. A reader of a bug comment has even less
+     * context than one at a terminal.
+     */
+    sort?: 'desc' | 'asc';
 }
 
 /** Renders a Markdown table, or nothing when there are no rows. */
@@ -30,7 +36,11 @@ export function table(
     if (rows.length === 0) {
         return [];
     }
-    const header = `| ${columns.map((c) => escapeCell(c.header)).join(' | ')} |`;
+    const header = `| ${columns
+        .map((c) =>
+            escapeCell(c.sort === undefined ? c.header : `${c.header} ${c.sort === 'desc' ? '▼' : '▲'}`)
+        )
+        .join(' | ')} |`;
     const rule = `| ${columns
         .map((c) => (c.align === 'right' ? '---:' : '---'))
         .join(' | ')} |`;
