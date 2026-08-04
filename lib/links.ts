@@ -220,6 +220,125 @@ export function crashViewerUrl(taskId: string, retryId: number, minidumpId: stri
     return `crash-viewer.html?url=${encodeURIComponent(minidumpJsonUrl(taskId, retryId, minidumpId))}`;
 }
 
+/**
+ * The crash-stats search URL for a signature.
+ *
+ * `~` is crash-stats' "contains" operator, and the `@ ` prefix is stripped
+ * before searching because crash-stats' own signatures do not carry it —
+ * searching for `~@ Foo` matches nothing. Both are upstream's
+ * (`crash-viewer.html:625`).
+ */
+export function crashStatsSearchUrl(signature: string): string {
+    const bare = signature.replace(/^@ /, '');
+    return `https://crash-stats.mozilla.org/search/?signature=${encodeURIComponent(`~${bare}`)}`;
+}
+
+// --- source references in a stackwalk ------------------------------------
+
+/** A parsed `hg:`/`git:` source reference from minidump-stackwalk. */
+export interface FileInfo {
+    type: 'git' | 'hg';
+    repo: string;
+    revision: string;
+    path: string;
+}
+
+/**
+ * Parses the walker's source-file reference.
+ *
+ * Ported from `parseFileInfo()` (`crash-viewer.html:997`) unchanged, including
+ * the `parts.length >= 4` guard and the `slice(2, -1).join(':')` that puts a
+ * path containing a colon back together.
+ *
+ * The two spellings, both real:
+ *
+ * ```
+ * hg:hg.mozilla.org/mozilla-central:xpcom/base/file.cpp:c536b1636b55af
+ * git:github.com/rust-lang/rust:library/alloc/src/boxed.rs:05f9846f893b09a1
+ * ```
+ *
+ * Anything else — an absolute path, an `s3:` reference, a bare filename —
+ * returns `null`, and the caller shows the string as it is rather than
+ * guessing at a repository. Both spellings occur in `artifacts/dumps/`, as do
+ * `s3:gecko-generated-sources:…` references and Windows absolute paths.
+ *
+ * Here rather than in a page's view model because it is a **parser for walker
+ * data**: `fx-tests crash` currently prints `frame.file` raw, so a reader sees
+ * the whole `hg:hg.mozilla.org/mozilla-central:…:rev` string where the page
+ * shows `xpcom/base/file.cpp`. Nothing about it names a UI.
+ */
+export function parseFileInfo(file: string | null | undefined): FileInfo | null {
+    if (!file) {
+        return null;
+    }
+    const parts = file.split(':');
+    const kind = parts[0];
+    if ((kind === 'git' || kind === 'hg') && parts.length >= 4) {
+        return {
+            type: kind,
+            repo: parts[1]!,
+            revision: parts[parts.length - 1]!,
+            path: parts.slice(2, parts.length - 1).join(':'),
+        };
+    }
+    return null;
+}
+
+/**
+ * A browsable URL for a source reference, or `null` when there is none.
+ *
+ * `hg:` goes to hg.mozilla.org's file view and `git:` to GitHub's blob view,
+ * and the two use different line-anchor spellings — `#l177` lowercase for hg,
+ * `#L1976` uppercase for GitHub. Both are upstream's
+ * (`crash-viewer.html:1023`) and both matter: the wrong case scrolls nowhere.
+ */
+export function sourceUrl(file: string | null | undefined, line: number | null): string | null {
+    const info = parseFileInfo(file);
+    if (info === null) {
+        return null;
+    }
+    if (info.type === 'git') {
+        return `https://${info.repo}/blob/${info.revision}/${info.path}${line ? `#L${line}` : ''}`;
+    }
+    return `https://${info.repo}/file/${info.revision}/${info.path}${line ? `#l${line}` : ''}`;
+}
+
+/**
+ * A Searchfox link to a frame's source, or `null` for non-Mozilla code.
+ *
+ * Ported from `makeSearchfoxSearchUrl()` (`crash-viewer.html:1042`). Two
+ * conditions are load-bearing and both are upstream's:
+ *
+ * - **`hg:` only.** A `git:` reference is a vendored third-party repository
+ *   (rust-lang/rust, for instance), which Searchfox does not index under a
+ *   Mozilla tree, so linking there would 404.
+ * - **The last path segment of the repo is the tree name.**
+ *   `hg.mozilla.org/releases/mozilla-beta` → `mozilla-beta`. Using the whole
+ *   repo string builds a URL with slashes in the tree name.
+ *
+ * The name says "search" because that is what upstream called it; it has built
+ * a direct `hgrev` file link, not a search, since whenever that was last
+ * touched. The behaviour is kept and the misleading name is not.
+ *
+ * Distinct from `searchfoxUrl()` above, which searches for a *test path*: this
+ * one resolves a stack frame to the exact revision the build came from.
+ */
+export function searchfoxFrameUrl(frame: {
+    function: string | null;
+    file: string | null;
+    line: number | null;
+}): string | null {
+    if (!frame.function || !frame.file || !frame.line) {
+        return null;
+    }
+    const info = parseFileInfo(frame.file);
+    if (info === null || info.type !== 'hg') {
+        return null;
+    }
+    const tree = info.repo.split('/').pop();
+    return `https://searchfox.org/${tree}/hgrev/${info.revision}/${info.path}#${frame.line}`;
+}
+
 // --- Treeherder ----------------------------------------------------------
 
 /** Treeherder's origin, shared with `sources/treeherder.ts`. */

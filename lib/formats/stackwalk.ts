@@ -158,3 +158,25 @@ export interface StackwalkFile {
     threads: Thread[];
     unloaded_modules: Module[];
 }
+
+/**
+ * Strips the leading zeros of one of this format's hex strings:
+ * `0x000000000000004c` → `0x4c`.
+ *
+ * Ported from `formatHexOffset()` (`crash-viewer.html:1081`) including its one
+ * surprise: the regex is `/^(0x)0*(.+)$/`, whose `.+` is greedy but must leave
+ * at least one character, so `0x0000` becomes `0x0` rather than `0x`. A
+ * "simplification" to `0*(.*)` yields `0x` and loses the digit.
+ *
+ * A function rather than a page's helper because every address in this format
+ * is written at full register width — `base_addr`, `function_offset`,
+ * `module_offset`, `crash_info.address` — and any consumer printing one wants
+ * the same treatment. It names nothing about a UI.
+ */
+export function formatHexOffset(hex: string | null | undefined): string {
+    if (!hex) {
+        return '';
+    }
+    const match = /^(0x)0*(.+)$/.exec(hex);
+    return match ? match[1]! + match[2]! : hex;
+}

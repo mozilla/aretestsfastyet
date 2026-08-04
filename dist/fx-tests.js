@@ -1220,6 +1220,25 @@ function hasBreakpadFrames(thread) {
     return BREAKPAD_FRAME_FRAGMENTS.some((fragment) => name.includes(fragment));
   });
 }
+var FAULT_TYPE_FRAGMENTS = [
+  // POSIX segmentation and bus faults, as Linux and Android report them.
+  "SIGSEGV",
+  "SIGBUS",
+  // Mach exceptions, as macOS reports them. `EXC_BAD_ACCESS` covers
+  // `KERN_INVALID_ADDRESS` and `KERN_PROTECTION_FAILURE` alike.
+  "EXC_BAD_ACCESS",
+  // Windows structured exceptions for the same conditions.
+  "EXCEPTION_ACCESS_VIOLATION",
+  "EXCEPTION_IN_PAGE_ERROR",
+  "EXCEPTION_DATATYPE_MISALIGNMENT"
+];
+function hasFaultingAccess(file) {
+  const type = file.crash_info?.type;
+  if (type === void 0) {
+    return false;
+  }
+  return FAULT_TYPE_FRAGMENTS.some((fragment) => type.includes(fragment));
+}
 function detectHang(file) {
   const crashing = file.crashing_thread;
   const blockedThreadCount = file.threads.filter(isBlockedThread).length;
@@ -1227,6 +1246,16 @@ function detectHang(file) {
     return {
       looksLikeHang: false,
       reason: "no crashing thread recorded",
+      parkedIn: null,
+      blockedThreadCount
+    };
+  }
+  if (hasFaultingAccess(file)) {
+    const type = file.crash_info?.type ?? "a memory fault";
+    const kind = file.crash_info?.adjusted_address?.kind;
+    return {
+      looksLikeHang: false,
+      reason: `the dump records ${type}` + (kind === void 0 ? "" : ` (${kind})`) + ", a faulting memory access \u2014 the process was executing when it died, so this is a real crash even though breakpad\u2019s frames are on the stack (its signal handler is what wrote the dump)",
       parkedIn: null,
       blockedThreadCount
     };

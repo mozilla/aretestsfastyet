@@ -597,6 +597,60 @@ test('crash detects a hang that crash_info.type calls SIGABRT', async () => {
     assert.equal((json(crash.stdout)['hang'] as { looksLikeHang: boolean }).looksLikeHang, false);
 });
 
+test('crash does not call a real SIGSEGV a hang because breakpad handled it', async () => {
+    // The false positive `hasFaultingAccess` exists for, asserted through the
+    // command rather than only through `lib/`, because this is where a reader
+    // sees the contradiction: the text below printed "This looks like a HANG
+    // rather than a crash … the dump was written on request rather than at a
+    // fault" four lines under its own "** null pointer with offset".
+    //
+    // The dump is derived here rather than checked in: it is the crash fixture
+    // with a breakpad *signal handler* frame prepended, which is what is
+    // genuinely on the stack during a fatal signal. None of the real dumps has
+    // one, because a symbolized breakpad handler frame is not present in the
+    // current corpus — not because it cannot occur.
+    const base = JSON.parse(
+        await readFile(new URL('stackwalk-crash.json', FIXTURES), 'utf8')
+    ) as {
+        crash_info: Record<string, unknown>;
+        crashing_thread: { frames: unknown[] };
+        threads: { frames: unknown[] }[];
+    };
+    base.crash_info['type'] = 'SIGSEGV / SEGV_MAPERR';
+    base.crash_info['adjusted_address'] = { kind: 'null-pointer', offset: '0x0' };
+    const handler = {
+        ...(base.crashing_thread.frames[0] as Record<string, unknown>),
+        frame: 0,
+        function: 'google_breakpad::ExceptionHandler::SignalHandler(int, siginfo_t*, void*)',
+    };
+    base.crashing_thread.frames = [handler, ...base.crashing_thread.frames];
+
+    const bytes = new TextEncoder().encode(JSON.stringify(base));
+    const source: DataSource & { requested: string[] } = {
+        name: 'faulted',
+        requested: [],
+        async fetch(): Promise<Uint8Array> {
+            return bytes;
+        },
+    };
+
+    const { stdout } = await invoke(['crash', 'TASKF', 'dump-faulted', '--json'], {
+        taskArtifacts: source,
+    });
+    const result = json(stdout);
+    const hang = result['hang'] as { looksLikeHang: boolean; reason: string };
+    assert.equal(hang.looksLikeHang, false, 'a faulting access is a crash, not a hang');
+    assert.ok(!hang.reason.includes('rather than at a fault'));
+
+    // And the text output must not contradict its own address line.
+    const text = await invoke(['crash', 'TASKF', 'dump-faulted'], { taskArtifacts: source });
+    assert.match(text.stdout, /null pointer with offset/);
+    assert.ok(
+        !text.stdout.includes('This looks like a HANG'),
+        'the hang note must not appear above a null-pointer dereference'
+    );
+});
+
 test('crash --all-threads shows every thread at 8 frames, not 20', async () => {
     const all = await invoke(['crash', 'TASKHANG', 'dump-hang', '--json', '--all-threads']);
     const threads = json(all.stdout)['threads'] as { frames: unknown[]; frameCount: number }[];

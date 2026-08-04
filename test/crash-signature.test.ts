@@ -29,6 +29,8 @@ import {
     faultingAddress,
     flattenFrames,
     frameName,
+    hasBreakpadFrames,
+    hasFaultingAccess,
     isAbortFrame,
     isBlockedThread,
     stripParameters,
@@ -348,6 +350,98 @@ test('the hang is not detectable from crash_info.type', () => {
     // Same type, opposite verdict.
     assert.equal(detectHang(hang).looksLikeHang, true);
     assert.equal(detectHang(abort).looksLikeHang, false);
+});
+
+test('a real memory fault is not a hang, even with breakpad frames on the stack', () => {
+    // The false positive this ordering exists for. On a genuine fatal signal
+    // breakpad's *signal handler* is legitimately on the stack — it is what
+    // runs to write the dump — and `hasBreakpadFrames` matches
+    // `google_breakpad::` anywhere in the innermost 8 frames, so it fires.
+    //
+    // Before the fix, prepending one such frame to a SIGSEGV made the CLI and
+    // the viewer print "This looks like a HANG rather than a crash… the dump
+    // was written on request rather than at a fault" directly above their own
+    // "Null pointer detected with offset: 0x0".
+    const faulted = dumpWith([
+        frame({
+            function:
+                'google_breakpad::ExceptionHandler::SignalHandler(int, siginfo_t*, void*)',
+        }),
+        frame({ function: 'mozilla::a11y::DocAccessible::ContentRemoved(mozilla::a11y::LocalAccessible*)' }),
+    ]);
+    faulted.crash_info!.type = 'SIGSEGV / SEGV_MAPERR';
+    faulted.crash_info!.adjusted_address = { kind: 'null-pointer', offset: '0x0' };
+
+    // The ambiguous evidence is genuinely present…
+    assert.equal(
+        hasBreakpadFrames(faulted.crashing_thread!),
+        true,
+        'the breakpad frame must really be there, or this test proves nothing'
+    );
+    // …and the unambiguous evidence overrides it.
+    assert.equal(hasFaultingAccess(faulted), true);
+    const assessment = detectHang(faulted);
+    assert.equal(assessment.looksLikeHang, false);
+    assert.equal(assessment.parkedIn, null);
+    // The reason must not claim the dump was written on request; that is the
+    // sentence that contradicted the null-pointer box.
+    assert.ok(
+        !assessment.reason.includes('rather than at a fault'),
+        'the reason must not deny a fault the dump records'
+    );
+    assert.match(assessment.reason, /SIGSEGV/);
+    assert.match(assessment.reason, /null-pointer/);
+});
+
+test('hasFaultingAccess reads the fault class, not an exhaustive signal list', () => {
+    // Measured across artifacts/dumps/ plus the two fixtures: every
+    // memory-fault type is a genuine crash, and the only two hangs in the
+    // corpus are the two `EXC_SOFTWARE / SIGABRT` entries.
+    const faults = [
+        'SIGSEGV / SEGV_MAPERR',
+        'SIGSEGV / SEGV_ACCERR',
+        'SIGBUS / BUS_ADRALN',
+        'EXC_BAD_ACCESS / KERN_INVALID_ADDRESS',
+        // A genuine fault whose `adjusted_address` is null — mac-audiodsp is
+        // exactly this, which is why the address alone cannot be the test.
+        'EXC_BAD_ACCESS / KERN_PROTECTION_FAILURE',
+        'EXCEPTION_ACCESS_VIOLATION_WRITE',
+    ];
+    for (const type of faults) {
+        const file = dumpWith([frame({ function: 'F()' })]);
+        file.crash_info!.type = type;
+        assert.equal(hasFaultingAccess(file), true, type);
+    }
+
+    // Software-generated: an abort or a breakpoint is precisely the case a
+    // hang is indistinguishable from, so treating these as faults would
+    // disable the hang detector entirely.
+    const notFaults = [
+        'EXC_SOFTWARE / SIGABRT',
+        'EXCEPTION_BREAKPOINT',
+        'STATUS_NO_CALLBACK_ACTIVE',
+        'SIGILL / ILL_ILLOPC',
+    ];
+    for (const type of notFaults) {
+        const file = dumpWith([frame({ function: 'F()' })]);
+        file.crash_info!.type = type;
+        assert.equal(hasFaultingAccess(file), false, type);
+    }
+
+    // A dump with no crash_info records no fault, rather than throwing.
+    const bare = dumpWith([frame({ function: 'F()' })]);
+    delete bare.crash_info;
+    assert.equal(hasFaultingAccess(bare), false);
+});
+
+test('the fault check does not disarm the hang detector', () => {
+    // The regression in the other direction: a fix that made everything a
+    // crash would also pass the test above. The real hang must stay a hang.
+    const hang = fixture('stackwalk-hang.json');
+    assert.equal(hang.crash_info?.type, 'EXC_SOFTWARE / SIGABRT');
+    assert.equal(hasFaultingAccess(hang), false, 'SIGABRT is not a faulting access');
+    assert.equal(detectHang(hang).looksLikeHang, true);
+    assert.equal(detectHang(hang).parkedIn, 'RunCurrentEventLoopInMode');
 });
 
 test('isBlockedThread matches a lock wait and not a bare scheduler wait', () => {

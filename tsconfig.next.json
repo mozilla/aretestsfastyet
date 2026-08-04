@@ -1,0 +1,31 @@
+{
+    // The migrated pages, typechecked against the DOM instead of node.
+    //
+    // A separate project rather than adding "DOM" to the root config, and the
+    // reason is the boundary the migration depends on: `lib/` must stay
+    // importable by both a page and the CLI, and `tools/build-pages.ts` says
+    // the browser bundle must fail the build if a `lib/` module reaches for a
+    // node builtin. The mirror of that has to hold too — if `document` were in
+    // scope everywhere, a `lib/` module could grow a `window` read and nothing
+    // would notice until a CLI command threw at runtime.
+    //
+    // So the root project keeps `types: ["node"]` with no DOM, this one has the
+    // DOM and no node, and `next/` is the only place that sees both worlds:
+    // page code here, shared code imported from `lib/`.
+    //
+    // One consequence is load-bearing and worth naming, because the crash
+    // viewer's view model now lives in `next/` rather than `lib/model/`. A view
+    // model must stay DOM-free so a node test can import it — and that is
+    // checked for free: `test/crash-view.test.ts` imports
+    // `next/crash-view.ts`, the root project compiles `test/**`, and the root
+    // project has no DOM lib. So a `document` reach from the view model fails
+    // `tsc --noEmit` on the root project even though this project would allow
+    // it. The renderer is not covered that way and does not need to be; nothing
+    // in `test/` imports it.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "types": []
+    },
+    "include": ["next/**/*.ts"]
+}

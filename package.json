@@ -25,7 +25,7 @@
     "scripts": {
         "bundle": "node --experimental-strip-types tools/build-cli.ts",
         "pages": "node --experimental-strip-types tools/build-pages.ts",
-        "typecheck": "tsc --noEmit",
+        "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.next.json",
         "fixtures": "node --experimental-strip-types tools/make-fixtures.ts",
         "test": "node --experimental-strip-types --test 'test/**/*.test.ts' && npm run check-bundle",
         "check-bundle": "node --experimental-strip-types tools/check-bundle-fresh.ts"

@@ -343,6 +343,83 @@ export function hasBreakpadFrames(thread: Thread): boolean {
     });
 }
 
+/**
+ * `crash_info.type` spellings that mean **the CPU trapped a bad memory access**.
+ *
+ * A hardware fault, as opposed to a software-generated signal. This is the
+ * evidence that outranks breakpad's frames, and the reason it exists is a false
+ * positive found by review:
+ *
+ * On a real fatal signal, breakpad's *signal handler* is genuinely on the
+ * stack — `ExceptionHandler::SignalHandler` is what runs to write the dump.
+ * `hasBreakpadFrames` matches `google_breakpad::` anywhere in the innermost 8
+ * frames, so it fires on those handler frames just as it does on the
+ * dump-on-request path. Prepending one such frame to the unmodified
+ * `linux-a11y` SIGSEGV made `detectHang` report
+ *
+ *     This looks like a HANG rather than a crash.
+ *     …the dump was written on request rather than at a fault…
+ *
+ * for a dump whose own `crash_info` reads `SIGSEGV / SEGV_MAPERR` with
+ * `adjusted_address.kind = "null-pointer"` — a confirmed null dereference. Both
+ * `fx-tests crash` and the migrated viewer printed that self-contradiction.
+ *
+ * ## Why the *type*, and not the address
+ *
+ * `adjusted_address` alone is not enough: `mac-audiodsp` is a genuine
+ * `KERN_PROTECTION_FAILURE` fault whose `adjusted_address` is `null`, because
+ * the walker only fills it in for addresses it recognizes. The type is what
+ * separates the two populations cleanly. Measured across the nine dumps in
+ * `artifacts/dumps/` plus the two fixtures:
+ *
+ * | type | dumps | genuine fault? |
+ * | --- | --- | --- |
+ * | `SIGSEGV / SEGV_MAPERR` | 4 | yes |
+ * | `EXC_BAD_ACCESS / KERN_INVALID_ADDRESS` | 1 | yes |
+ * | `EXC_BAD_ACCESS / KERN_PROTECTION_FAILURE` | 1 | yes |
+ * | `EXC_SOFTWARE / SIGABRT` | 2 | **no — both are the hangs** |
+ * | `EXCEPTION_BREAKPOINT` | 2 | no (deliberate `int 0x3`) |
+ * | `STATUS_NO_CALLBACK_ACTIVE` | 1 | no |
+ *
+ * The two hangs in the corpus are the two `EXC_SOFTWARE / SIGABRT` entries, and
+ * every memory-fault type is a genuine crash. That is exactly the split the
+ * hang heuristic needs, and it is why matching is on the fault *class* rather
+ * than on an exhaustive list of signal names — a new `SEGV_ACCERR` or
+ * `KERN_MEMORY_ERROR` should be read as a fault without this list being edited.
+ *
+ * Deliberately **not** matched: `SIGABRT`, `EXCEPTION_BREAKPOINT`,
+ * `SIGILL`, `STATUS_*`. An abort or a breakpoint is software-generated, which
+ * is precisely the case a hang is indistinguishable from — that indistinguish-
+ * ability is why `detectHang` exists, so treating those as faults would
+ * disable it.
+ */
+export const FAULT_TYPE_FRAGMENTS: readonly string[] = [
+    // POSIX segmentation and bus faults, as Linux and Android report them.
+    'SIGSEGV',
+    'SIGBUS',
+    // Mach exceptions, as macOS reports them. `EXC_BAD_ACCESS` covers
+    // `KERN_INVALID_ADDRESS` and `KERN_PROTECTION_FAILURE` alike.
+    'EXC_BAD_ACCESS',
+    // Windows structured exceptions for the same conditions.
+    'EXCEPTION_ACCESS_VIOLATION',
+    'EXCEPTION_IN_PAGE_ERROR',
+    'EXCEPTION_DATATYPE_MISALIGNMENT',
+];
+
+/**
+ * Whether the dump records a genuine hardware memory fault.
+ *
+ * The CPU trapped an access to a bad address, so the process was executing when
+ * it died — which is the one thing a hang is not. See `FAULT_TYPE_FRAGMENTS`.
+ */
+export function hasFaultingAccess(file: StackwalkFile): boolean {
+    const type = file.crash_info?.type;
+    if (type === undefined) {
+        return false;
+    }
+    return FAULT_TYPE_FRAGMENTS.some((fragment) => type.includes(fragment));
+}
+
 /** What `detectHang` concluded, and on what evidence. */
 export interface HangAssessment {
     /** True when the dump looks like an externally-killed hang. */
@@ -358,10 +435,26 @@ export interface HangAssessment {
 /**
  * Whether a dump looks like a hang rather than a crash.
  *
- * **Not** from `crash_info.type`, which cannot tell them apart: the hang
- * fixture and an ordinary abort both report `EXC_SOFTWARE / SIGABRT`
- * (`FORMATS.md`). The evidence is breakpad's own frames on top of the crashing
- * thread, with something that was waiting underneath them.
+ * The evidence is breakpad's own frames on top of the crashing thread, with
+ * something that was waiting underneath them. `crash_info.type` cannot make the
+ * distinction on its own — the hang fixture and an ordinary abort both report
+ * `EXC_SOFTWARE / SIGABRT` (`FORMATS.md`) — but it can **rule it out**, and
+ * that asymmetry is the ordering below.
+ *
+ * ## Why a genuine fault is checked first
+ *
+ * Breakpad's frames are ambiguous evidence: they are on the stack both when
+ * breakpad was asked to write a dump *and* when its signal handler is running
+ * because the process just faulted. A memory fault is unambiguous evidence the
+ * other way — the CPU trapped an access, so the process was running, so it was
+ * not parked. When the two disagree the fault wins, because only one of them
+ * can be explained away.
+ *
+ * Without this ordering, prepending a breakpad signal-handler frame to a real
+ * SIGSEGV made both `fx-tests crash` and the viewer print "This looks like a
+ * HANG… the dump was written on request rather than at a fault" directly above
+ * their own "Null pointer detected with offset: 0x0". See
+ * `FAULT_TYPE_FRAGMENTS` for the measurement behind the type list.
  *
  * Reported as a note rather than used to switch the output automatically.
  * `lib/formats/stackwalk.ts` argues the command should let the caller choose
@@ -376,6 +469,24 @@ export function detectHang(file: StackwalkFile): HangAssessment {
         return {
             looksLikeHang: false,
             reason: 'no crashing thread recorded',
+            parkedIn: null,
+            blockedThreadCount,
+        };
+    }
+    // Checked before the frames, not after: see the doc comment. A faulting
+    // access means the process was executing, which no arrangement of frames
+    // can turn into a hang.
+    if (hasFaultingAccess(file)) {
+        const type = file.crash_info?.type ?? 'a memory fault';
+        const kind = file.crash_info?.adjusted_address?.kind;
+        return {
+            looksLikeHang: false,
+            reason:
+                `the dump records ${type}` +
+                (kind === undefined ? '' : ` (${kind})`) +
+                ', a faulting memory access — the process was executing when it died, so this ' +
+                'is a real crash even though breakpad’s frames are on the stack (its signal ' +
+                'handler is what wrote the dump)',
             parkedIn: null,
             blockedThreadCount,
         };

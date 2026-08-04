@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crash Dump Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        h1 {
+            color: #333;
+            margin: 0 0 20px 0;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #0066cc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .container {
+            margin: 0 auto;
+            background: white;
+            padding: 0 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .crash-signature-link {
+            color: #333;
+            text-decoration: none;
+        }
+
+        .crash-signature-link:hover {
+            color: #0066cc;
+            text-decoration: underline;
+        }
+
+        .raw-json-link {
+            font-size: 14px;
+            font-weight: normal;
+            color: #0066cc;
+            text-decoration: none;
+        }
+
+        .raw-json-link:hover {
+            text-decoration: underline;
+        }
+
+        h2 {
+            color: #444;
+            margin-top: 10px;
+            margin-bottom: 10px;
+            font-size: 1.3em;
+            font-weight: 600;
+        }
+
+        h3 {
+            color: #555;
+            margin: 0 0 10px 0;
+            font-size: 1.1em;
+            font-weight: 600;
+        }
+
+        h3:not(:first-child) {
+            margin-top: 20px;
+        }
+
+        h4 {
+            color: #444;
+            margin: 0;
+            font-size: 1.1em;
+        }
+
+        h4:not(:first-of-type) {
+            margin-top: 10px;
+        }
+
+        .thread-truncate {
+            color: #0066cc;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+
+        .thread-truncate:hover {
+            text-decoration: underline;
+        }
+
+        .thread-truncate.hidden {
+            display: none;
+        }
+
+        .thread-extra-frames {
+            display: none;
+        }
+
+        .thread-extra-frames.expanded {
+            display: table-row;
+        }
+
+        .info-value-full {
+            font-family: monospace;
+            color: #333;
+            word-break: break-all;
+            font-size: 0.95em;
+            grid-column: 2 / 5;
+        }
+
+        .expandable-section {
+            margin-top: 15px;
+            padding-bottom: 10px;
+            border-top: 1px solid #e9ecef;
+            padding-top: 10px;
+        }
+
+        .expandable-header {
+            cursor: pointer;
+            color: #0066cc;
+            font-size: 0.9em;
+            user-select: none;
+        }
+
+        .expandable-header:hover {
+            text-decoration: underline;
+        }
+
+        .expandable-content {
+            display: none;
+            margin-top: 10px;
+            padding-left: 15px;
+        }
+
+        .expandable-content.expanded {
+            display: block;
+        }
+
+        .extra-field {
+            margin: 5px 0;
+            font-size: 0.9em;
+        }
+
+        .extra-field-name {
+            font-weight: bold;
+            color: #666;
+        }
+
+        .extra-field-value {
+            font-family: monospace;
+            color: #333;
+            word-break: break-all;
+        }
+
+        .file-input {
+            text-align: center;
+            border: 2px dashed #ddd;
+        }
+
+        .file-input input[type="file"] {
+            font-size: 16px;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr 200px 1fr;
+            gap: 5px 15px;
+            margin: 10px 0;
+            line-height: 1.4;
+        }
+
+        .info-grid:first-of-type {
+            padding-top: 10px;
+        }
+
+        .info-label {
+            font-weight: bold;
+            color: #666;
+            font-size: 0.95em;
+        }
+
+        .info-value {
+            font-family: monospace;
+            color: #333;
+            word-break: break-all;
+            font-size: 0.95em;
+        }
+
+        .crash-reason {
+            background: #fee;
+            padding: 15px 20px;
+            border-left: 4px solid #d00;
+            margin: 0 -20px;
+            font-family: monospace;
+        }
+
+        .stack-table {
+            width: calc(100% + 40px);
+            margin-left: -20px;
+            margin-right: -20px;
+            border-collapse: collapse;
+            font-size: 13px;
+            table-layout: fixed;
+        }
+
+        .stack-table thead {
+            background: #e9ecef;
+            position: sticky;
+            top: 0;
+        }
+
+        .stack-table th {
+            text-align: left;
+            padding: 8px;
+            font-weight: 600;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .stack-table th:first-child {
+            padding-left: 20px;
+        }
+
+        .stack-table th:last-child {
+            padding-right: 20px;
+        }
+
+        .stack-table td:first-child {
+            padding-left: 20px;
+        }
+
+        .stack-table td:last-child {
+            padding-right: 20px;
+        }
+
+        .stack-table tr {
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .stack-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .stack-table tr[onclick] {
+            cursor: pointer;
+        }
+
+        .stack-table tr.crashed {
+            background: #fff3cd;
+            font-weight: 500;
+        }
+
+        .stack-table tr.crashed:hover {
+            background: #ffecb3;
+        }
+
+        .stack-table td {
+            padding: 4px 8px;
+        }
+
+        .frame-num {
+            color: #6c757d;
+            font-weight: 500;
+        }
+
+        .frame-module {
+            font-family: monospace;
+            font-size: 12px;
+            color: #495057;
+        }
+
+        .frame-function {
+            font-family: monospace;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+
+        td.frame-function a {
+            cursor: pointer;
+        }
+
+        td.frame-function a:hover {
+            text-decoration: underline;
+        }
+
+        .frame-location {
+            font-family: monospace;
+            font-size: 11px;
+            color: #6c757d;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+
+        .frame-trust {
+            font-size: 11px;
+            color: #868e96;
+        }
+
+        .frame-trust[title]:hover {
+            text-decoration: underline dotted;
+        }
+
+        .frame-details {
+            background: #f8f9fa;
+            display: none;
+        }
+
+        .frame-details.expanded {
+            display: table-row;
+        }
+
+        .frame-details td {
+            padding: 15px;
+            border-top: none;
+        }
+
+        .inline-frames {
+            margin: 10px 0;
+            padding-left: 20px;
+            border-left: 3px solid #dee2e6;
+        }
+
+        .inline-frame {
+            padding: 4px 0;
+            font-size: 12px;
+            color: #495057;
+        }
+
+        .inline-frame .function {
+            font-family: monospace;
+            color: #6c757d;
+            font-weight: 500;
+        }
+
+        .file-link {
+            color: #0066cc;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .file-link:hover {
+            text-decoration: underline;
+        }
+
+        .registers {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+
+        .register {
+            background: #f1f3f5;
+            padding: 5px 10px;
+            border-radius: 3px;
+        }
+
+        .register-name {
+            font-weight: bold;
+            color: #0066cc;
+        }
+
+        .module-table {
+            width: calc(100% + 40px);
+            margin-left: -20px;
+            margin-right: -20px;
+            border-collapse: collapse;
+            font-size: 13px;
+            max-height: 400px;
+        }
+
+        .module-table thead {
+            background: #e9ecef;
+            position: sticky;
+            top: 0;
+        }
+
+        .module-table th {
+            text-align: left;
+            padding: 8px;
+            font-weight: 600;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .module-table th:first-child {
+            padding-left: 20px;
+        }
+
+        .module-table th:last-child {
+            padding-right: 20px;
+        }
+
+        .module-table td {
+            padding: 6px 8px;
+            border-bottom: 1px solid #e9ecef;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .module-table td:first-child {
+            padding-left: 20px;
+            font-weight: 500;
+        }
+
+        .module-table td:last-child {
+            padding-right: 20px;
+        }
+
+        .module-table tr:hover {
+            background: #f8f9fa;
+        }
+
+
+        .error {
+            background: #fee;
+            color: #c00;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+
+        code {
+            background: #f1f3f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        .status.ok {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>
+        <span id="page-title">Crash Dump Viewer</span>
+        <span id="raw-json-link-container"></span>
+    </h1>
+
+    <div class="container file-input">
+        <label for="jsonFile">
+            <strong>Select minidump-stackwalk JSON file:</strong><br>
+            <input type="file" id="jsonFile" accept=".json">
+        </label>
+    </div>
+
+    <div id="output"></div>
+
+    <script type="module" src="./crash-viewer.ts"></script>
+</body>
+</html>

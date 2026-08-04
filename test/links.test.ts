@@ -23,13 +23,17 @@ import {
     TREEHERDER_ROOT,
     bugDescription,
     bugzillaFilingUrl,
+    crashStatsSearchUrl,
     crashViewerUrl,
     messageLineNumber,
     minidumpJsonUrl,
+    parseFileInfo,
     profilerFrontEndUrl,
     resolveProfilerOrigin,
     resourceUsageProfileUrl,
+    searchfoxFrameUrl,
     searchfoxUrl,
+    sourceUrl,
     taskArtifactUrl,
     testInfoArtifactUrl,
     treeherderJobUrl,
@@ -310,4 +314,107 @@ test('the bug description renders occurrence statistics when given them', () => 
     // No stats at all means no sentence, rather than a sentence full of zeros.
     const bare = bugDescription({ testPath: 'a/b.js', summary: 'boom', component: 'Core :: X' });
     assert.ok(!bare.includes('This failure'));
+});
+
+// --- source references in a stackwalk ------------------------------------
+//
+// These moved here with `parseFileInfo`/`sourceUrl`/`searchfoxFrameUrl`/
+// `crashStatsSearchUrl`, which used to live in the crash viewer's view model.
+// They are URL construction over walker data and name nothing about a UI, so
+// they belong beside the other builders — and their tests belong beside the
+// other builders' tests rather than in a page's test file.
+
+test('parseFileInfo reads both spellings and rejects anything else', () => {
+    assert.deepEqual(parseFileInfo('hg:hg.mozilla.org/mozilla-central:xpcom/base/f.cpp:c536b16'), {
+        type: 'hg',
+        repo: 'hg.mozilla.org/mozilla-central',
+        revision: 'c536b16',
+        path: 'xpcom/base/f.cpp',
+    });
+    assert.deepEqual(
+        parseFileInfo('git:github.com/rust-lang/rust:library/alloc/src/boxed.rs:05f98'),
+        {
+            type: 'git',
+            repo: 'github.com/rust-lang/rust',
+            revision: '05f98',
+            path: 'library/alloc/src/boxed.rs',
+        }
+    );
+    // A path containing a colon is put back together, which is why the parse
+    // is a slice-and-join rather than a five-part destructure.
+    assert.equal(
+        parseFileInfo('hg:hg.mozilla.org/mozilla-central:a/b:c/d.cpp:rev')?.path,
+        'a/b:c/d.cpp'
+    );
+    // Not a repository reference: shown as-is rather than linked somewhere
+    // invented. All three spellings occur in `artifacts/dumps/`.
+    assert.equal(parseFileInfo('/usr/include/stdio.h'), null);
+    assert.equal(parseFileInfo('s3:gecko-generated-sources:abc/ipc/P.cpp:'), null);
+    assert.equal(parseFileInfo('hg:only:three'), null);
+    assert.equal(parseFileInfo(null), null);
+    assert.equal(parseFileInfo(''), null);
+});
+
+test('the line anchor differs in case between hg and GitHub', () => {
+    // Lowercase `#l` for hg.mozilla.org, uppercase `#L` for GitHub. Both are
+    // upstream's, and the wrong case scrolls nowhere.
+    assert.equal(
+        sourceUrl('hg:hg.mozilla.org/mozilla-central:xpcom/base/f.cpp:c536b16', 177),
+        'https://hg.mozilla.org/mozilla-central/file/c536b16/xpcom/base/f.cpp#l177'
+    );
+    assert.equal(
+        sourceUrl('git:github.com/rust-lang/rust:library/alloc/src/boxed.rs:05f98', 1976),
+        'https://github.com/rust-lang/rust/blob/05f98/library/alloc/src/boxed.rs#L1976'
+    );
+    // No line: no anchor, rather than `#l` with nothing after it.
+    assert.equal(
+        sourceUrl('hg:hg.mozilla.org/mozilla-central:xpcom/base/f.cpp:c536b16', null),
+        'https://hg.mozilla.org/mozilla-central/file/c536b16/xpcom/base/f.cpp'
+    );
+    // Unparseable reference: no URL at all.
+    assert.equal(sourceUrl('/usr/include/stdio.h', 12), null);
+});
+
+test('Searchfox links only Mozilla hg code, and names the tree not the repo', () => {
+    assert.equal(
+        searchfoxFrameUrl({
+            function: 'Foo',
+            file: 'hg:hg.mozilla.org/releases/mozilla-beta:netwerk/ipc/P.cpp:727346cd',
+            line: 177,
+        }),
+        // `mozilla-beta`, not `releases/mozilla-beta`: the last path segment is
+        // the tree name, and the whole string builds a URL with a stray slash.
+        'https://searchfox.org/mozilla-beta/hgrev/727346cd/netwerk/ipc/P.cpp#177'
+    );
+    // A `git:` reference is vendored third-party code, which Searchfox does not
+    // index under a Mozilla tree — linking there would 404.
+    assert.equal(
+        searchfoxFrameUrl({
+            function: 'Foo',
+            file: 'git:github.com/rust-lang/rust:library/alloc/src/boxed.rs:05f98',
+            line: 10,
+        }),
+        null
+    );
+    // Missing any of function/file/line: no link. An unsymbolized frame has no
+    // function to search for.
+    assert.equal(searchfoxFrameUrl({ function: null, file: 'hg:a/b:c:d', line: 1 }), null);
+    assert.equal(searchfoxFrameUrl({ function: 'Foo', file: null, line: 1 }), null);
+    assert.equal(searchfoxFrameUrl({ function: 'Foo', file: 'hg:a/b:c:d', line: null }), null);
+});
+
+test('the crash-stats link strips the @ prefix and searches with ~', () => {
+    // `~` is crash-stats' "contains"; the `@ ` prefix is the viewer's own and
+    // is not in crash-stats' signatures, so leaving it on matches nothing.
+    const url = crashStatsSearchUrl('@ mozilla::dom::Foo');
+    assert.ok(url.startsWith('https://crash-stats.mozilla.org/search/?signature='));
+    assert.equal(new URL(url).searchParams.get('signature'), '~mozilla::dom::Foo');
+    // A signature that is a module+offset fallback keeps its spaces, which
+    // must survive encoding rather than becoming `+`.
+    assert.equal(
+        new URL(crashStatsSearchUrl('@ libsystem_kernel.dylib + 0x0dfa')).searchParams.get(
+            'signature'
+        ),
+        '~libsystem_kernel.dylib + 0x0dfa'
+    );
 });
