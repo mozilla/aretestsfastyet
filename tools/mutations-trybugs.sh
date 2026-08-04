@@ -119,11 +119,11 @@ mutate cli/commands/try.ts \
     '            everyRunFailed: permaFailingConfigs.length === jobNames.length,' \
     'a test is only permanent when every config of it is'
 
-# The central check is scoped to the perma-failing configs.
+# The count behind the pre-existing label is scoped to the broken configs.
 mutate cli/commands/try.ts \
     '                permaConfigNames.has(config.jobName)' \
     '                true' \
-    'the central check goes back to spanning every config'
+    'the pre-existing count spans every config rather than the broken one'
 
 # The chunk suffix has to come off before the names can be compared.
 mutate cli/commands/try.ts \
@@ -131,23 +131,60 @@ mutate cli/commands/try.ts \
     '                failure.permaFailingConfigs' \
     'perma-config names are matched without stripping the chunk suffix'
 
-# The conservative fallback when central attributed no runs to those configs.
-mutate cli/commands/try.ts \
-    '        central.sameMessageFailCountOnPermaConfigs ?? central.sameMessageFailCount;' \
-    '        central.sameMessageFailCountOnPermaConfigs ?? 0;' \
-    'an unattributable config exonerates nothing at all'
+# --- the pre-existing annotation, which replaced the filter -------------
 
-# The uncomparable guard, which the message fix must not have made dead.
+# The annotation must appear when central fails the same way on the config.
 mutate cli/commands/try.ts \
-    '    if (!failure.messageComparable) {
-        return false;
-    }
-    // Restricted to the configs' \
-    '    if (false) {
-        return false;
-    }
-    // Restricted to the configs' \
-    'a failure with no message can still be a perma-fail'
+    '    if (onPermaConfigs === null || onPermaConfigs === 0) {
+        return null;
+    }' \
+    '    if (true) {
+        return null;
+    }' \
+    'the pre-existing label is never shown'
+
+# …and must not appear when it does not.
+mutate cli/commands/try.ts \
+    '    if (onPermaConfigs === null || onPermaConfigs === 0) {
+        return null;
+    }' \
+    '    if (onPermaConfigs === null) {
+        return null;
+    }' \
+    'a config central never fails on is still labelled pre-existing'
+
+# The label is scoped to the perma-failing configs, not the whole test.
+mutate cli/commands/try.ts \
+    '    const onPermaConfigs = central.sameMessageFailCountOnPermaConfigs;
+    if (onPermaConfigs === null || onPermaConfigs === 0) {' \
+    '    const onPermaConfigs = central.sameMessageFailCount;
+    if (onPermaConfigs === null || onPermaConfigs === 0) {' \
+    'the label is built from every config rather than the broken one'
+
+# In the Markdown cell — unlike the text line — the uncomparable case is
+# observable, because the cell distinguishes "no" from "could not ask".
+mutate cli/commands/try.ts \
+    '    if (failure.central === null || !failure.messageComparable) {
+        return '"'"'—'"'"';
+    }' \
+    '    if (failure.central === null) {
+        return '"'"'—'"'"';
+    }' \
+    'an uncomparable failure reads as "no" rather than "could not ask"'
+
+# Classification is push-only: central must not filter the section again.
+mutate cli/commands/try.ts \
+    '    return failure.everyRunFailed;
+}' \
+    '    return failure.everyRunFailed && (failure.central?.sameMessageFailCountOnPermaConfigs ?? 0) === 0;
+}' \
+    'central history filters the perma-fail section again'
+
+# The Markdown table carries the same distinction as the text.
+mutate cli/commands/try.ts \
+    "    return onPermaConfigs > 0 ? \`yes (\${onPermaConfigs})\` : 'no';" \
+    "    return 'no';" \
+    'the Markdown pre-existing column always says no'
 
 # --- bug 2: paths truncate from the left --------------------------------
 

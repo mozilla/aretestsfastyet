@@ -2206,6 +2206,61 @@ test('try reports a same-message central failure, and labels it pre-existing', a
     assert.equal((result['knownIntermittents'] as unknown[]).length, 0);
 });
 
+/**
+ * The Markdown table carries the same distinction as the text.
+ *
+ * A `--markdown` run is what gets pasted into a bug, and without this column
+ * the perma-fail table reads as a list of regressions. On autoland push
+ * 7c06165a that would be 48 of 51 rows misread.
+ *
+ * Three states, not two: `yes (n)`, `no`, and `—` for a row where the question
+ * could not be asked at all.
+ */
+test('the Markdown perma-fail table has a pre-existing column with all three states', async () => {
+    const cell = async (
+        jobName: string,
+        message: string | undefined
+    ): Promise<string> => {
+        const streams = captureStreams();
+        await run({
+            argv: ['try', 'abcdef123456', '--markdown'],
+            streams,
+            source: fixtureSource(),
+            cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+            treeherder: fakeTreeherder([job(jobName, 'TASK1', 'testfailed')]),
+            fetchUrl: profileFetcher({
+                TASK1: profileWith([
+                    { type: 'Test', test: TEST_PATH, status: 'FAIL', message, start: 1, end: 2 },
+                ]),
+            }),
+        });
+        assert.match(streams.stdout, /\| Pre-existing\? \|/, 'the column must exist');
+        const row = streams.stdout
+            .split('\n')
+            .find((line) => line.includes(TEST_PATH) && line.startsWith('|'));
+        assert.ok(row !== undefined, `expected a row for ${TEST_PATH}`);
+        // Test | Configs | Here | Central | Same message | Pre-existing? | Message
+        return (row.split('|')[6] ?? '').trim();
+    };
+
+    // Central fails this config with this very message, 4 times.
+    assert.match(
+        await cell('test-windows11-64-25h2-shippable/opt-xpcshell', CENTRAL_FAILURE_MESSAGE),
+        /^yes \(4\)$/
+    );
+    // Same config, a message central has never seen there.
+    assert.equal(
+        await cell('test-windows11-64-25h2-shippable/opt-xpcshell', 'a message central has never seen'),
+        'no'
+    );
+    // No message at all: the question cannot be asked, and "no" would answer
+    // one that was never put.
+    assert.equal(
+        await cell('test-windows11-64-25h2-shippable/opt-xpcshell', undefined),
+        '—'
+    );
+});
+
 test('try labels a pre-existing perma-fail in the text output', async () => {
     const streams = captureStreams();
     await run({

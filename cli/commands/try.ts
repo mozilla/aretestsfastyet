@@ -1113,9 +1113,16 @@ function centralLine(failure: TryFailure): string {
  */
 function preExistingLine(failure: TryFailure): string | null {
     const central = failure.central;
-    if (central === null || !failure.messageComparable) {
+    if (central === null) {
         return null;
     }
+    // No `!messageComparable` guard, deliberately. `messageComparable` is false
+    // only when the push recorded no message *and* the status is neither a
+    // timeout nor a crash — and in exactly that case `computeConfigStats` is
+    // given an empty `tryMessages` with both `matchAny*` flags off, so
+    // `entryMatches()` can never fire and the count below is already 0 or
+    // `null`. A guard here would read as load-bearing and decide nothing;
+    // a mutation removing it changed no output on any input.
     const onPermaConfigs = central.sameMessageFailCountOnPermaConfigs;
     if (onPermaConfigs === null || onPermaConfigs === 0) {
         return null;
@@ -1161,6 +1168,9 @@ function preExistingCell(failure: TryFailure): string {
     if (onPermaConfigs === null) {
         return '—';
     }
+    // Unlike `preExistingLine()`, the `messageComparable` guard above *is*
+    // load-bearing here: this cell distinguishes "no" from "could not ask",
+    // and an uncomparable failure has to read as the second.
     return onPermaConfigs > 0 ? `yes (${onPermaConfigs})` : 'no';
 }
 
