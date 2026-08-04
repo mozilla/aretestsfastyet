@@ -31,7 +31,12 @@
 import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import type { IndexFile } from '../lib/formats/stats.ts';
-import { type DataFileName, fetchJson, timingsIndex } from '../lib/sources/source.ts';
+import {
+    type DataFileName,
+    DataFileNotFoundError,
+    fetchJson,
+    timingsIndex,
+} from '../lib/sources/source.ts';
 import type { CommandContext } from './context.ts';
 import { notFoundError, usageError } from './errors.ts';
 import type { GlobalOptions, Harness } from './options.ts';
@@ -44,18 +49,44 @@ export interface LoadedBucket {
     name: DataFileName;
 }
 
-/** Loads the 64-bucket file that holds a test path. */
+/**
+ * Loads the 64-bucket file that holds a test path.
+ *
+ * A 404 on the bucket file is translated rather than propagated. The raw
+ * message — `no such data file: xpcshell-37.json` — names a file the user
+ * never asked for and cannot act on: which of the 64 buckets a test lands in
+ * is an implementation detail of the generator's hash. What they need to know
+ * is that the harness's data could not be read at all, and that the harness
+ * may have been guessed wrong.
+ */
 export async function loadBucketForTest(
     context: CommandContext,
     harness: Harness,
-    testPath: string
+    testPath: string,
+    inferredHarness = false
 ): Promise<LoadedBucket> {
     const suffix = bucketFileSuffix(bucketIndexForPath(testPath));
     const name: DataFileName = {
         index: timingsIndex(harness),
         filename: `${harness}-${suffix}.json`,
     };
-    const file = await fetchJson<BucketFile>(context.source, name);
+    let file: BucketFile;
+    try {
+        file = await fetchJson<BucketFile>(context.source, name);
+    } catch (error) {
+        if (error instanceof DataFileNotFoundError) {
+            throw notFoundError(
+                `No ${harness} data available for ${testPath}` +
+                    (inferredHarness ? ' (harness inferred from filename)' : '') +
+                    `: ${name.filename} is not published.`,
+                inferredHarness
+                    ? `If this is ${harness === 'xpcshell' ? 'a mochitest' : 'an xpcshell test'}, ` +
+                      `retry with --harness ${harness === 'xpcshell' ? 'mochitest' : 'xpcshell'}.`
+                    : 'Run `fx-tests dates` to check whether the data was published.'
+            );
+        }
+        throw error;
+    }
     return { file, decoded: decodeBucket(file), name };
 }
 

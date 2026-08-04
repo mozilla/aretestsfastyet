@@ -242,7 +242,7 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
 
     const { harness, inferred } = resolveHarness(testPath, context.globals.harness);
     progress(context, `Reading ${harness} bucket for ${testPath}…`);
-    const { file, decoded } = await loadBucketForTest(context, harness, testPath);
+    const { file, decoded } = await loadBucketForTest(context, harness, testPath, inferred);
 
     const identity = decoded.findTest(testPath);
     if (identity === null) {
