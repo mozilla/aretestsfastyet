@@ -4,17 +4,16 @@
     "description": "Command-line access to the Firefox test-health data behind https://tests.firefox.dev/",
     "license": "MPL-2.0",
     "type": "module",
-    "// bin": "bin/fx-tests.js is a committed build artefact, not gitignored output. Node refuses to strip types under node_modules, so an installed package cannot run from .ts, and prepare cannot build one because npm runs it in a bare cache clone before devDependencies exist. Shipping the bundle is what makes the git-URL install work. `npm test` fails if it is stale.",
+    "// bin": "dist/fx-tests.js is a committed build artefact. Node refuses to strip types under node_modules, so an installed package cannot run from .ts, and no install hook can build one (npm runs prepare/prepack in a bare clone before devDependencies exist). It lives in dist/ rather than bin/ because npm dropped all of bin/ when packing a git checkout, the gitignored dev entry point taking the bundle with it. `npm test` fails if it is stale.",
     "bin": {
-        "fx-tests": "./bin/fx-tests.js"
+        "fx-tests": "./dist/fx-tests.js"
     },
     "engines": {
         "node": ">=20"
     },
-    "// files": "An install runs the self-contained bundle, so only it and the docs need to ship. Without this the tarball carries 4.5 MB of test fixtures and every dashboard .html, none of which the CLI reads.",
+    "// files": "Only the bundle and the docs ship; the CLI never reads the sources or fixtures at runtime. Keep in step with .npmignore, and check with `npm pack --dry-run`.",
     "files": [
-        "bin/fx-tests.js",
-        "bin/fx-tests.js.map",
+        "dist/",
         "docs/CLI.md",
         "docs/PLAN.md"
     ],

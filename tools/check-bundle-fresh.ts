@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Fails if the committed `bin/fx-tests.js` does not match the sources.
+ * Fails if the committed `dist/fx-tests.js` does not match the sources.
  *
  * The bundle has to be committed — Node refuses to strip types under
  * `node_modules`, so an installed package cannot run from `.ts`, and `prepare`
@@ -23,13 +23,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const committed = join(root, 'bin', 'fx-tests.js');
+const committed = join(root, 'dist', 'fx-tests.js');
 
 let current: Buffer;
 try {
     current = readFileSync(committed);
 } catch {
-    console.error('bin/fx-tests.js is missing. Run `npm run build`.');
+    console.error('dist/fx-tests.js is missing. Run `npm run build`.');
     process.exit(1);
 }
 
@@ -43,13 +43,13 @@ try {
     const rebuilt = readFileSync(join(scratch, 'fx-tests.js'));
     if (!rebuilt.equals(current)) {
         console.error(
-            'bin/fx-tests.js is stale: it does not match the current sources.\n' +
+            'dist/fx-tests.js is stale: it does not match the current sources.\n' +
                 'Anyone who installed from git is running the old code. Run `npm run build`\n' +
                 'and commit the result.'
         );
         process.exit(1);
     }
-    console.log('bin/fx-tests.js matches the sources.');
+    console.log('dist/fx-tests.js matches the sources.');
 } finally {
     rmSync(scratch, { recursive: true, force: true });
 }

@@ -28,7 +28,13 @@ import { fileURLToPath } from 'node:url';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 // `tools/check-bundle-fresh.ts` builds to a scratch directory to compare
 // against the committed bundle, so the destination has to be overridable.
-const outDir = process.env['FX_TESTS_BUILD_OUT'] ?? join(root, 'bin');
+// `dist/`, not `bin/`: npm packs the checkout itself for a git dependency, and
+// on that path it dropped the whole of `bin/` because the generated dev entry
+// point inside it is gitignored — installing a package with no binary and
+// linking a command that did not exist. `dist/` holds only committed artefacts,
+// so nothing in it is ignored and there is no directory-level interaction to
+// get wrong. The dev entry point stays in `bin/`, gitignored, where it belongs.
+const outDir = process.env['FX_TESTS_BUILD_OUT'] ?? join(root, 'dist');
 const outFile = join(outDir, 'fx-tests.js');
 
 await mkdir(outDir, { recursive: true });
@@ -103,6 +109,8 @@ async function smokeTest(file: string): Promise<void> {
 // point it at the wrong sources.
 const devEntry = join(root, 'bin', 'fx-tests');
 if (process.env['FX_TESTS_BUILD_OUT'] === undefined) {
+    // bin/ is gitignored in full, so it may not exist in a fresh checkout.
+    await mkdir(join(root, 'bin'), { recursive: true });
     await writeFile(
         devEntry,
         `#!/bin/sh

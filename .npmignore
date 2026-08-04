@@ -1,16 +1,16 @@
 # Why this file exists, given package.json already has a `files` allowlist.
 #
 # When npm installs from a git URL it packs the checkout itself, and in that
-# path it honours .gitignore. `/bin/fx-tests` is ignored there (it is generated),
-# and npm was dropping the whole bin/ directory with it — so the installed
-# package had no binary and the command it linked did not exist, while the same
-# package installed from a tarball worked. The presence of a .npmignore makes
-# npm use this file instead of .gitignore, which breaks that coupling.
+# path it honours .gitignore, and it was dropping the whole of bin/ because the
+# generated dev entry point inside it is ignored — so the installed package had
+# no binary and the command it linked did not exist, while the same package
+# installed from a tarball worked. The shipped bundle now lives in dist/, and
+# the presence of this file stops npm consulting .gitignore at all.
 #
 # Keep it in step with `files` in package.json: this excludes, that includes,
 # and the intersection is what ships. `npm pack --dry-run` prints the result.
 
-# Sources: the published package runs the bundle in bin/, not the TypeScript.
+# Sources: the published package runs the bundle in dist/, not the TypeScript.
 cli/
 lib/
 tools/
@@ -34,6 +34,5 @@ tsconfig.json
 .github/
 artifacts/
 
-# The generated development entry point. bin/fx-tests.js and its map are the
-# artefact that ships, and must not be excluded here.
-bin/fx-tests
+# bin/ holds only the generated development entry point; dist/ is what ships.
+bin/

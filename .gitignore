@@ -14,16 +14,12 @@ artifacts/
 # Anchored with a leading slash: an unanchored `bin/` also matches cli/bin/,
 # which is source.
 node_modules/
-# `/bin/` cannot be excluded wholesale: git will not re-include a file inside an
-# excluded directory, so a `!` for the bundle below would never take effect.
-# The generated dev entry point is named instead.
-/bin/fx-tests
-# The bundle is committed on purpose. Node refuses to strip
-# types under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING), so an
-# installed package cannot run from .ts, and `prepare` cannot build it either:
-# npm runs prepare in a bare cache clone before devDependencies exist. Shipping
-# the artefact is what makes `npm i -g github:...` work at all. Rebuild with
-# `npm run build`; a stale bundle is caught by tools/check-bundle-fresh.
+# bin/ is entirely generated (the dev entry point). The shipped bundle is
+# dist/fx-tests.js, which is committed on purpose: Node refuses to strip types
+# under node_modules, so an installed package cannot run from .ts, and no
+# install hook can build one because npm runs them before devDependencies
+# exist. Rebuild with `npm run build`; `npm test` fails on a stale bundle.
+/bin/
 
 # V8 profiling logs
 isolate-*.log
