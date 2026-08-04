@@ -1072,6 +1072,85 @@ test('the tree-wide commands say what they truncated', async () => {
     assert.match(stdout, /… \d+ more \(--limit 0 for all\)/);
 });
 
+/**
+ * The path columns keep the filename, not the leading directories.
+ *
+ * Reported as unusable: a path cut to `toolkit/components/extensions/test/xp…`
+ * cannot be pasted into `fx-tests test`, grepped for, or told apart from its
+ * neighbours — and every one of those is what the output is for. The fixture's
+ * longest test path is 83 characters against a 62-character column, so the
+ * columns below do truncate and this is not a vacuous assertion.
+ */
+test('the tree-wide path columns keep the filename, not the directories', async () => {
+    for (const argv of [
+        ['issues', '--limit', '20'],
+        ['skips', '--limit', '20'],
+    ]) {
+        const { stdout } = await invoke(argv);
+        // The first column of every data row, whether or not it was shortened.
+        // Reading only the shortened ones would miss the failure mode
+        // entirely: with a tail cut the row starts with `toolkit/…` and ends
+        // with `…`, so a filter for lines *starting* with `…` skips it.
+        const paths = stdout
+            .split('\n')
+            // A data row's first cell is a lone token with no spaces in it,
+            // which rules out the prose header and the "… n more" footer.
+            .map((line) => line.trim().split(/\s{2,}/)[0] ?? '')
+            .filter((cell) => cell.length > 0 && !/\s/.test(cell))
+            // …and it is a path: it has a slash and a file extension, or it
+            // was shortened from one.
+            .filter((cell) => /\//.test(cell) && /\.\w+$|…$/.test(cell));
+
+        const shortened = paths.filter((cell) => cell.includes('…'));
+        assert.ok(shortened.length > 0, `${argv[0]}: expected some path to be shortened`);
+        for (const cell of shortened) {
+            // The cut is at the front and the filename is whole. A cut tail —
+            // `toolkit/components/extensions/test/xpcshell/test_ext_conte…` —
+            // is the bug: unpasteable, ungreppable, and indistinguishable from
+            // its neighbours.
+            assert.ok(
+                cell.startsWith('…/'),
+                `${argv[0]}: a shortened path must be cut at the front: ${cell}`
+            );
+            assert.doesNotMatch(
+                cell,
+                /…$/,
+                `${argv[0]}: the filename must not be the part cut: ${cell}`
+            );
+            assert.match(
+                cell,
+                /\/[^/…]+\.\w+$/,
+                `${argv[0]}: a whole filename must survive: ${cell}`
+            );
+        }
+    }
+});
+
+test('the manifests column keeps the manifest filename', async () => {
+    const { stdout } = await invoke(['manifests', '--limit', '0', '--sort', 'name']);
+    const cut = stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('…/'));
+    assert.ok(cut.length > 0, 'expected some manifest path to be shortened');
+    for (const line of cut) {
+        const manifest = line.split(/\s{2,}/)[0] ?? '';
+        // The last segment survives whole — a `.toml`/`.ini` filename for a
+        // Gecko manifest, a directory name for a WPT one. What must never
+        // happen is the cut landing inside it.
+        assert.doesNotMatch(
+            manifest,
+            /…$/,
+            `the last segment must not be the part cut: ${line}`
+        );
+        assert.match(
+            manifest,
+            /^…\/[^/]+$|^…\/.*\/[^/…]+$/,
+            `a shortened manifest keeps whole trailing segments: ${line}`
+        );
+    }
+});
+
 test('--markdown emits a real table from every command, not a fenced block', async () => {
     // These four used to render text and wrap it in a fence, which made them
     // the only commands whose `--markdown` was not Markdown: pasting `issues`
