@@ -107,11 +107,12 @@ async function buildPage(name: string): Promise<BuiltPage> {
 
     let output = source;
     for (const [index, match] of entries.entries()) {
-        // `</script>` inside the bundled JS would close the tag early. It can
-        // only appear inside a string literal in source, so escaping the slash
-        // preserves the value while keeping the HTML parser out of it.
-        const safe = bundles[index]!.replaceAll('</script>', '<\\/script>');
-        output = output.replace(match[0], `<script type="module">\n${safe}\n</script>`);
+        // No escaping pass here: esbuild already emits `<\/script>` for a
+        // `</script>` in a string literal, and re-escaping what it produced was
+        // both dead code and — when the round-trip guard below undid it — a
+        // build failure on any page whose source contains the literal. What is
+        // left is the check that this holds, in `checkSafe`.
+        output = output.replace(match[0], `<script type="module">\n${bundles[index]!}\n</script>`);
         inlined++;
     }
 
@@ -125,36 +126,52 @@ async function buildPage(name: string): Promise<BuiltPage> {
         );
     }
 
+    // Validate before writing, not after. Writing first means a build that
+    // fails still replaces the previous good artefact with the broken one, so
+    // the deploy ships it and the non-zero exit is the only clue.
+    checkSafe(name, bundles);
     await writeFile(join(outDir, name), output);
-    await checkParses(name, bundles);
     return { name, bytes: output.length, inlined };
 }
 
 /**
- * Fails the build if an inlined bundle is not parseable JavaScript.
+ * Fails the build if an inlined bundle would not survive being put inside HTML.
  *
- * The CLI build has the same guard for a reason that applies here twice over:
- * it once emitted a file with two shebang lines, reported success, and shipped
- * something Node refused to parse. A page is worse — the only symptom of a
- * bundle mangled on its way into the HTML is a blank dashboard and a console
- * error nobody is watching for.
+ * The CLI build has an equivalent guard for a reason that applies here twice
+ * over: it once emitted a file with two shebang lines, reported success, and
+ * shipped something Node refused to parse. A page is worse — the only symptom
+ * of a bundle mangled on its way into the HTML is a blank dashboard and a
+ * console error nobody is watching for.
  *
- * The specific hazard this catches is the `</script>` escaping above: get it
- * wrong and the browser closes the tag early, leaving valid-looking HTML whose
- * script is truncated mid-statement. Parsing the escaped text back is what
- * proves the splice was lossless.
+ * Two distinct checks, because they fail differently:
+ *
+ * 1. **No unescaped `</script>`.** This is the one that silently truncates: the
+ *    HTML parser closes the tag at the first occurrence wherever it appears,
+ *    leaving valid-looking markup whose script stops mid-statement. esbuild
+ *    escapes these itself, so this asserts that guarantee rather than
+ *    re-implementing it — an earlier version escaped again and then "verified"
+ *    the result by undoing esbuild's escaping, which failed every build of a
+ *    page whose source contained the literal string.
+ * 2. **The bundle parses.** Catches a corrupt splice from any other cause.
  */
-async function checkParses(name: string, bundles: readonly string[]): Promise<void> {
+function checkSafe(name: string, bundles: readonly string[]): void {
     for (const bundle of bundles) {
-        const escaped = bundle.replaceAll('</script>', '<\\/script>');
-        // Round-trip: what the browser will see, unescaped the way an HTML
-        // parser does it, must still be the bundle esbuild produced.
-        if (escaped.replaceAll('<\\/script>', '</script>') !== bundle) {
-            throw new Error(`${name}: escaping changed the bundle`);
+        // Deliberately assembled so this source file does not itself contain
+        // the literal sequence it is looking for.
+        const closing = '</' + 'script';
+        const at = bundle.indexOf(closing);
+        if (at !== -1) {
+            throw new Error(
+                `${name}: the bundle contains an unescaped ${closing}>, which would close the ` +
+                    `tag early and truncate the page's script (at offset ${at}: ` +
+                    `${JSON.stringify(bundle.slice(Math.max(0, at - 40), at + 40))}). esbuild ` +
+                    'normally escapes this; something downstream of it has not.'
+            );
         }
         try {
-            // `new Function` parses without executing — enough to catch a
-            // truncated or corrupted splice, without needing a DOM.
+            // `new Function` parses without executing. The async wrapper is
+            // what lets a bundle using top-level await through — esbuild emits
+            // one for any page that fetches its data at module scope.
             new Function(`return async () => {${bundle}}`);
         } catch (error) {
             throw new Error(`${name}: the inlined bundle does not parse: ${String(error)}`);
