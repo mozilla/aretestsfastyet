@@ -14,9 +14,17 @@
  * pipeline in a way that is only visible to whoever is on the other end of it.
  */
 
+import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import type { DataSource } from '../lib/sources/source.ts';
 import type { TreeherderClient } from '../lib/sources/treeherder.ts';
 import type { GlobalOptions } from './options.ts';
+
+/** A loaded timing file, whichever family it came from. */
+export interface LoadedTimingFile {
+    /** The raw file, for the metadata and the fields only some families have. */
+    raw: { metadata: { generatedAt: string }; taskInfo?: { chunks?: (number | null)[] } };
+    decoded: DecodedTimingFile;
+}
 
 /** Where a command writes. */
 export interface OutputStreams {
@@ -46,6 +54,28 @@ export interface CommandContext {
     taskArtifacts?: DataSource | undefined;
     /** Treeherder, for `fx-tests try`. Absent when a command does not need it. */
     treeherder?: TreeherderClient | undefined;
+    /**
+     * Overrides how a test's timing file is loaded.
+     *
+     * Exists for one reason, and it is worth stating rather than leaving as an
+     * unexplained hook: `fx-tests test` always reads a **bucket** file, which
+     * can attribute runs to configurations, so the branches that handle a file
+     * that *cannot* — `issues.json`, which has no `taskInfo` — are unreachable
+     * from the command's own code path. A mutation replacing
+     * `canAttributeConfigs(decoded)` with a literal `true` therefore survived
+     * the whole suite.
+     *
+     * Those branches stop being unreachable the moment step 5's `issues`,
+     * `failures`, `crashes` and `skips` land, since all four read that family.
+     * Rather than let the guard go live untested, this seam lets a test drive
+     * the command over a file with no attribution today.
+     *
+     * Production never sets it.
+     */
+    loadTimingFile?:
+        | ((harness: string, testPath: string) => Promise<LoadedTimingFile>)
+        | undefined;
+
     /**
      * Raw HTTP, for the artifacts `fx-tests try` reads per job.
      *

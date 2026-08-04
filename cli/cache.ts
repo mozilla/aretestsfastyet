@@ -290,14 +290,45 @@ export function cachedSource(
             try {
                 await cache.put(name, bytes);
             } catch (error) {
-                hooks.onWarning?.(
-                    `could not write cache entry for ${dataFileKey(name)}: ` +
-                        `${(error as Error).message}`
-                );
+                hooks.onWarning?.(describeCacheWriteFailure(cache.directory, error));
             }
             return bytes;
         },
     };
+}
+
+/**
+ * Turns a cache-write failure into something the reader can act on.
+ *
+ * The raw form was `EPERM: operation not permitted, mkdir '/proc'`, which is
+ * accurate and useless: it does not say the command still worked, does not say
+ * what the consequence is, and does not say what to do. Someone seeing it
+ * mid-output reasonably concludes the run failed. It did not — the data below
+ * the warning is complete, and only the caching of it was skipped.
+ *
+ * So the message states, in order: what could not be done, that the answer is
+ * unaffected, what it costs, and the two flags that resolve it. The errno is
+ * kept at the end, because it is the part worth pasting into a search.
+ */
+export function describeCacheWriteFailure(directory: string, error: unknown): string {
+    const message = (error as Error | undefined)?.message ?? String(error);
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+
+    const cause =
+        code === 'EACCES' || code === 'EPERM'
+            ? `no permission to write the cache directory ${directory}`
+            : code === 'ENOSPC'
+              ? `no space left to write the cache directory ${directory}`
+              : code === 'EROFS'
+                ? `the cache directory ${directory} is on a read-only filesystem`
+                : `could not write the cache directory ${directory}`;
+
+    return (
+        `${cause}. The results below are complete and correct — only caching was ` +
+        `skipped, so this run and the next one re-download instead of reading from ` +
+        `disk. Use --cache-dir <path> to cache somewhere writable, or --no-cache to ` +
+        `stop trying. (${message})`
+    );
 }
 
 /** Total bytes held by the cache directory, for `fx-tests cache --size`. */

@@ -260,7 +260,16 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
 
     const { harness, inferred } = resolveHarness(testPath, context.globals.harness);
     progress(context, `Reading ${harness} bucket for ${testPath}…`);
-    const { file, decoded } = await loadBucketForTest(context, harness, testPath, inferred);
+    // `context.loadTimingFile` is a test-only seam; production always takes
+    // the bucket path. See `LoadedTimingFile` in `cli/context.ts` for why it
+    // exists — the branches for a file that cannot attribute configs are
+    // unreachable through the bucket loader, and they go live in step 5.
+    const loaded =
+        context.loadTimingFile === undefined
+            ? await loadBucketForTest(context, harness, testPath, inferred)
+            : await context.loadTimingFile(harness, testPath);
+    const decoded = loaded.decoded;
+    const file = 'file' in loaded ? loaded.file : loaded.raw;
 
     const identity = decoded.findTest(testPath);
     if (identity === null) {
@@ -818,7 +827,10 @@ function buildHistory(
 
 /** The task IDs behind each failure, for `--task-ids`. */
 function buildTaskIds(
-    raw: { taskInfo: { chunks?: (number | null)[] | undefined } },
+    // Optional, because only the bucket files carry `taskInfo.chunks` at all
+    // (`FORMATS.md`: it is absent from every daily, issues-with-taskids and
+    // errors file). A missing chunk is reported as `null` rather than guessed.
+    raw: { taskInfo?: { chunks?: (number | null)[] | undefined } | undefined },
     file: DecodedTimingFile,
     entries: readonly RunEntry[],
     window: DayWindow
@@ -842,7 +854,7 @@ function buildTaskIds(
                 jobName:
                     taskIdIndex === undefined ? null : file.jobNameOfTaskIndex(taskIdIndex),
                 chunk:
-                    taskIdIndex === undefined
+                    taskIdIndex === undefined || raw.taskInfo === undefined
                         ? null
                         : chunkOfTask(raw as never, taskIdIndex),
                 status: entry.status,

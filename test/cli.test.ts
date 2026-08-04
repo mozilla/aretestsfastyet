@@ -32,7 +32,7 @@
  * worth pinning.
  */
 
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -41,7 +41,7 @@ import assert from 'node:assert/strict';
 import { type DataFileName, type DataSource, DataFetchError, DataFileNotFoundError } from '../lib/sources/source.ts';
 import type { TreeherderClient, TreeherderJob } from '../lib/sources/treeherder.ts';
 import { ExitCode } from '../cli/errors.ts';
-import { captureStreams } from '../cli/context.ts';
+import { type CommandContext, captureStreams } from '../cli/context.ts';
 import { diskCache } from '../cli/cache.ts';
 import { run } from '../cli/main.ts';
 
@@ -311,19 +311,89 @@ test('test --json attributes failures to configs, counting a crash as a failure'
     });
 });
 
-test('test --json reports canAttributeConfigs', async () => {
+test('test --json reports canAttributeConfigs true for a bucket file', async () => {
     const { stdout } = await invoke(['test', TEST_PATH, '--json']);
-    // KNOWN WEAK ASSERTION, recorded rather than dressed up: `fx-tests test`
-    // only ever reads a bucket file, for which the honest answer is `true`,
-    // so replacing the call with a literal `true` passes this test. A
-    // mutation confirmed it survives.
-    //
-    // Closing it properly needs a command that reads `issues.json`, which is
-    // step 5's `fx-tests issues`. Until then the predicate itself is covered
-    // against that family by the test above, and what is untested is one line
-    // of wiring. Noted here so the next person does not mistake a green suite
-    // for coverage of it.
     assert.equal(json(stdout)['canAttributeConfigs'], true);
+});
+
+/** Loads the issues fixture, which has no `taskInfo` and cannot attribute. */
+async function issuesLoader(): Promise<NonNullable<CommandContext['loadTimingFile']>> {
+    const { decodeIssues } = await import('../lib/formats/issues.ts');
+    type IssuesFile = import('../lib/formats/issues.ts').IssuesFile;
+    const raw = JSON.parse(
+        new TextDecoder().decode(await fixtureBytes('xpcshell-issues.json'))
+    ) as IssuesFile;
+    return () => Promise.resolve({ raw, decoded: decodeIssues(raw) });
+}
+
+/** A test that fails in the issues fixture, so `configs` is empty for a reason. */
+async function failingTestInIssues(): Promise<string> {
+    const { decodeIssues } = await import('../lib/formats/issues.ts');
+    type IssuesFile = import('../lib/formats/issues.ts').IssuesFile;
+    const decoded = decodeIssues(
+        JSON.parse(
+            new TextDecoder().decode(await fixtureBytes('xpcshell-issues.json'))
+        ) as IssuesFile
+    );
+    for (let id = 0; id < decoded.testCount; id++) {
+        for (const [status, count] of decoded.totalsByStatus(id)) {
+            if (status.startsWith('FAIL') && count > 0) {
+                return decoded.testAt(id).fullPath;
+            }
+        }
+    }
+    throw new Error('the issues fixture has no failing test');
+}
+
+test('test over a file that cannot attribute configs says so, rather than "none failed"', async () => {
+    // Driven through the `loadTimingFile` seam because `fx-tests test` always
+    // reads a bucket file, which *can* attribute — so this branch is
+    // unreachable from the command's own code path and a literal `true`
+    // survived the suite. It stops being unreachable in step 5, where
+    // `issues`, `failures`, `crashes` and `skips` all read this family, and
+    // wiring the guard live untested is how it would become silently wrong.
+    const path = await failingTestInIssues();
+    const { code, stdout } = await invoke(['test', path, '--json'], {
+        loadTimingFile: await issuesLoader(),
+    });
+    assert.equal(code, 0);
+    const result = json(stdout);
+
+    // The test genuinely failed, and the file genuinely cannot say where.
+    const totals = result['totals'] as Record<string, number>;
+    assert.ok(totals['failCount']! > 0, 'this test has failures');
+    assert.deepEqual(result['configs'], []);
+    assert.equal(
+        result['canAttributeConfigs'],
+        false,
+        'an issues file has no taskInfo, so configs: [] means "cannot say"'
+    );
+
+    // And `reach` must be null rather than an empty or failing-only summary:
+    // with no attributed passes, "where does this run" has no answer here.
+    assert.equal(result['reach'], null);
+});
+
+test('the text output distinguishes "cannot attribute" from "no config failed"', async () => {
+    const path = await failingTestInIssues();
+    const { stdout } = await invoke(['test', path], {
+        loadTimingFile: await issuesLoader(),
+    });
+    assert.match(stdout, /does not attribute runs to configurations/);
+    assert.doesNotMatch(stdout, /no failing configuration in this window/);
+    // And no reach line, since it would be built from failing configs only.
+    assert.doesNotMatch(stdout, /^Runs on /m);
+});
+
+test('--coverage refuses on a file without attributed passes', async () => {
+    const path = await failingTestInIssues();
+    const { stdout } = await invoke(['test', path, '--coverage'], {
+        loadTimingFile: await issuesLoader(),
+    });
+    // CLI.md's refusal: printing the failing configs under a "Coverage"
+    // heading would present a failure-only view as the whole picture, which
+    // is the exact thing --coverage exists to replace.
+    assert.match(stdout, /Coverage is not available from this file/);
 });
 
 test('canAttributeConfigs is false for a family that cannot attribute', async () => {
@@ -1379,6 +1449,62 @@ test('--no-cache neither reads nor writes the cache', async () => {
     }
 });
 
+test('an unwritable cache warns actionably and still answers', async () => {
+    // A read-only path: writing under a file is EACCES/ENOTDIR everywhere.
+    const directory = await mkdtemp(join(tmpdir(), 'fx-tests-cache-'));
+    const blocked = join(directory, 'a-file', 'cache');
+    await writeFile(join(directory, 'a-file'), 'not a directory');
+    try {
+        const cache = diskCache({ directory: blocked });
+        const { cachedSource } = await import('../cli/cache.ts');
+        const streams = captureStreams();
+        const code = await run({
+            argv: ['summary', '--harness', 'xpcshell', '--json'],
+            streams,
+            source: cachedSource(fixtureSource(), cache, {
+                onWarning: (message) => streams.err(`warning: ${message}\n`),
+            }),
+            cache,
+        });
+
+        // The behaviour that matters first: a cache that cannot be written
+        // makes the CLI slower, not broken.
+        assert.equal(code, 0);
+        assert.doesNotThrow(() => JSON.parse(streams.stdout));
+
+        // And the message has to be usable. The raw form was
+        // `EPERM: operation not permitted, mkdir '/proc'` — accurate, and it
+        // tells a reader neither that the run succeeded nor what to do, so
+        // seeing it mid-output reads as a failed run.
+        assert.match(streams.stderr, /cache directory/);
+        assert.match(streams.stderr, /complete and correct/);
+        assert.match(streams.stderr, /--cache-dir/);
+        assert.match(streams.stderr, /--no-cache/);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('the cache-failure message names the cause for each errno it knows', async () => {
+    const { describeCacheWriteFailure } = await import('../cli/cache.ts');
+    const of = (code: string): string => {
+        const error = new Error(`${code}: something went wrong`) as NodeJS.ErrnoException;
+        error.code = code;
+        return describeCacheWriteFailure('/some/dir', error);
+    };
+    assert.match(of('EACCES'), /no permission to write/);
+    assert.match(of('EPERM'), /no permission to write/);
+    assert.match(of('ENOSPC'), /no space left/);
+    assert.match(of('EROFS'), /read-only filesystem/);
+    // An unrecognized errno still gets the directory, the reassurance and the
+    // two flags — only the first clause is generic.
+    const unknown = of('EWEIRD');
+    assert.match(unknown, /could not write the cache directory \/some\/dir/);
+    assert.match(unknown, /--no-cache/);
+    // The raw errno is kept at the end: it is the part worth searching for.
+    assert.match(unknown, /EWEIRD/);
+});
+
 test('cache --clear empties it and reports how many entries went', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'fx-tests-cache-'));
     try {
@@ -1587,6 +1713,55 @@ test('try surfaces a crash no test marker claimed', async () => {
     assert.equal(all.length, 1, 'the unclaimed crash must become a failure');
     assert.equal(all[0]!.path, MOCHITEST_PATH, 'the (finished) suffix is stripped');
     assert.deepEqual(all[0]!.messages, ['@ RunWatchdog']);
+});
+
+test('try drops a crash recorded against a manifest rather than a test', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-mochitest-plain', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                // Two unclaimed crashes: one against a real test, one against
+                // the manifest. Measured on try push 717fc67feaa071, the
+                // `-xorig-2` job recorded 27 of the manifest kind.
+                {
+                    type: 'Crash',
+                    test: `${MOCHITEST_PATH} (finished)`,
+                    signature: '@ RunWatchdog',
+                    start: 1,
+                    end: 1,
+                },
+                {
+                    type: 'Crash',
+                    test: 'dom/canvas/test/mochitest.toml',
+                    signature: '@ RunWatchdog',
+                    start: 2,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { path: string }[]),
+        ...(result['knownIntermittents'] as { path: string }[]),
+        ...(result['newIntermittents'] as { path: string }[]),
+    ];
+    // The test-path crash becomes a failure; the manifest one does not. A
+    // manifest is not a test, has nothing to join against central, and
+    // reporting it as a failing test invents a test that does not exist.
+    assert.deepEqual(
+        all.map((failure) => failure.path),
+        [MOCHITEST_PATH]
+    );
+    assert.ok(
+        !all.some((failure) => failure.path.endsWith('.toml')),
+        'no .toml may be reported as a failing test'
+    );
 });
 
 test('try does not report a no-message failure as a perma-fail when central fails too', async () => {

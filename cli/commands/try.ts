@@ -478,12 +478,20 @@ interface CrashMarker {
  * - **The test path may be `manifest.toml:path/to/test.js`**, and only the part
  *   after the colon is the path the aggregates use.
  * - **`Crash` markers that no test marker claims become synthetic `CRASH`
- *   entries** (`try.html:1042`). This is not an edge case: measured on try push
- *   717fc67feaa071, all four failed mochitest jobs had *every* `Test` marker at
- *   `PASS` or `SKIP`, and the actual failures were four shutdown-hang `Crash`
- *   markers recorded against tests that had already finished. Without this the
- *   command reports "no test-level failures found" for a push that plainly has
- *   them — which is what it did before this was ported.
+ *   entries** (`try.html:1042`). This is not an edge case. Measured on the
+ *   five failed Linux mochitest jobs of try push 717fc67feaa071: four of them
+ *   (`-gpu`, `-gpu-nofis`, `-gpu-swr`, `-gpu-swr-nofis`) had *every* `Test`
+ *   marker at `PASS` or `SKIP` — `{SKIP: 9, PASS: 8}` in each — with the
+ *   actual failures existing solely as four shutdown-hang `Crash` markers
+ *   against tests that had already finished. Without this the command reports
+ *   "no test-level failures found" for a push that plainly has them, which is
+ *   what it did before this was ported.
+ *
+ *   The fifth job (`-xorig-2`) is the useful contrast: 767 passes, one real
+ *   `FAIL`, and 27 crashes recorded against `.toml` manifests rather than
+ *   tests. Those 27 are deliberately dropped by the path filter below —
+ *   a manifest is not a test path and has nothing to join against central —
+ *   so that job contributes its `FAIL` and nothing else.
  */
 export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTiming[] {
     const thread = (profile as { threads?: ProfileThread[] })?.threads?.[0];
@@ -600,8 +608,8 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
     // Crashes no test marker claimed. `try.html:1042`: these happen during
     // manifest teardown or shutdown, so the test they are recorded against has
     // usually already reported PASS. Dropping them loses the only evidence of
-    // the failure — measured on push 717fc67feaa071, where all four failing
-    // jobs' failures were exclusively of this kind.
+    // the failure — measured on push 717fc67feaa071, where four of the five
+    // failing Linux jobs had no other evidence at all.
     for (const crash of crashMarkers) {
         if (crash.consumed) {
             continue;
