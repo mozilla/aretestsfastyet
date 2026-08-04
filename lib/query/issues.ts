@@ -52,6 +52,25 @@ export interface IssueRow {
     skipCount: number;
     /** `(fail + timeout + crash) / runCount * 100`, or 0 when nothing ran. */
     failRate: number;
+    /**
+     * Non-passing runs of the requested types — the dashboard's `issueCount`.
+     *
+     * `issues.html:1071-1076` computes exactly this: the sum of `skipCount`,
+     * `failCount`, `timeoutCount` and `crashCount` over the *enabled* issue-type
+     * checkboxes, all four of which are checked by default (`:626-638`). It is a
+     * count of runs, not of tests, and it is what the page's default ranking
+     * sorts on.
+     */
+    issueCount: number;
+    /**
+     * `issueCount` as a percentage of the runs it could have come from.
+     *
+     * The denominator is the dashboard's (`:1079`): `runCount` excludes skips,
+     * so skipped runs are added back only when skips are one of the requested
+     * types. Otherwise a skip would inflate the numerator and be missing from
+     * the denominator.
+     */
+    issueRate: number;
 }
 
 /** Which non-passing outcomes a query is interested in. */
@@ -64,20 +83,39 @@ export interface IssuesOptions {
     /** Only tests whose component contains this, case-insensitively. */
     component?: string | undefined;
     /**
-     * Which outcomes make a test interesting. Default: all the non-passing
-     * ones except skip, since a skipped test is not a failing one and
-     * `fx-tests skips` is its own command.
+     * Which outcomes count as an issue. Default: **all four**.
+     *
+     * This mirrors `issues.html`, whose four "Count as issues" checkboxes —
+     * failures, timeouts, crashes and skips — are every one of them `checked`
+     * on load (`:626-638`). Excluding skips here would rank components against
+     * a different definition of "issue" than the dashboard the CLI is supposed
+     * to agree with, and skips are the largest of the four in this data.
      */
     types?: readonly IssueType[] | undefined;
     /** Drop tests below this failure rate, in percent. */
     minRate?: number | undefined;
+    /**
+     * Keep tests with no issue at all, rather than dropping them.
+     *
+     * The grouped views need them: `issues.html` accumulates a component's
+     * `runCount` over **every** test in it (`:2010`) and only then decides
+     * which tests to list (`:2016`), so a component's denominator includes its
+     * clean tests. Dropping them first inflates the issue rate — measured on
+     * WebExtensions :: General, 6,087,719 runs instead of 6,131,520, turning
+     * 8.7% into 8.8%.
+     */
+    keepClean?: boolean | undefined;
     /** Drop tests with fewer than this many matching occurrences. */
     minCount?: number | undefined;
     /** Restrict to a day range, as absolute day indices. Both ends inclusive. */
     dayRange?: { from: number; to: number } | undefined;
 }
 
-const DEFAULT_TYPES: readonly IssueType[] = ['fail', 'timeout', 'crash'];
+/**
+ * Every issue type, matching the dashboard's four checkboxes, all of which
+ * default to checked (`issues.html:626-638`).
+ */
+export const DEFAULT_TYPES: readonly IssueType[] = ['fail', 'timeout', 'crash', 'skip'];
 
 /**
  * Every test in the file with a non-passing outcome, sorted by descending
@@ -122,6 +160,8 @@ export function findIssues(
             expectedFailCount: 0,
             skipCount: 0,
             failRate: 0,
+            issueCount: 0,
+            issueRate: 0,
         };
 
         for (const entry of file.runsOfTest(testId)) {
@@ -163,15 +203,15 @@ export function findIssues(
         const nonPass = row.failCount + row.timeoutCount + row.crashCount;
         row.failRate = row.runCount > 0 ? (nonPass / row.runCount) * 100 : 0;
 
-        let matched = 0;
-        if (types.has('fail')) matched += row.failCount;
-        if (types.has('timeout')) matched += row.timeoutCount;
-        if (types.has('crash')) matched += row.crashCount;
-        if (types.has('skip')) matched += row.skipCount;
-        if (matched === 0) {
+        // The dashboard's `issueCount`/`issuePercentage`, `issues.html:1071-1080`.
+        row.issueCount = issueCountOf(row, types);
+        const rateDenominator = row.runCount + (types.has('skip') ? row.skipCount : 0);
+        row.issueRate = rateDenominator > 0 ? (row.issueCount / rateDenominator) * 100 : 0;
+
+        if (row.issueCount === 0 && options.keepClean !== true) {
             continue;
         }
-        if (options.minCount !== undefined && matched < options.minCount) {
+        if (options.minCount !== undefined && row.issueCount < options.minCount) {
             continue;
         }
         if (options.minRate !== undefined && row.failRate < options.minRate) {
@@ -184,31 +224,73 @@ export function findIssues(
     return rows;
 }
 
+/**
+ * The dashboard's `issueCount` for one row, over the enabled types.
+ *
+ * Shared by the row and the group so the two cannot disagree about what an
+ * issue is — a group total that counted different outcomes than its rows would
+ * rank components against a definition nothing else uses.
+ */
+function issueCountOf(
+    counts: { failCount: number; timeoutCount: number; crashCount: number; skipCount: number },
+    types: ReadonlySet<IssueType>
+): number {
+    return (
+        (types.has('skip') ? counts.skipCount : 0) +
+        (types.has('fail') ? counts.failCount : 0) +
+        (types.has('timeout') ? counts.timeoutCount : 0) +
+        (types.has('crash') ? counts.crashCount : 0)
+    );
+}
+
 /** A group of issue rows sharing a key. */
 export interface IssueGroup {
     /** The component, directory, or whatever the rows were grouped by. */
     key: string;
-    /** How many distinct tests are in the group. */
+    /**
+     * How many distinct tests in the group have at least one issue.
+     *
+     * The page's "N tests with issues, out of M" (`:2106`); `totalTestCount` is
+     * the M. The two differ and the difference is the point — 393 of 402 is a
+     * component in trouble, 3 of 402 is three bad tests.
+     */
     testCount: number;
+    /** Every test in the group, issue-free ones included. */
+    totalTestCount: number;
     runCount: number;
     failCount: number;
     timeoutCount: number;
     crashCount: number;
     skipCount: number;
     failRate: number;
+    /** Sum of the rows' `issueCount` — the page's per-component total. */
+    issueCount: number;
+    /** `issueCount` over the same denominator the page uses (`:2046-2048`). */
+    issueRate: number;
 }
 
 /**
- * Groups issue rows by component or directory.
+ * Groups issue rows by component or directory, ranked by issue count.
  *
- * `CLI.md`'s `--group-by component|directory`. Grouping by *message* is a
- * different operation — it needs the messages, which a row does not carry —
- * and lives in `failures.ts`.
+ * This is `fx-tests issues`' default view and it mirrors `issues.html`, which
+ * hardcodes the components view (`:888`, "Always use components view for issues
+ * page"), accumulates the same per-component totals (`:2007-2013`) and sorts by
+ * `issueCount` descending (`:663`, `sortField = 'issueCount'`).
+ *
+ * The ordering is the substance, not a presentation detail: triage starts by
+ * finding the area worth looking at. A flat per-test list ranked by rate makes
+ * the reader do that aggregation themselves, which is what "a few random tests"
+ * meant when the owner read it.
+ *
+ * Grouping by *message* is a different operation — it needs the messages, which
+ * a row does not carry — and lives in `failures.ts`.
  */
 export function groupIssues(
     rows: Iterable<IssueRow>,
-    by: 'component' | 'directory'
+    by: 'component' | 'directory',
+    types: readonly IssueType[] = DEFAULT_TYPES
 ): IssueGroup[] {
+    const enabled = new Set(types);
     const groups = new Map<string, IssueGroup>();
     for (const row of rows) {
         const key = by === 'component' ? (row.component ?? '(no component)') : row.directory;
@@ -217,28 +299,44 @@ export function groupIssues(
             group = {
                 key,
                 testCount: 0,
+                totalTestCount: 0,
                 runCount: 0,
                 failCount: 0,
                 timeoutCount: 0,
                 crashCount: 0,
                 skipCount: 0,
                 failRate: 0,
+                issueCount: 0,
+                issueRate: 0,
             };
             groups.set(key, group);
         }
-        group.testCount += 1;
+        // Runs accumulate over every test, `testCount` only over those with an
+        // issue — the page's order of operations (`:2010` before `:2016`), and
+        // what keeps a component's rate over its whole population.
+        group.totalTestCount += 1;
+        if (row.issueCount > 0) {
+            group.testCount += 1;
+        }
         group.runCount += row.runCount;
         group.failCount += row.failCount;
         group.timeoutCount += row.timeoutCount;
         group.crashCount += row.crashCount;
         group.skipCount += row.skipCount;
     }
-    const out = [...groups.values()];
+    // A group whose every test is clean is not a triage row. It can only arise
+    // when the caller passed `keepClean` to get honest denominators.
+    const out = [...groups.values()].filter((group) => group.testCount > 0);
     for (const group of out) {
         const nonPass = group.failCount + group.timeoutCount + group.crashCount;
         group.failRate = group.runCount > 0 ? (nonPass / group.runCount) * 100 : 0;
+        // Recomputed from the group's own totals rather than summed from the
+        // rows, so it is the same function of the same counters at both levels.
+        group.issueCount = issueCountOf(group, enabled);
+        const denominator = group.runCount + (enabled.has('skip') ? group.skipCount : 0);
+        group.issueRate = denominator > 0 ? (group.issueCount / denominator) * 100 : 0;
     }
-    out.sort((a, b) => b.failRate - a.failRate || a.key.localeCompare(b.key));
+    out.sort((a, b) => b.issueCount - a.issueCount || a.key.localeCompare(b.key));
     return out;
 }
 
