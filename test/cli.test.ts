@@ -2230,7 +2230,18 @@ test('the Markdown perma-fail table has a pre-existing column with all three sta
             treeherder: fakeTreeherder([job(jobName, 'TASK1', 'testfailed')]),
             fetchUrl: profileFetcher({
                 TASK1: profileWith([
-                    { type: 'Test', test: TEST_PATH, status: 'FAIL', message, start: 1, end: 2 },
+                    // `message` is omitted rather than set to `undefined` when
+                    // there is none: `exactOptionalPropertyTypes` makes those
+                    // different types, and the absent case is the one the
+                    // harness actually emits.
+                    {
+                        type: 'Test',
+                        test: TEST_PATH,
+                        status: 'FAIL',
+                        ...(message === undefined ? {} : { message }),
+                        start: 1,
+                        end: 2,
+                    },
                 ]),
             }),
         });
