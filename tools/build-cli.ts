@@ -42,7 +42,10 @@ const result = await build({
     // external. If one ever appears, this is where it would be listed, and
     // leaving it out would silently inline someone else's package.
     external: [],
-    banner: { js: '#!/usr/bin/env node' },
+    // No shebang banner: `cli/bin/fx-tests.ts` already starts with one and
+    // esbuild preserves it, so adding a banner produced a file with two —
+    // which Node rejects, because only the first line may be a shebang. The
+    // bundle was unrunnable and `npm run build` reported success.
     logLevel: 'info',
 });
 
@@ -50,6 +53,34 @@ if (result.errors.length > 0) {
     process.exitCode = 1;
 } else {
     await chmod(outFile, 0o755);
+    await smokeTest(outFile);
+}
+
+/**
+ * Runs the built artefact once, so a bundle that cannot start fails the build.
+ *
+ * Added after a real occurrence: the shebang banner above produced a file with
+ * two shebang lines, which Node refuses to parse. esbuild reported success,
+ * `npm run build` exited 0, and the only symptom was that the shipped binary
+ * did not run at all. A build that can produce an unrunnable artefact and call
+ * it a success is worth one subprocess to prevent.
+ *
+ * `--version` is the cheapest command that exercises module loading end to
+ * end: it parses every import in the bundle before printing.
+ */
+async function smokeTest(file: string): Promise<void> {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    try {
+        const { stdout } = await promisify(execFile)(process.execPath, [file, '--version']);
+        if (!/\d+\.\d+\.\d+/.test(stdout)) {
+            throw new Error(`--version printed ${JSON.stringify(stdout)}`);
+        }
+        console.log(`Smoke test passed: ${file} --version -> ${stdout.trim()}`);
+    } catch (error) {
+        console.error(`Smoke test FAILED: the built CLI does not run.\n${String(error)}`);
+        process.exitCode = 1;
+    }
 }
 
 /**
