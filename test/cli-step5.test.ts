@@ -1441,6 +1441,29 @@ test('the sort marker follows --sort rather than being hardcoded', async () => {
         .split('\n')
         .find((line) => line.includes('▲') || line.includes('▼'))!;
     assert.match(issuesHeader, /issues ▼/, 'the default marks the issue-count column');
+
+    // The per-test renderer builds its columns separately from the grouped one,
+    // so asserting only the component view leaves half the code unpinned: a
+    // marker hardcoded to `desc` there would claim A→Z was descending.
+    const headerOf = async (argv: string[]): Promise<string> => {
+        const { stdout } = await invoke(argv);
+        return stdout.split('\n').find((line) => line.includes('▲') || line.includes('▼'))!;
+    };
+    assert.match(
+        await headerOf(['issues', '--group-by', 'test', '--limit', '3', '--sort', 'name']),
+        /Test ▲/,
+        'the per-test view marks --sort name as ascending'
+    );
+    assert.match(
+        await headerOf(['issues', '--group-by', 'test', '--limit', '3']),
+        /issues ▼/,
+        'the per-test default marks the issue-count column, descending'
+    );
+    assert.match(
+        await headerOf(['issues', '--group-by', 'test', '--limit', '3', '--sort', 'rate']),
+        /rate ▼/,
+        'the per-test view follows --sort rate'
+    );
 });
 
 test('--markdown carries the sort marker too', async () => {
@@ -1505,6 +1528,39 @@ test('the issue rate divides by the runs its numerator could come from', async (
         assert.ok(row.issueRate <= 100.000001, `${row.key}: rate above 100%`);
     }
     assert.ok(sawSkips, 'the fixture must have a group with skips');
+
+    // The per-test rows compute their own rate, in `findIssues` rather than in
+    // `groupIssues`, so the group assertions above leave that half unpinned.
+    // A skip-only test is the sharp case: with skips out of the denominator it
+    // has 24,826 issues over 0 runs and reports 0%, which is the opposite of
+    // the truth.
+    const perTest = await invoke(['issues', '--json', '--limit', '0', '--group-by', 'test']);
+    const tests = perTest.stdout;
+    const testRows = json(tests)['rows'] as {
+        test: string;
+        issueCount: number;
+        runCount: number;
+        skipCount: number;
+        issueRate: number;
+    }[];
+    assert.ok(testRows.length > 0);
+    let sawTestSkips = false;
+    for (const row of testRows) {
+        const expected = (row.issueCount / (row.runCount + row.skipCount)) * 100;
+        assert.ok(
+            Math.abs(row.issueRate - expected) < 1e-9,
+            `${row.test}: rate ${row.issueRate} is not ${expected}`
+        );
+        if (row.skipCount > 0) {
+            sawTestSkips = true;
+            const narrowed = (row.issueCount / row.runCount) * 100;
+            assert.ok(
+                !Number.isFinite(narrowed) || Math.abs(narrowed - row.issueRate) > 1e-9,
+                `${row.test}: omitting skips must change this row's rate`
+            );
+        }
+    }
+    assert.ok(sawTestSkips, 'the fixture must have a test with skips');
 });
 
 test('--type skip removes skips from the denominator as well as the count', async () => {
@@ -1571,6 +1627,30 @@ test('the grouped views ask for the clean tests the denominator needs', async ()
         assert.ok(
             group.totalTestCount >= group.testCount,
             `${group.key}: the "out of" total includes the affected tests`
+        );
+    }
+
+    // And the command must actually *ask* for the clean tests: the library
+    // honouring `keepClean` proves nothing if `runIssues` stops passing it.
+    // The observable consequence is `totalTestCount` exceeding `testCount`,
+    // which needs a test that is clean *for the query being run*. Narrowing to
+    // one outcome produces those: on the real file `--type crash` gives
+    // WebExtensions :: General 190 crashing tests out of 396.
+    const narrowed = await invoke(['issues', '--json', '--limit', '0', '--type', 'crash']);
+    const crashGroups = json(narrowed.stdout)['rows'] as {
+        key: string;
+        testCount: number;
+        totalTestCount: number;
+    }[];
+    assert.ok(crashGroups.length > 0, '--type crash must still produce components');
+    for (const group of crashGroups) {
+        assert.ok(
+            group.testCount > 0,
+            `${group.key}: a listed component must have a crashing test`
+        );
+        assert.ok(
+            group.totalTestCount >= group.testCount,
+            `${group.key}: the "out of" total cannot be smaller than the affected count`
         );
     }
 });

@@ -1182,10 +1182,24 @@ test('groupIssues aggregates rows without double-counting', () => {
  * data does exercise (a component with 396 tests of which 393 have issues).
  */
 function fileWithCleanTest(): DecodedTimingFile {
-    const tests = [
-        { fullPath: 'dom/test_broken.js', runs: [['PASS', 90], ['FAIL', 10]] as const },
-        { fullPath: 'dom/test_clean.js', runs: [['PASS', 400]] as const },
-    ];
+    return syntheticFile([
+        { fullPath: 'dom/test_broken.js', runs: [['PASS', 90], ['FAIL', 10]] },
+        { fullPath: 'dom/test_clean.js', runs: [['PASS', 400]] },
+    ]);
+}
+
+/** A file whose one interesting test only ever skipped, so it has no runs. */
+function fileWithSkipOnlyTest(): DecodedTimingFile {
+    return syntheticFile([
+        { fullPath: 'dom/test_never_runs.js', runs: [['SKIP', 300]] },
+        { fullPath: 'dom/test_ordinary.js', runs: [['PASS', 50], ['FAIL', 5]] },
+    ]);
+}
+
+/** Builds the minimal `DecodedTimingFile` the query layer reads. */
+function syntheticFile(
+    tests: readonly { fullPath: string; runs: readonly (readonly [string, number])[] }[]
+): DecodedTimingFile {
     const identity = (testId: number): TestIdentity => {
         const fullPath = tests[testId]!.fullPath;
         const cut = fullPath.lastIndexOf('/');
@@ -1201,7 +1215,7 @@ function fileWithCleanTest(): DecodedTimingFile {
         family: 'issues',
         days: 21,
         endDate: '2026-08-03',
-        statuses: ['PASS', 'FAIL'],
+        statuses: [...new Set(tests.flatMap((test) => test.runs.map(([status]) => status)))],
         testCount: tests.length,
         findTest: (fullPath: string) =>
             tests.some((test) => test.fullPath === fullPath)
@@ -1212,9 +1226,10 @@ function fileWithCleanTest(): DecodedTimingFile {
             for (const [status, count] of tests[testId]!.runs) {
                 yield {
                     status,
-                    statusId: status === 'PASS' ? 0 : 1,
+                    statusId: 0,
                     count,
                     day: 0,
+                    // A SKIP with no message is not a `run-if`, so it counts.
                     message: undefined,
                 };
             }
@@ -1287,6 +1302,34 @@ test('keepClean gives a group the runs of its issue-free tests', () => {
         );
     }
     assert.ok(sawWider, 'a clean test must widen some group denominator, or this proves nothing');
+
+    // The "N with issues, out of M" the page prints. Without the clean test the
+    // two are equal and the distinction disappears.
+    const group = grouped.find((candidate) => candidate.key === 'Core :: DOM')!;
+    assert.equal(group.testCount, 1, 'one of the two tests has an issue');
+    assert.equal(group.totalTestCount, 2, 'both are counted in the "out of" total');
+    // 10 failures over 490 runs, not over the 100 runs of the failing test.
+    assert.equal(group.issueCount, 10);
+    assert.equal(group.runCount, 500);
+    assert.ok(
+        Math.abs(group.issueRate - 2) < 1e-9,
+        `10/500 is 2%, got ${group.issueRate}`
+    );
+});
+
+test('a skip-only test does not report a 0% issue rate', () => {
+    // The sharp case for the row-level denominator (`issues.html:1079`):
+    // `runCount` excludes skips, so a test that only ever skipped has 0 runs.
+    // Dividing by `runCount` alone gives 0/0 → 0%, reporting the healthiest
+    // possible number for a test that never ran once. The real file has such
+    // tests — `test_ext_unload_frame.js`, 24,826 skips and no runs.
+    const file = fileWithSkipOnlyTest();
+    const rows = findIssues(file);
+    const skipOnly = rows.find((row) => row.fullPath === 'dom/test_never_runs.js')!;
+    assert.equal(skipOnly.runCount, 0, 'runCount excludes skips');
+    assert.equal(skipOnly.skipCount, 300);
+    assert.equal(skipOnly.issueCount, 300);
+    assert.equal(skipOnly.issueRate, 100, 'a test that only ever skipped is 100% skipped');
 });
 
 test('groupIssues rates divide by the runs the numerator could come from', () => {
