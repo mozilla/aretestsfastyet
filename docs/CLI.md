@@ -681,31 +681,49 @@ are excluded by default; `--include-run-if` keeps them.
 ### `fx-tests guide` — orientation for an agent
 
 Prints the whole tool's model of the data in one go: what each command answers,
-which file family it reads, what the data cannot tell you, and worked
-investigation patterns ("a test failed on Try", "a job is timing out", "reduce
-log noise"). Modelled on `profiler-cli guide`, which the `profiler-analysis`
-skill has agents read in full before touching a profile.
+what the data cannot tell you, and worked investigation patterns ("a test failed
+on Try", "a job is timing out", "reduce log noise"). Modelled on `profiler-cli
+guide`, which the `profiler-analysis` skill has agents read in full before
+touching a profile.
 
 The reason to have it is that the traps here are not discoverable from `--help`:
-that the errors files are per-date with no aggregate, that a manifest's
-all-zero durations mean skipped rather than instant, that per-test profile URLs
-require the failure message, that a test's overall failure rate understates a
-single-config perma-fail. An agent that reads `guide` first stops re-deriving
-those; one that does not will confidently get them wrong.
+that a manifest's all-zero durations mean skipped rather than instant, that
+per-test profile URLs require the failure message, that a test's overall failure
+rate understates a single-config perma-fail, that the xpcshell errors file only
+contains failing tests' output. An agent that reads `guide` first stops
+re-deriving those; one that does not will confidently get them wrong.
 
-It should stay well under `profiler-cli guide`'s ~400 lines — long enough to
-convey the traps, short enough that reading it is cheap. If a companion skill is
-added later, its instruction is one line: run `fx-tests guide` and read all of
-it.
+**It states properties, not snapshots.** This is the constraint that keeps it
+worth reading. A first version ran to 242 lines and documented the state of the
+deployment on the day it was written — "the errors files exist for only about 5
+of the 21 dates", a measured day's zero-duration census, one day's `run-if`
+percentage. Those drift, nobody updates them, and a guide whose facts rot is
+worse than a shorter one because its whole claim on the reader is to be trusted
+first. So:
+
+- State the shape of a fact, not a reading of it. "Errors data covers fewer days
+  than the timing data" survives; "about five of twenty-one" does not.
+- Where a number must be current, get it at runtime. `fx-tests errors` discovers
+  and prints its own window, so the guide points at the command.
+- Keep implementation detail only where it changes what the reader does. Which
+  JSON file a command opens is internal and is not printed — that fact stays in
+  the tables and under `--json`, where it is still asserted.
+
+A test enforces this: the rendered guide may not contain a raw measured count, a
+one-day percentage, a file size, or a date census.
+
+The budget is **200 lines**, not `profiler-cli guide`'s ~400. 400 did not bind —
+a 242-line version passed it and was still judged too long in review. If a
+companion skill is added later, its instruction is one line: run `fx-tests guide`
+and read all of it.
 
 **Its factual claims should be test assertions, not prose to remember to update.**
 "Review it when caveats change" is the mitigation that always fails. Anything
-`guide` asserts that is mechanically checkable — the errors files are per-date,
-`errors` defaults to mochitest, `--since` filters the aggregate while `--day`
-fetches a daily file, these exit codes mean these things — should be covered by a
-test that fails when the behaviour and the text diverge. The prose that remains
-unverifiable (why a trap matters, how to approach an investigation) is the part
-worth writing by hand.
+`guide` asserts that is mechanically checkable — which file a command reads,
+`errors` defaults to mochitest, these exit codes mean these things — is covered
+by a test that fails when the behaviour and the text diverge. The prose that
+remains unverifiable (why a trap matters, how to approach an investigation) is
+the part worth writing by hand, and the part the rewrite kept.
 
 ### `fx-tests dates` / `fx-tests cache`
 

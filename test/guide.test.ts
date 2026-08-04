@@ -112,10 +112,90 @@ test('guide stays well under 400 lines', async () => {
     // `CLI.md`: "well under `profiler-cli guide`'s ~400 lines — long enough to
     // convey the traps, short enough that reading it is cheap". A guide nobody
     // finishes is a guide nobody reads.
+    //
+    // The upper bound is 200 rather than 400 because 400 turned out not to
+    // bind: a 242-line version passed it and was still judged too long in
+    // review. A budget that never fails is not a budget.
     const { stdout } = await invoke(['guide']);
     const lines = stdout.split('\n').length;
-    assert.ok(lines < 400, `the guide is ${lines} lines, which is not "well under 400"`);
+    assert.ok(lines < 200, `the guide is ${lines} lines; the budget is 200`);
     assert.ok(lines > 100, `the guide is only ${lines} lines — too short to cover the traps`);
+});
+
+test('the guide states no measurement that will drift', async () => {
+    // The review finding this enforces: the guide documented the state of the
+    // deployment on the day it was written — "the errors files exist for only
+    // about 5 of the 21 dates", "71,272 of 433,836 runs", "63.6% of all
+    // skipped runs", "103.2M markers". Every one of those is a reading, not a
+    // property, and none would ever have been updated. The objection
+    // generalises past the one item, so the check does too.
+    //
+    // A guide whose facts rot is worse than a shorter one, because its whole
+    // claim on the reader is to be trusted first.
+    const text = render();
+    const forbidden: { pattern: RegExp; why: string }[] = [
+        { pattern: /\b\d{1,3},\d{3}\b/, why: 'a raw measured count' },
+        { pattern: /\b\d+\.\d+M\b/, why: 'a measured marker total' },
+        { pattern: /\b\d+\.\d+%/, why: 'a percentage measured on one day' },
+        { pattern: /\b\d+ (?:of|out of) (?:the )?\d+ dates\b/, why: 'a date census' },
+        { pattern: /\babout (?:five|a sixth|\d+) of\b/, why: 'a hedged snapshot count' },
+        { pattern: /\b\d+ ?(?:MB|megabytes)\b/, why: 'a file size' },
+        { pattern: /\bmeasured on one day\b/i, why: 'a one-day measurement' },
+    ];
+    for (const { pattern, why } of forbidden) {
+        const match = pattern.exec(text);
+        assert.equal(
+            match,
+            null,
+            `the guide states ${why} (${JSON.stringify(match?.[0])}), which will be wrong ` +
+                `next month and will not be updated. State the shape of the fact, or get ` +
+                `the number from the data at runtime.`
+        );
+    }
+});
+
+test('the guide does not print which file each command reads', async () => {
+    // Cut in review as implementation detail the reader could not act on. The
+    // facts are still asserted and still in `--json`; they are just not prose.
+    const { stdout } = await invoke(['guide']);
+    assert.doesNotMatch(stdout, /reads \{harness\}/);
+    assert.doesNotMatch(stdout, /\{bucket\}/);
+    // …but the table they came from is intact, so the round-trip check above
+    // still has something to check.
+    assert.ok(COMMAND_FACTS.every((fact) => fact.reads.length > 0));
+});
+
+test('the guide keeps every trap CLI.md says it exists for', async () => {
+    // The shortening must not have cut the reason to have the guide. CLI.md
+    // names four traps explicitly, and three more are the ones this project
+    // has actually got wrong.
+    const { stdout } = await invoke(['guide']);
+    for (const required of [
+        /overall failure rate hides a single-config perma-fail/,
+        /[Aa]ll-zero manifest durations mean skipped/,
+        /profile URL cannot be guessed/,
+        /xpcshell file is a biased sample/,
+        /[Ww]eekend counts are a fraction/,
+        /`run-if` is not a disabled test/,
+    ]) {
+        assert.match(stdout, required, `the rewrite dropped a trap CLI.md asks for`);
+    }
+});
+
+test('the errors-window trap points at the command instead of quoting a count', async () => {
+    // The specific item the review objected to, and the shape of the fix:
+    // where a fact has to be current, the guide sends the reader to the data
+    // rather than restating a number that was true once.
+    const trap = TRAPS.find((entry) => entry.id === 'errors-window')!;
+    const body = trap.body.join(' ');
+    assert.doesNotMatch(trap.title, /\b\d+\b/, 'the title must not pin a date count');
+    assert.match(body, /fx-tests errors/, 'it must name the command that knows');
+
+    // And the command really does report its own window, so the redirection
+    // is not a promise the code fails to keep.
+    const { stderr, code } = await invoke(['errors', '--day', '2026-07-20']);
+    assert.equal(code, ExitCode.NotFound);
+    assert.match(stderr, /dates in the window/);
 });
 
 test('guide takes no arguments', async () => {

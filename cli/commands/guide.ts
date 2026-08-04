@@ -29,8 +29,37 @@
  * guide at all — it is also the part that goes stale most slowly, because it
  * describes the shape of the data rather than the shape of the code.
  *
- * Kept well under `profiler-cli guide`'s ~400 lines, per `CLI.md`: long enough
- * to convey the traps, short enough that reading it is cheap.
+ * ## Properties, not snapshots
+ *
+ * A first version of this file ran to 242 lines and documented **the state of
+ * the deployment on the day it was written**: that the errors files existed for
+ * "about 5 of the 21 dates", that a measured day had 71,272 zero durations out
+ * of 433,836, that `run-if` skips were 63.6% of one day's total. Every one of
+ * those drifts, none of them would ever be updated, and the review that caught
+ * it put the objection exactly right: the error-file generator had landed five
+ * days earlier, so what?
+ *
+ * A fact that will be wrong next month is worse in a guide than a fact left
+ * out, because the guide's whole claim on the reader is that it is the thing to
+ * trust first. So the rule applied throughout is:
+ *
+ *  - **State the shape, not the measurement.** "Errors data covers fewer days
+ *    than the timing data" is durable; "about five of twenty-one" is a reading.
+ *  - **Where a number must be current, get it at runtime.** `fx-tests errors`
+ *    discovers and prints its own window, so the guide points at the command
+ *    instead of quoting it.
+ *  - **Keep implementation detail only where it changes what the reader does.**
+ *    Which JSON file a command opens is internal. That `test` reads one small
+ *    per-test file is worth saying, because it is why `--day` is free.
+ *
+ * The traps that survived are the ones `CLI.md` names as the reason `guide`
+ * exists: they are not discoverable from `--help`, they have been got wrong in
+ * practice, and each is a property of how the data is produced rather than of
+ * what it currently contains.
+ *
+ * Kept well under `profiler-cli guide`'s ~400 lines, per `CLI.md`, and well
+ * under half the length of that first version: the target is a guide someone
+ * finishes, not one that merely fits a budget.
  */
 
 import { ExitCode } from '../errors.ts';
@@ -52,6 +81,19 @@ export const GUIDE_OPTIONS: OptionSpecs = {};
  */
 export interface CommandFact {
     name: string;
+    /**
+     * The file family the command reads.
+     *
+     * **Not printed in the text guide**, and deliberately so: a review found
+     * the per-command `reads {harness}-{bucket}.json` annotations were
+     * implementation detail the reader could not act on, and they doubled the
+     * length of the command list to say it.
+     *
+     * Kept as data because it is still true, still checked against the files
+     * the command actually requests, and still worth exposing under `--json`
+     * for a tool deciding what to prefetch. A fact being unhelpful in prose is
+     * not a reason to stop asserting it.
+     */
     reads: string;
     answers: string;
     /** Set where the harness default is not the usual `xpcshell`. */
@@ -188,119 +230,94 @@ export interface TrapFact {
  */
 export const TRAPS: readonly TrapFact[] = [
     {
-        id: 'errors-window',
-        title: 'The errors files exist for only about 5 of the 21 dates',
+        id: 'perma-fail-rate',
+        title: 'An overall failure rate hides a single-config perma-fail',
         body: [
-            '`index.json` lists 21 dates and the index task publishes 21 daily files and 21',
-            'resources files — but only about five `{harness}-{date}-errors.json`. A date being',
-            'in `fx-tests dates` does **not** mean it has errors data.',
-            '',
-            'This is why `fx-tests errors` discovers its own window instead of trusting',
-            '`index.json`, and why the "was this error here when the test was passing?" workflow —',
-            'run the command for two dates and compare — only works inside those few days. Ask for',
-            'a date outside them and you get exit 2 with the list of dates that do have data,',
-            'rather than an empty result you might read as "no errors that day".',
-        ],
-    },
-    {
-        id: 'errors-harness',
-        title: '`errors` defaults to mochitest, and the xpcshell file is a biased sample',
-        body: [
-            'Every other command defaults to xpcshell. `errors` does not, and the reason is not',
-            'size: xpcshell runs its tests in parallel, so a test’s stdout cannot be emitted as it',
-            'is produced and is replayed **only when the test fails**. The xpcshell errors file is',
-            'therefore limited to failing tests’ output.',
-            '',
-            'That is a biased population, not a smaller sample of the same one. Ranking it answers',
-            '"what do failing tests print", which is a fine question — just not "what is noisy in',
-            'CI", which is what someone reading a ranking assumes. `--harness xpcshell` still works',
-            'and the output says what it is.',
+            'A test failing **every time** on one platform and passing everywhere else still',
+            'reads as a low single-digit percentage overall, because the rate divides failures',
+            'from every config by runs from every config. So a small overall rate is not',
+            'evidence a test is healthy, and `fx-tests test` leads with a verdict and a',
+            'per-config table rather than one number.',
         ],
     },
     {
         id: 'manifest-zero-durations',
         title: 'All-zero manifest durations mean skipped, not instant',
         body: [
-            'A manifest whose durations are **all zero** on a configuration was skipped there. It',
-            'did not run in no time. Measured on one day: 71,272 of 433,836 runs recorded a zero',
-            'duration, about a sixth of the file.',
-            '',
-            'Read them as real durations and every skipped config becomes the fastest one in the',
-            'table, which exactly inverts the answer to "which config is worst". `fx-tests',
-            'manifests` reports such a pair with no statistics at all rather than zeros, sorts it',
-            'last, and lists it under "Skipped on".',
-            '',
-            'The rule is `every`, not `any`: a config with some zero and some non-zero durations',
-            'ran, and those zeros are runs that finished under the timer’s resolution.',
+            'A manifest whose durations are **all zero** on a configuration was skipped there;',
+            'it did not run in no time. Read as real durations, every skipped config becomes',
+            'the fastest in the table, which exactly inverts "which config is worst". The rule',
+            'is `every`, not `any` — some zero and some non-zero means it ran, and those zeros',
+            'finished under the timer’s resolution.',
+        ],
+    },
+    {
+        id: 'profiles-not-derivable',
+        title: 'A per-test profile URL cannot be guessed',
+        body: [
+            'The **resource-usage** profile is one per job at a fixed path derivable from the',
+            'task ID — that is the one showing whether a timeout was the test being slow or the',
+            'machine saturated. The **per-test failure profile** is different: uploaded only',
+            'when a test fails, and named only in the failure message ("profile uploaded in',
+            'profile_<name>.json"). Where none was named, no URL exists to construct.',
+        ],
+    },
+    {
+        id: 'errors-window',
+        title: 'Errors data covers fewer days than everything else',
+        body: [
+            'A date in `fx-tests dates` does **not** mean it has errors data, and which dates do',
+            'changes — so do not carry a number for it. `fx-tests errors` discovers and prints',
+            'its own window, and a date outside it is exit 2 listing the ones that work. This',
+            'bounds the "was this error already there when the test was passing?" comparison:',
+            'both days have to be days with errors data.',
+        ],
+    },
+    {
+        id: 'errors-harness',
+        title: '`errors` defaults to mochitest, and the xpcshell file is a biased sample',
+        body: [
+            'Every other command defaults to xpcshell; `errors` does not, and the reason is not',
+            'size. xpcshell runs its tests in parallel, so stdout cannot be streamed as it is',
+            'produced and is replayed **only when a test fails** — the xpcshell errors file is',
+            'failing tests’ output and nothing else. That is a biased population, not a smaller',
+            'sample of the same one: ranking it answers "what do failing tests print", not',
+            '"what is noisy in CI", which is what a reader of a ranking assumes.',
         ],
     },
     {
         id: 'issues-attribution',
         title: '`issues.json` cannot tell you which configuration failed',
         body: [
-            'The tree-wide file is small — a couple of megabytes — because it discarded all',
-            'attribution: no task IDs, no job names, no minidump IDs. So "which config?" and',
-            '"which dump?" have no answer there, and that is different from the answer being',
-            '"none".',
-            '',
-            '`issues`, `failures`, `crashes` and `skips` therefore **refuse** `--config` and',
-            '`--minidumps` rather than returning an empty table, because a filter that silently',
-            'matches nothing looks exactly like a clean tree. For per-config detail, use',
-            '`fx-tests test <path>`, which reads a bucket file and does have it.',
-        ],
-    },
-    {
-        id: 'perma-fail-rate',
-        title: 'An overall failure rate hides a single-config perma-fail',
-        body: [
-            'A test that fails **every time** on one platform and passes everywhere else still',
-            'reads as a couple of percent overall, because the rate divides failures from every',
-            'config by runs from every config.',
-            '',
-            'That is why `fx-tests test` leads with a per-config table and a verdict rather than a',
-            'single number, and why "0.4% failure rate" is not evidence that a test is healthy.',
-        ],
-    },
-    {
-        id: 'run-if',
-        title: '`run-if` is not a disabled test, and the two file families disagree',
-        body: [
-            'A `skip-if` means the test should run here and is turned off — usually work someone',
-            'owes. A `run-if` means the test is scoped to another platform, so it not running here',
-            'is the annotation working.',
-            '',
-            'The asymmetry is the trap: the 21-day aggregates **already dropped** `run-if` skips',
-            'upstream, while the daily files keep them — on one measured day they were 63.6% of all',
-            'skipped runs. So the same question gets an answer 2.7× larger depending on which file',
-            'it was asked of, and a skip count from one family must not be compared with one from',
-            'the other.',
-        ],
-    },
-    {
-        id: 'never-sum-families',
-        title: 'Never add totals from two file families together',
-        body: [
-            '`{harness}-issues.json`, `{harness}-issues-with-taskids.json` and the 64 bucket files',
-            'are three encodings of the *same* 21 days, with byte-identical per-status totals.',
-            'Summing them multiplies the population by the number of ways it was encoded — a',
-            'previous revision of this project’s own format notes quoted a figure about 4× too',
-            'large by doing exactly that.',
-            '',
-            'The daily files are a fourth encoding and are **not** interchangeable with the',
-            'aggregates either: besides the `run-if` difference above, the two disagree on which',
-            'jobs ran at all.',
+            'The tree-wide aggregate discarded all attribution — no task IDs, no job names, no',
+            'minidump IDs — so "which config?" has no answer there, which is not the same as',
+            'the answer being "none". `issues`, `failures`, `crashes` and `skips` therefore',
+            '**refuse** `--config` and `--minidumps` rather than return an empty table, because',
+            'a filter that silently matches nothing looks exactly like a clean tree. Use',
+            '`fx-tests test <path>` for per-config detail.',
         ],
     },
     {
         id: 'weekend-volume',
         title: 'Weekend counts are a fraction of weekday counts',
         body: [
-            'Push volume drops several-fold at weekends: 103.2M markers on one Thursday against',
-            '39.1M on the following Sunday, a factor of 2.6. Any absolute count from a Saturday or',
-            'Sunday is not comparable with one from a weekday.',
+            'Push volume drops several-fold at weekends, so an absolute count from a Saturday',
+            'is not comparable with one from a Thursday. Every command prints the weekday next',
+            'to a date for this reason. Compare like with like, and prefer rates to counts.',
+        ],
+    },
+    {
+        id: 'run-if',
+        title: '`run-if` is not a disabled test, and skip counts are not comparable across files',
+        body: [
+            'A `skip-if` means the test should run here and is turned off — usually work someone',
+            'owes. A `run-if` means it is scoped to another platform, so not running here is the',
+            'annotation working; `fx-tests skips` excludes those by default.',
             '',
-            'Every command prints the weekday next to a date for this reason. When comparing two',
-            'days, compare like with like, and prefer rates to counts.',
+            'The aggregates drop `run-if` skips upstream and the daily files keep them, so a',
+            'skip count from one family must not be compared with one from the other. Nor added:',
+            'the aggregates and the bucket files re-encode the *same* runs, so summing across',
+            'them multiplies the population by the number of encodings.',
         ],
     },
     {
@@ -308,27 +325,10 @@ export const TRAPS: readonly TrapFact[] = [
         title: 'A hang is not distinguishable from a crash by its crash type',
         body: [
             'A minidump is also how a hung process is diagnosed, and `crash_info.type` will not',
-            'tell you which you have: a real hang reports `EXC_SOFTWARE / SIGABRT`, exactly as an',
-            'ordinary abort does. The evidence is breakpad’s own frames sitting on top of a thread',
-            'that was otherwise waiting.',
-            '',
-            '`fx-tests crash` says when it sees that shape, and leaves the view to you rather than',
-            'switching automatically. For a hang use `--all-threads`, which drops to 8 frames per',
-            'thread: a deadlock is diagnosed by breadth across threads, not depth in one.',
-        ],
-    },
-    {
-        id: 'profiles-not-derivable',
-        title: 'A per-test profile URL cannot be guessed',
-        body: [
-            'Two kinds of profile, with different availability. The **resource-usage** profile is',
-            'one per job at a fixed path, derivable from the task ID alone — that is the one that',
-            'shows whether a timeout was the test being slow or the machine saturated.',
-            '',
-            'The **per-test failure profile** is uploaded only when a test fails, and its filename',
-            'is not derivable: it appears in the failure message as "profile uploaded in',
-            'profile_<name>.json" and nowhere else. Where no profile was named, no URL is emitted —',
-            'the CLI does not guess a filename, and neither should you.',
+            'tell you which you have: a real hang reports `EXC_SOFTWARE / SIGABRT`, exactly as',
+            'an ordinary abort. The evidence is breakpad’s own frames on top of a thread that',
+            'was otherwise waiting. For a hang use `--all-threads` — a deadlock is diagnosed by',
+            'breadth across threads, not depth in one.',
         ],
     },
 ];
@@ -344,20 +344,17 @@ const WORKFLOWS: readonly Workflow[] = [
         title: 'A test failed on my Try push',
         steps: [
             'fx-tests try <revision> --perma-only',
-            '    Perma-fails are the ones that fail in every run on a config *and* were not',
-            '    failing on central. Those are almost certainly yours. Everything else needs',
-            '    the comparison below before you believe it.',
+            '    Fails every run on a config *and* was not failing on central: almost certainly',
+            '    yours. Everything else needs the next step before you believe it.',
             '',
             'fx-tests test <path>',
-            '    The verdict line answers "is this mine". Note whether it passed when the',
-            '    harness reran it in the same job — that alone is often the whole answer — and',
-            '    whether it fails only in parallel, which points at a race with its neighbours',
-            '    rather than at the test.',
+            '    Whether it already fails on central, and how. Two things change the reading:',
+            '    that it passed when the harness reran it in the same job, and that it fails',
+            '    only in parallel — the second points at a race with its neighbours.',
             '',
             'fx-tests test <path> --coverage',
             '    Before concluding a platform is unaffected, check the test runs there at all.',
-            '    The default view lists only failing configs, so "no Android row" and "passes on',
-            '    Android" look identical without this.',
+            '    "No Android row" and "passes on Android" look identical without this.',
         ],
     },
     {
@@ -365,56 +362,43 @@ const WORKFLOWS: readonly Workflow[] = [
         steps: [
             'fx-tests manifests --job <config> --sort median',
             '    Narrows it to a manifest. Remember the all-zero rule: a manifest with no',
-            '    duration shown did not run on that config.',
+            '    duration shown did not run there.',
             '',
             'fx-tests test <path> --durations',
-            '    The manifest view cannot say whether a slow manifest is one slow test or a',
-            '    thousand cheap ones — it has no per-test durations. This is where that is',
-            '    answered, for the tests in the manifest you found.',
+            '    Whether that manifest is one slow test or a thousand cheap ones. The manifest',
+            '    view has no per-test durations and cannot tell you.',
             '',
             'fx-tests test <path> --profiles',
-            '    The resource-usage profile distinguishes "the test is slow" from "the machine',
-            '    was saturated". Feed the raw URL to profiler-cli.',
+            '    Separates "the test is slow" from "the machine was saturated". Feed the raw',
+            '    URL to profiler-cli.',
         ],
     },
     {
         title: 'Reduce CI log noise',
         steps: [
-            'fx-tests errors --limit 20',
-            '    Mochitest on the most recent day with data. A handful of messages account for',
-            '    most of the volume, so the top of this list is most of the work.',
+            'fx-tests errors',
+            '    A handful of messages are most of the volume, so the top of the list is most',
+            '    of the work. Read the `tests` column too: a message in thousands of tests is',
+            '    ambient, one in a single test is a candidate cause for that test.',
             '',
-            '    Read the `tests` column, not just the count. A message in thousands of tests is',
-            '    ambient — fixing it is a broad win but tells you nothing about any one test. A',
-            '    message in one test is specific, and is a candidate cause for that test.',
-            '',
-            'fx-tests errors --message "<text>" --limit 3',
-            '    Narrows to one message and lists the tests emitting it, so you can tell which',
-            '    of the two you have.',
+            'fx-tests errors --message "<text>"',
+            '    Lists the tests emitting one message, so you can tell which of those it is.',
             '',
             'fx-tests errors --day <a> ... then --day <b>',
-            '    A single day’s file has no day axis and cannot say whether an error was present',
-            '    when a test was passing. Comparing two days is how that is answered — both',
-            '    weekdays, and both inside the errors window.',
+            '    A single day cannot say whether an error was already there when the test was',
+            '    passing. Two days can — both weekdays, and both days that have errors data.',
         ],
     },
     {
         title: 'A test is crashing',
         steps: [
-            'fx-tests test <path>',
-            '    Confirms it crashes and on which configs, and prints the signatures.',
-            '',
             'fx-tests test <path> --task-ids',
-            '    Gets you a task ID and, where the dump was uploaded, a minidump ID. Not every',
-            '    crash has one: a dump that was never uploaded still counts as a crash.',
+            '    The configs and signatures, plus a task ID and, where the dump was uploaded, a',
+            '    minidump ID. A crash whose dump was never uploaded still counts as a crash.',
             '',
             'fx-tests crash <taskId> <minidumpId>',
-            '    The symbolized report: signature, crash reason, faulting address, and the',
-            '    crashing thread. If the address is flagged as a null pointer with an offset,',
-            '    that offset is the field being dereferenced.',
-            '',
-            '    Exit 4 means the artifact is gone for good — Taskcluster expires them — and',
-            '    retrying will not help. Exit 3 means try again.',
+            '    Signature, crash reason, faulting address, crashing thread. A null pointer',
+            '    flagged with an offset means that offset is the field being dereferenced.',
         ],
     },
 ];
@@ -443,6 +427,33 @@ export function runGuide(context: CommandContext, args: ParsedArgs): Promise<voi
     return Promise.resolve();
 }
 
+/**
+ * Greedy word wrap.
+ *
+ * Local and minimal because only the exit-code table needs it — every other
+ * block in this file is hand-wrapped in its source, which is what lets the
+ * prose control its own line breaks. The exit-code meanings cannot be, because
+ * they are shared with `--json`.
+ */
+function wrap(text: string, width: number): string[] {
+    const lines: string[] = [];
+    let current = '';
+    for (const word of text.split(' ')) {
+        if (current === '') {
+            current = word;
+        } else if (current.length + 1 + word.length <= width) {
+            current += ` ${word}`;
+        } else {
+            lines.push(current);
+            current = word;
+        }
+    }
+    if (current !== '') {
+        lines.push(current);
+    }
+    return lines;
+}
+
 /** The whole guide. */
 export function render(): string {
     const lines: (string | null)[] = [];
@@ -457,13 +468,19 @@ export function render(): string {
     lines.push('');
     lines.push('THE COMMANDS');
     lines.push('');
+    // Just the question each one answers. Which JSON file it opens is internal
+    // and was cut: it told the reader nothing they could act on, and it was
+    // three of the twelve entries' entire second line.
     const width = Math.max(...COMMAND_FACTS.map((fact) => fact.name.length));
     for (const fact of COMMAND_FACTS) {
         lines.push(`  ${fact.name.padEnd(width)}  ${fact.answers}`);
-        lines.push(`  ${' '.repeat(width)}  reads ${fact.reads}`);
         if (fact.defaultHarness !== undefined) {
+            // The one per-command note that survived, because it is the only
+            // one that changes what the reader should type. Its own line
+            // rather than a suffix: the answer it hangs off is already 80
+            // columns wide.
             lines.push(
-                `  ${' '.repeat(width)}  defaults to --harness ${fact.defaultHarness} — see the traps`
+                `  ${' '.repeat(width)}  defaults to --harness ${fact.defaultHarness} — see TRAPS`
             );
         }
     }
@@ -471,16 +488,13 @@ export function render(): string {
     lines.push('');
     lines.push('THE WINDOW');
     lines.push('');
-    lines.push('The index publishes a rolling 21 days. Older data is not fetchable today: it');
-    lines.push('still exists in Taskcluster for about a year, but reaching it means resolving');
-    lines.push('historical index tasks, which nothing does yet. A date outside the window is');
-    lines.push('exit 2, naming the window.');
+    lines.push('The index publishes a rolling window of recent days; `fx-tests dates` says');
+    lines.push('which. Older data still exists in Taskcluster but nothing here reaches it, so a');
+    lines.push('date outside the window is exit 2 naming the window.');
     lines.push('');
-    lines.push('Inside the window, --day and --since are filters on the file a command already');
-    lines.push('reads, not a reason to fetch a different one. They cost nothing extra.');
-    lines.push('');
-    lines.push('`errors` and `manifests` are the exceptions, and both for the same underlying');
-    lines.push('reason — they are per-date files rather than aggregates. See the traps.');
+    lines.push('Inside it, --day and --since filter a file the command already reads rather than');
+    lines.push('fetching a different one, so a narrower question is not a slower one. `errors`');
+    lines.push('and `manifests` are per-date files and are the exception — see TRAPS.');
 
     lines.push('');
     lines.push('TRAPS');
@@ -505,24 +519,28 @@ export function render(): string {
     lines.push('');
     lines.push('EXIT CODES');
     lines.push('');
+    // Wrapped: `ExitCode.Gone`'s meaning is 130 characters and ran off the
+    // right of an 80-column terminal, which is where a guide is read.
     for (const fact of EXIT_CODE_FACTS) {
-        lines.push(`  ${fact.code}  ${fact.meaning}`);
+        const [first, ...rest] = wrap(fact.meaning, 74);
+        lines.push(`  ${fact.code}  ${first ?? ''}`);
+        for (const line of rest) {
+            lines.push(`     ${line}`);
+        }
     }
     lines.push('');
-    lines.push('  The 3/4 split exists so a script can tell "try again in a minute" from "this');
-    lines.push('  dump is never coming back". `fx-tests try` exits 0 whether or not it found');
-    lines.push('  failures: the failures are the answer, not an error.');
+    lines.push('  The 3/4 split lets a script tell "try again in a minute" from "this dump is');
+    lines.push('  never coming back". `fx-tests try` exits 0 whether or not it found failures:');
+    lines.push('  the failures are the answer, not an error.');
 
     lines.push('');
     lines.push('OUTPUT');
     lines.push('');
-    lines.push('  --json for a stable shape, --markdown for pasting into a bug. Only the');
-    lines.push('  requested data goes to stdout; progress and warnings go to stderr, so');
-    lines.push('  redirecting and piping both behave.');
+    lines.push('  --json for a stable shape, --markdown for pasting into a bug. Only requested');
+    lines.push('  data goes to stdout and everything else to stderr, so piping behaves.');
     lines.push('');
-    lines.push('  Commands default to a small number of rows and say what they truncated');
-    lines.push('  (`… 47 more (--limit 0 for all)`). If a list looks short, check for that line');
-    lines.push('  before concluding it is complete.');
+    lines.push('  Lists are truncated by default and say so (`… 47 more (--limit 0 for all)`).');
+    lines.push('  If a list looks short, check for that line before believing it is complete.');
 
     return joinLines(lines);
 }
