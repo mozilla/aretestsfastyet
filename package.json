@@ -1,7 +1,6 @@
 {
     "name": "fx-tests",
     "version": "0.0.0",
-    "private": true,
     "description": "Command-line access to the Firefox test-health data behind https://tests.firefox.dev/",
     "license": "MPL-2.0",
     "type": "module",
@@ -11,7 +10,13 @@
     "engines": {
         "node": ">=20"
     },
+    "// publishConfig": "Not published to npm. `private: true` would block the git-URL install this is distributed by, so accidental publishing is prevented with a registry that refuses the request instead.",
+    "publishConfig": {
+        "registry": "https://localhost.invalid/refusing-to-publish"
+    },
     "scripts": {
+        "// prepare": "bin/ is build output and gitignored, so a git install has no binary until this runs. npm runs prepare after installing devDependencies, which is what esbuild needs.",
+        "prepare": "node --experimental-strip-types tools/build-cli.ts",
         "build": "node --experimental-strip-types tools/build-cli.ts",
         "typecheck": "tsc --noEmit",
         "fixtures": "node --experimental-strip-types tools/make-fixtures.ts",
