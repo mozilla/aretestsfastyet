@@ -91,15 +91,19 @@ the same published JSON files, through a shared, typed and tested library in
 See the top of this file to install it. To work on it from a checkout instead:
 
 ```sh
-npm install                                # also builds, via the prepare script
+npm install
 ./bin/fx-tests guide                       # runs the TypeScript sources directly
 ```
 
 Node ≥ 20 is required, for built-in `fetch`; `.node-version` pins the major
-version for `fnm`. `./bin/fx-tests` needs no build step. `npm run build`
-produces the bundled `bin/fx-tests.js` that the `bin` entry in `package.json`
-points at — it is gitignored build output, which is why `prepare` rebuilds it
-on install. `npm test` and `npm run typecheck` are the other two gates.
+version for `fnm`. `./bin/fx-tests` needs no build step. `npm run bundle`
+produces `dist/fx-tests.js`, the bundle the `bin` entry in `package.json` points
+at; unlike `bin/`, it is committed, because an installed package cannot build
+itself — Node refuses to strip types under `node_modules`. Re-run it and commit
+the result whenever the sources change; `npm test` fails on a stale bundle.
+There is deliberately no `build` script: pacote prepares a git dependency
+whenever the manifest has one, and that preparation breaks `npm install -g`
+from a git URL. `npm test` and `npm run typecheck` are the other two gates.
 
 **`fx-tests guide` is the intended entry point.** It prints what each command
 answers, which file family it reads, and — the reason it exists — the traps in

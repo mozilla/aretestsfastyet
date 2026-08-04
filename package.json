@@ -11,7 +11,7 @@
     "engines": {
         "node": ">=20"
     },
-    "// files": "Only the bundle and the docs ship; the CLI never reads the sources or fixtures at runtime. Keep in step with .npmignore, and check with `npm pack --dry-run`.",
+    "// files": "Only the bundle and the docs ship; the CLI never reads the sources or fixtures at runtime. There is no .npmignore on purpose — npm applies one when preparing a git dependency, which emptied the installed package. Check with `npm pack --dry-run`.",
     "files": [
         "dist/",
         "docs/CLI.md",
@@ -21,8 +21,9 @@
     "publishConfig": {
         "registry": "https://localhost.invalid/refusing-to-publish"
     },
+    "// scripts": "The bundler task is named `bundle`, not `build`. pacote prepares a git dependency — running `npm install` inside its cache clone — whenever the manifest has a build, prepare, prepack, install, preinstall or postinstall script, and under `npm install -g` that preparation leaves the global package a symlink into `_cacache/tmp/git-clone*`, which is deleted when the install finishes. Renaming the script keeps the git-URL install a plain copy.",
     "scripts": {
-        "build": "node --experimental-strip-types tools/build-cli.ts",
+        "bundle": "node --experimental-strip-types tools/build-cli.ts",
         "typecheck": "tsc --noEmit",
         "fixtures": "node --experimental-strip-types tools/make-fixtures.ts",
         "test": "node --experimental-strip-types --test 'test/**/*.test.ts' && npm run check-bundle",

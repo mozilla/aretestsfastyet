@@ -13,7 +13,7 @@
  * silently keeps the old behaviour. A committed artefact is only safe if
  * staleness is loud, so this rebuilds to a temporary file and compares.
  *
- * Run by `npm test`. If it fails, the fix is `npm run build`.
+ * Run by `npm test`. If it fails, the fix is `npm run bundle`.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -29,7 +29,7 @@ let current: Buffer;
 try {
     current = readFileSync(committed);
 } catch {
-    console.error('dist/fx-tests.js is missing. Run `npm run build`.');
+    console.error('dist/fx-tests.js is missing. Run `npm run bundle`.');
     process.exit(1);
 }
 
@@ -44,7 +44,7 @@ try {
     if (!rebuilt.equals(current)) {
         console.error(
             'dist/fx-tests.js is stale: it does not match the current sources.\n' +
-                'Anyone who installed from git is running the old code. Run `npm run build`\n' +
+                'Anyone who installed from git is running the old code. Run `npm run bundle`\n' +
                 'and commit the result.'
         );
         process.exit(1);
