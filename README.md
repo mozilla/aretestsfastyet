@@ -9,6 +9,28 @@ night. There is also a staging instance at
 themselves; its data is regenerated whenever work-in-progress patches to the
 data generator are pushed to Try.
 
+## Install the `fx-tests` CLI
+
+```sh
+npm install -g github:fqueze/aretestsfastyet
+fx-tests guide          # start here: what the data can and cannot tell you
+```
+
+Requires Node ≥ 20. That is the whole install — it builds on install, and there
+is no npm package to publish or registry to configure. To update, run the same
+command again.
+
+```sh
+fx-tests test netwerk/test/unit/test_bug1195415.js   # one test's history
+fx-tests try <revision>                              # triage a Try push
+fx-tests issues                                      # worst components, ranked
+fx-tests --help                                      # all 13 commands
+```
+
+> **Early preview.** The CLI is new and still finding its edges; several
+> defects have been found by running it rather than by its tests. Please report
+> anything that looks wrong. The dashboards are unaffected by it.
+
 ## Dashboards
 
 Every page is listed on [`help.html`](help.html); the most useful ones are
@@ -66,19 +88,18 @@ people and agents working in a terminal rather than a browser. It reads exactly
 the same published JSON files, through a shared, typed and tested library in
 `lib/` — there is no second data path and no server.
 
+See the top of this file to install it. To work on it from a checkout instead:
+
 ```sh
-./bin/fx-tests guide                       # start here
-./bin/fx-tests test netwerk/test/unit/test_bug1195415.js
-./bin/fx-tests try <revision>              # triage a Try push
-./bin/fx-tests errors --limit 10           # what is loudest in the logs
-./bin/fx-tests --help                      # the full command list
+npm install                                # also builds, via the prepare script
+./bin/fx-tests guide                       # runs the TypeScript sources directly
 ```
 
 Node ≥ 20 is required, for built-in `fetch`; `.node-version` pins the major
-version for `fnm`. `./bin/fx-tests` runs the TypeScript sources directly and
-needs no build. `npm run build` produces the bundled `bin/fx-tests.js` that the
-`bin` entry in `package.json` points at, and `npm test` and `npm run typecheck`
-are the other two gates.
+version for `fnm`. `./bin/fx-tests` needs no build step. `npm run build`
+produces the bundled `bin/fx-tests.js` that the `bin` entry in `package.json`
+points at — it is gitignored build output, which is why `prepare` rebuilds it
+on install. `npm test` and `npm run typecheck` are the other two gates.
 
 **`fx-tests guide` is the intended entry point.** It prints what each command
 answers, which file family it reads, and — the reason it exists — the traps in
