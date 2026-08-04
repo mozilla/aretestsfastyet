@@ -10,9 +10,11 @@ data/
 # Scratch directory for downloaded data files and one-off check scripts
 artifacts/
 
-# npm dependencies and the bundler's output (built in CI, never committed)
+# npm dependencies and the bundler's output (built in CI, never committed).
+# Anchored with a leading slash: an unanchored `bin/` also matches cli/bin/,
+# which is source.
 node_modules/
-bin/
+/bin/
 
 # V8 profiling logs
 isolate-*.log
