@@ -157,6 +157,17 @@ const COMMANDS: CommandSpec[] = [
 ];
 
 /**
+ * Every implemented command's name.
+ *
+ * Exported so `test/framing.test.ts` can drive its completeness check off the
+ * real list rather than a copy: a command that lands without a framing entry —
+ * without anyone having decided whether it has a corresponding dashboard page —
+ * is exactly what that check exists to catch, and a hand-maintained list in the
+ * test would not catch it.
+ */
+export const COMMAND_NAMES: readonly string[] = COMMANDS.map((command) => command.name);
+
+/**
  * Commands `CLI.md` specifies that step 5 will add.
  *
  * Exported so a test can assert the *behaviour* — a documented but unlanded

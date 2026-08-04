@@ -1,0 +1,1677 @@
+/**
+ * Framing parity: does each command's default view answer the page's question?
+ *
+ * `docs/PARITY.md` §1 counts six user-reported CLI defects and finds that
+ * **four of the six produced correct numbers**. The sort key was executions vs
+ * job runs — same set, wrong order. `issues` listed individual tests while
+ * `issues.html` leads with Bugzilla components ranked by issue count — right
+ * numbers, wrong question. `--coverage` printed 453 never-scheduled configs —
+ * correct data, useless framing. A harness that diffs values alone catches a
+ * third of what has actually gone wrong here.
+ *
+ * So this file asserts the third class §1 names and §5 specifies: **framing**.
+ * For each command with a corresponding dashboard page, what one row is, how
+ * rows are grouped, what key they are ranked on and in which direction, what
+ * time window is covered, what is filtered in or out, and which harness is
+ * read — asserted against the CLI, and stated side by side with what the page
+ * does.
+ *
+ * ## Why both sides are recorded, and what a divergence means
+ *
+ * Every entry carries a `page` block and a `cli` block. The point is **not** to
+ * freeze current CLI behaviour: a table that only restated the CLI would agree
+ * with any bug the CLI already has, which is precisely how `issues` shipped a
+ * flat test list through a green suite. Recording the page separately is what
+ * makes "the CLI answers a different question" a thing the file can express.
+ *
+ * A field where the two differ must be listed in that entry's `divergences`,
+ * with a reason. An undeclared divergence fails. A declared divergence whose
+ * two sides have stopped differing also fails — otherwise the allow-list
+ * becomes where regressions hide, which is the discipline `PARITY.md` §4 sets
+ * for the page-vs-page comparison and §5 reuses here.
+ *
+ * ## What the assertions run against
+ *
+ * Real command output, through `run()` with the checked-in fixtures, not the
+ * constants the commands read. An assertion that imports `DEFAULT_TYPES` and
+ * checks the CLI uses `DEFAULT_TYPES` is worth nothing — it passes whatever the
+ * constant says. So the expectations below are literals, and they are compared
+ * against parsed `--json` from an actual invocation.
+ *
+ * Two fields cannot be reached that way and are marked `assertedFrom:
+ * 'source'`, with the reason on the entry: they name a behaviour that no
+ * fixture exercises. They are still in the table, because the table's other job
+ * is to be the written-down acceptance criteria for the migrations `PARITY.md`
+ * §6 sequences after this.
+ *
+ * ## Out of scope, deliberately
+ *
+ * `guide`, `dates`, `cache` and the hang mode of `crash` have no page
+ * (`PARITY.md` §7). `UNCOVERED_COMMANDS` names them so "not in the table" is a
+ * recorded decision rather than an oversight, and a new command that lands
+ * without a framing entry fails the completeness check at the bottom.
+ */
+
+import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { type DataFileName, type DataSource, DataFileNotFoundError } from '../lib/sources/source.ts';
+import type { TreeherderClient, TreeherderJob } from '../lib/sources/treeherder.ts';
+import { captureStreams } from '../cli/context.ts';
+import { diskCache } from '../cli/cache.ts';
+import { run } from '../cli/main.ts';
+
+// =========================================================================
+// The table
+// =========================================================================
+
+/** One side's framing — the page's or the CLI's. */
+interface Framing {
+    /** What one row of the default view represents. */
+    rowUnit: string;
+    /** The default grouping, or `null` where the view is not grouped. */
+    grouping: string | null;
+    /**
+     * The key rows are ranked on — the field, not the column label.
+     *
+     * The distinction is the point: the sort-key bug ranked on
+     * `instances.length` where the label said the same thing the other side's
+     * label said, and the two produced the same set in a different order.
+     */
+    sortKey: string | null;
+    sortDirection: 'asc' | 'desc' | null;
+    /** The default time window, in the terms the side states it. */
+    window: string;
+    /** What the default view includes or excludes. */
+    filters: string;
+    /** Which harness's data the default view reads. */
+    harness: string;
+}
+
+/** A field where the two sides deliberately differ. */
+interface Divergence {
+    field: keyof Framing;
+    /** Why the CLI does something else, or why the difference is unresolved. */
+    reason: string;
+}
+
+/** One command's entry. */
+interface FramingEntry {
+    command: string;
+    /** The dashboard page this command corresponds to. */
+    pageFile: string;
+    /**
+     * Where each page fact was read off, as `file:line`.
+     *
+     * Cited per field rather than per entry so a future reader can tell a CLI
+     * regression from the page having moved: if `sortKey` fails, this says
+     * which line to go and re-read.
+     */
+    pageCitations: Partial<Record<keyof Framing, string>>;
+    page: Framing;
+    cli: Framing;
+    /** Declared, reasoned exceptions. Anything else that differs is a failure. */
+    divergences: Divergence[];
+    /**
+     * Fields asserted against the source rather than command output, with why.
+     *
+     * Every other field is checked against a real invocation. These are the
+     * ones a fixture cannot reach; naming them keeps the gap visible instead of
+     * letting a source-read assertion pass as a behavioural one.
+     */
+    sourceOnly?: Partial<Record<keyof Framing, string>>;
+}
+
+/**
+ * The table.
+ *
+ * Page facts were read off the page source; every `pageCitations` entry is a
+ * line in the current tree. CLI facts are asserted below against real output.
+ */
+const FRAMING: FramingEntry[] = [
+    {
+        command: 'issues',
+        pageFile: 'issues.html',
+        pageCitations: {
+            rowUnit: 'issues.html:1933 (renderComponentsView), tests only as child rows at :2133',
+            grouping: 'issues.html:887-890 (getCurrentView hard-codes it)',
+            sortKey: 'issues.html:663-664 (sortField/sortDirection)',
+            window: 'issues.html:3707-3713 (no hash → the date-select value, one day)',
+            filters: 'issues.html:626-638 (four checkboxes, all `checked`)',
+        },
+        page: {
+            rowUnit: 'Bugzilla component',
+            grouping: 'component',
+            sortKey: 'issueCount',
+            sortDirection: 'desc',
+            window: 'single most recent day',
+            filters: 'fail, timeout, crash, skip — all four issue types',
+            harness: 'xpcshell',
+        },
+        cli: {
+            rowUnit: 'Bugzilla component',
+            grouping: 'component',
+            sortKey: 'issueCount',
+            sortDirection: 'desc',
+            // The divergence PARITY.md's brief calls out and forbids "fixing"
+            // silently. See the entry in `divergences`.
+            window: '21-day aggregate',
+            filters: 'fail, timeout, crash, skip — all four issue types',
+            harness: 'xpcshell',
+        },
+        divergences: [
+            {
+                field: 'window',
+                reason:
+                    'UNRESOLVED, and recorded rather than fixed. `issues.html` loads the single ' +
+                    'most recent day by default (`:3707-3713`); `fx-tests issues` reads the ' +
+                    '21-day aggregate `{harness}-issues.json` and takes the whole window ' +
+                    '(`cli/commands/issues.ts:230`, `resolveDayWindow` with no --day/--since). ' +
+                    'The two answer measurably different questions — a component that had one ' +
+                    'bad night ranks first on the page and is diluted 21-fold in the CLI. ' +
+                    'Neither side is being changed here: this is flagged for the user to ' +
+                    'resolve, and the test asserts both values so whichever way it is resolved ' +
+                    'has to come through this table.',
+            },
+        ],
+    },
+    {
+        command: 'failures',
+        pageFile: 'failures.html',
+        pageCitations: {
+            rowUnit: 'failures.html:526-676 (renderFailureRows, one row per message string)',
+            sortKey: 'failures.html:102 (currentSort), comparator :602-612',
+            window: 'failures.html:1105-1108 (no date in hash → historical mode)',
+            filters: 'failures.html:213-218 (only statuses starting FAIL)',
+        },
+        page: {
+            rowUnit: 'failure message string',
+            grouping: 'message',
+            sortKey: 'count',
+            sortDirection: 'desc',
+            window: '21 days',
+            // Both sides, worded identically on purpose: the point of the
+            // strings matching is that a future edit to one side has to be a
+            // deliberate edit to the other. The page renders the unrecorded
+            // group as the literal '(no failure message)' (`:264`); the CLI
+            // carries it as a null message and labels it at render time. Same
+            // population, and the assertion below checks the row exists.
+            filters: 'FAIL* statuses only; the unrecorded-message group is a real row',
+            harness: 'xpcshell',
+        },
+        cli: {
+            rowUnit: 'failure message string',
+            grouping: 'message',
+            sortKey: 'count',
+            sortDirection: 'desc',
+            window: '21 days',
+            filters: 'FAIL* statuses only; the unrecorded-message group is a real row',
+            harness: 'xpcshell',
+        },
+        divergences: [],
+    },
+    {
+        command: 'crashes',
+        pageFile: 'crashes.html',
+        pageCitations: {
+            rowUnit: 'crashes.html:484-590 (one row per signature)',
+            sortKey: 'crashes.html:120 (currentSort), comparator :529-539 over totalCount',
+            window: 'crashes.html:994 (no date in hash → historical, 21 days)',
+        },
+        page: {
+            rowUnit: 'crash signature',
+            grouping: 'signature',
+            sortKey: 'count',
+            sortDirection: 'desc',
+            window: '21 days',
+            filters: 'CRASH statuses only',
+            harness: 'xpcshell',
+        },
+        cli: {
+            rowUnit: 'crash signature',
+            grouping: 'signature',
+            sortKey: 'count',
+            sortDirection: 'desc',
+            window: '21 days',
+            filters: 'CRASH statuses only',
+            harness: 'xpcshell',
+        },
+        divergences: [],
+        // Not a divergence, and deliberately not copied: `crashes.html:496-498`
+        // sums `pathData.tests.size` over every path a signature appears under,
+        // so a test that crashed under two paths counts twice. That is a page
+        // bug — the comment above it says "unique tests" and the loop does not
+        // produce that. The CLI's `testCount` is a distinct-test count. Left as
+        // a note rather than an allow-list entry because a `testCount` field is
+        // not one of the six framing dimensions; it is a value defect, for the
+        // value-parity check PARITY.md §5 specifies separately.
+    },
+    {
+        command: 'skips',
+        pageFile: 'issues.html',
+        pageCitations: {
+            // `skips` has no page of its own: the skip population is the
+            // `filter-skips` checkbox on issues.html, one of the four that make
+            // up an "issue". So the page framing recorded here is that
+            // checkbox's, and the row unit is the page's — component — which is
+            // where the one declared divergence comes from.
+            rowUnit: 'issues.html:1933 (components view)',
+            filters: 'issues.html:626-638 (skips is one of four checked boxes)',
+        },
+        page: {
+            rowUnit: 'Bugzilla component',
+            grouping: 'component',
+            sortKey: 'issueCount',
+            sortDirection: 'desc',
+            window: 'single most recent day',
+            filters: 'skips counted alongside fail, timeout and crash',
+            harness: 'xpcshell',
+        },
+        cli: {
+            rowUnit: 'test path',
+            grouping: 'test',
+            sortKey: 'skipCount',
+            sortDirection: 'desc',
+            window: '21-day aggregate',
+            filters: 'skip-if only; run-if excluded (--include-run-if keeps them)',
+            harness: 'xpcshell',
+        },
+        divergences: [
+            {
+                field: 'rowUnit',
+                reason:
+                    'The page has no skips view; skips are one of four issue types folded into ' +
+                    'the components ranking. `fx-tests skips` is a view the page does not have, ' +
+                    'so "what one row is" cannot match. Per-test is the right unit for it: the ' +
+                    'question is "what is disabled and where", and a component total does not ' +
+                    'name a test to re-enable.',
+            },
+            { field: 'grouping', reason: 'Same reason as rowUnit: no page view to match.' },
+            {
+                field: 'sortKey',
+                reason:
+                    'Ranks on skipCount because that is the only quantity the view has; the ' +
+                    "page's issueCount is a union over four types and would not order a " +
+                    'skips-only list.',
+            },
+            {
+                field: 'window',
+                reason: 'The same unresolved 1-day-vs-21-day split as `issues`. See that entry.',
+            },
+            {
+                field: 'filters',
+                reason:
+                    'The CLI excludes `run-if` skips by default and the page does not ' +
+                    'distinguish them. A `run-if` means the test is scoped to another platform, ' +
+                    'so it not running here is the annotation working rather than work someone ' +
+                    'owes. Measured asymmetry (`FORMATS.md`): the 21-day aggregate already ' +
+                    'dropped run-if upstream, so on the file this command reads the flag ' +
+                    'changes nothing — the output says so rather than reporting "excluded 0".',
+            },
+        ],
+    },
+    {
+        command: 'errors',
+        pageFile: 'errors.html',
+        pageCitations: {
+            rowUnit: 'errors.html:367, :489-497 (message view groups by messageId, whose key is text + file:line)',
+            grouping: 'errors.html:194-198 (message is the first <option>, none marked selected)',
+            sortKey: 'errors.html:232 (currentSort), comparator :476-483',
+            window: 'errors.html:1144-1152 ("Default: most recent single day")',
+            filters: 'errors.html:184-190 (seven marker-kind checkboxes, all `checked`)',
+        },
+        page: {
+            // Worth stating precisely, because the <option> label says
+            // "Message" and the identity is not the message text: a messageId
+            // interns (kind, text, file, line, component), so the same string
+            // from two source locations is two rows.
+            rowUnit: 'messageId — (kind, text, file, line, component), a source location',
+            grouping: 'message',
+            sortKey: 'count',
+            sortDirection: 'desc',
+            window: 'single most recent day',
+            filters: 'all seven marker kinds',
+            harness: 'mochitest',
+        },
+        cli: {
+            rowUnit: 'messageId — (kind, text, file, line, component), a source location',
+            // Named `location` rather than `message` for what the page's option
+            // labels "Message": the CLI also offers a `message` grouping that
+            // merges source locations, so the two names had to be told apart.
+            // Same identity, different label — hence the declared divergence.
+            grouping: 'location',
+            sortKey: 'count',
+            sortDirection: 'desc',
+            window: 'single most recent day with a published errors file',
+            filters: 'all marker kinds the file declares',
+            harness: 'mochitest',
+        },
+        divergences: [
+            {
+                field: 'grouping',
+                reason:
+                    "Naming only, and the identity is the same. The page's `message` option " +
+                    'groups by messageId, which interns the source location too (`:367`, ' +
+                    '`:489-497`) — so its rows are locations despite the label. The CLI kept ' +
+                    'the accurate name for that grouping and gave `message` to the coarser ' +
+                    'text-only grouping the page does not offer. `rowUnit` is asserted equal ' +
+                    'on both sides, which is what stops this from hiding a real difference.',
+            },
+            {
+                field: 'filters',
+                reason:
+                    'Both include everything by default; they disagree on where the kind list ' +
+                    'comes from. The page hardcodes seven checkboxes in its HTML ' +
+                    '(`errors.html:184-190`), so a kind the generator adds is invisible on the ' +
+                    'page until someone edits the markup — and silently excluded from the ' +
+                    'ranking. The CLI reads `tables.markerNames` off the file, so a new kind is ' +
+                    'counted the day it appears and `--kind` names it. Measured on the ' +
+                    'fixtures: the mochitest file declares two kinds, not seven. Not worth ' +
+                    '"fixing" toward the page — the page is the side that would need changing.',
+            },
+            {
+                field: 'window',
+                reason:
+                    'Both are "one most recent day", and the CLI has to add "with a published ' +
+                    'errors file" because the errors files exist for only about five of the 21 ' +
+                    'dates `index.json` lists (`FORMATS.md`). The page picks from a ' +
+                    '`date-select` populated with dates that have data; the CLI walks ' +
+                    'newest-first and keeps the first file that exists. Same question, and the ' +
+                    'CLI cannot assume what the page reads off a populated control.',
+            },
+        ],
+    },
+    {
+        command: 'manifests',
+        pageFile: 'manifests.html',
+        pageCitations: {
+            rowUnit: 'manifests.html:642-679 (one row per manifest path)',
+            sortKey: 'manifests.html:360-361 (currentSortColumn/Direction), applied :499',
+            window: 'manifests.html — a single artifact, no date control',
+            filters: 'manifests.html:416, :441-442, :461 (an all-zero-duration pair is a skip)',
+        },
+        page: {
+            rowUnit: 'manifest path',
+            grouping: null,
+            sortKey: 'median',
+            sortDirection: 'desc',
+            window: 'a single artifact — one day, no date control',
+            filters: 'all-zero-duration pairs treated as skipped, excluded from stats',
+            harness: 'both — the file is per-manifest, not per-harness',
+        },
+        cli: {
+            rowUnit: 'manifest path',
+            grouping: null,
+            sortKey: 'median',
+            sortDirection: 'desc',
+            window: 'a single artifact — one day, no date control',
+            filters: 'all-zero-duration pairs treated as skipped, excluded from stats',
+            harness: 'both — the file is per-manifest, not per-harness',
+        },
+        divergences: [],
+        // A page bug that is not a CLI gap, noted where it will be read: the
+        // page's median is the upper middle element (`:429`,
+        // `durations[Math.floor(length / 2)]`), not interpolated, so an
+        // even-length sample reports the higher of the two middle values. The
+        // CLI's `medianOf` matches it deliberately — a manifests ranking that
+        // disagreed with the dashboard in the last digit would cost more than
+        // the half-element it gains.
+    },
+    {
+        command: 'summary',
+        pageFile: 'index.html',
+        pageCitations: {
+            rowUnit: 'index.html:517-556 (one row per harness, per-flavor sub-rows)',
+            sortKey: 'index.html:517-556 — none, the rows are emitted in source order',
+            window: 'index.html:524, :534 (getRecentStats(stats, 7))',
+        },
+        page: {
+            rowUnit: 'harness',
+            grouping: 'harness',
+            // Two harnesses in a fixed order is not a ranking, and recording it
+            // as one would invent a key neither side has.
+            sortKey: null,
+            sortDirection: null,
+            window: '7 days',
+            filters: 'none — every job and test run in the window',
+            harness: 'both — xpcshell and mochitest',
+        },
+        cli: {
+            rowUnit: 'harness',
+            grouping: 'harness',
+            sortKey: null,
+            sortDirection: null,
+            window: '7 days',
+            filters: 'none — every job and test run in the window',
+            harness: 'both — xpcshell and mochitest',
+        },
+        divergences: [],
+        // Note, not a divergence: `index.html:476` subtracts invalid jobs from
+        // the Flaky Job Failures numerator and `:479` does not subtract them
+        // from the denominator, so the rate can go negative when invalid jobs
+        // exceed failed ones. The CLI reports `jobFailureRate` and
+        // `invalidJobRate` as separate rows rather than reproducing the mixed
+        // one. A page bug, and the reason the CLI does not copy the formula.
+    },
+    {
+        command: 'test',
+        pageFile: 'test.html',
+        pageCitations: {
+            rowUnit: 'test.html:2670, :2732-2806 (one row per job variant, platforms as columns)',
+            grouping: 'test.html — fixed sections, no tabs',
+            sortKey: 'test.html:2726-2731 (variant prefix by total runs desc); platform columns lexicographic at :2698',
+            window: 'test.html — the chunk file window, metadata.days',
+        },
+        page: {
+            rowUnit: 'job variant, with platforms as columns',
+            grouping: null,
+            sortKey: 'total runs of the variant prefix',
+            sortDirection: 'desc',
+            window: '21 days — the chunk file window',
+            filters: 'none — every status the file records',
+            harness: 'inferred from the test path',
+        },
+        cli: {
+            rowUnit: 'configuration (jobName), one per row',
+            grouping: null,
+            // `failRate`, not `failCount` — measured, and the two disagree on
+            // the fixture: the Windows config has 4 failures in 109 runs (3.7%)
+            // and the macOS one 6 in 761 (0.8%), so a count ranking puts macOS
+            // first and a rate ranking puts Windows first. Rate is the right
+            // one for "where is this broken": a config that runs ten times as
+            // often accumulates more failures without being worse.
+            // `lib/query/config-stats.ts:362`.
+            sortKey: 'failRate',
+            sortDirection: 'desc',
+            window: '21 days — the chunk file window',
+            filters: 'default view lists failing configs only; --coverage lists every config',
+            harness: 'inferred from the test path',
+        },
+        divergences: [
+            {
+                field: 'rowUnit',
+                reason:
+                    'The page renders a variant × platform matrix because it has the width for ' +
+                    'one; a terminal does not, and a matrix wrapped at 80 columns is unreadable. ' +
+                    'The CLI flattens to one row per configuration, which is the same ' +
+                    'population — a (variant, platform) cell is a configuration — presented as ' +
+                    'a list rather than a grid.',
+            },
+            {
+                field: 'sortKey',
+                reason:
+                    'The page has no user-changeable sort and orders variants by total runs, ' +
+                    'which is a layout choice for a matrix whose columns must line up. A list ' +
+                    'ranked by run count would put the busiest config first and the broken one ' +
+                    'wherever it fell; the question `fx-tests test` answers is "where is this ' +
+                    'failing", so it ranks on failure *rate* ' +
+                    '(`lib/query/config-stats.ts:362`). Rate rather than count for the same ' +
+                    'reason: measured on the bucket fixture, the Windows config fails 4 of 109 ' +
+                    'runs and macOS 6 of 761, so a count ranking reports the healthier config ' +
+                    'as the worse one.',
+            },
+            {
+                field: 'filters',
+                reason:
+                    'The matrix shows every cell because it is a matrix. A terminal list of ' +
+                    'every configuration is hundreds of rows of zeroes, so the default is the ' +
+                    'failing ones and `--coverage` is the full picture. `CLI.md` requires the ' +
+                    'default view to state where the test runs at all ("Runs on N configs ' +
+                    'across …"), so the narrowing cannot be mistaken for absence.',
+            },
+        ],
+        sourceOnly: {
+            window:
+                'The 21-day width is a property of the published file, not of the command: the ' +
+                'bucket fixture is a 21-day window and the CLI reports whatever `metadata.days` ' +
+                'says. Asserting "21" against the fixture would assert the fixture. What the ' +
+                'output *can* be held to is that it states the window it used, which the ' +
+                'metadata assertion below does.',
+        },
+    },
+    {
+        command: 'try',
+        pageFile: 'try.html',
+        pageCitations: {
+            rowUnit: 'try.html:1493-1517 (one row per test path)',
+            grouping: 'try.html:1765-1766 (up to 3 tables, the split is data-driven)',
+            sortKey: 'try.html:744 (currentSort), :1749 (count = a.instances.length)',
+            window: 'try.html — the push; central history uses MIN_RECENT_RUNS = 100 (:2572)',
+            filters: 'try.html:706, :3775 ("All jobs" checkbox unchecked by default)',
+        },
+        page: {
+            rowUnit: 'test path',
+            grouping: 'perma-fail / known intermittent / new intermittent',
+            // `count` is the column label; `instances.length` is the key, and
+            // the two are not the same thing. Ranking on distinct job runs
+            // instead produced the same set in a different order and passed
+            // every test in the suite — PARITY.md §1's "order parity" row.
+            // The tiebreak is part of the key, not of the direction: two rows
+            // with equal counts have to come out in *some* order, and the page
+            // leaves that to insertion order. Recording it here rather than in
+            // `sortDirection` is what makes the declared divergence name the
+            // thing that actually differs.
+            sortKey: 'failing executions (instances.length), ties in insertion order',
+            sortDirection: 'desc',
+            window: 'the push',
+            // Identical sets on both sides, verified: `try.html:1486` and
+            // `cli/commands/try.ts:430` declare the same five failure statuses,
+            // UNEXPECTED-PASS included. Non-test jobs are behind the unchecked
+            // "All jobs" box on the page and behind `--all-jobs` here.
+            filters:
+                'test jobs only, non-test jobs opt-in; FAIL, TIMEOUT, CRASH, ERROR and ' +
+                'UNEXPECTED-PASS all count as failures',
+            harness: 'mochitest and xpcshell — whichever the push ran',
+        },
+        cli: {
+            rowUnit: 'test path',
+            grouping: 'perma-fail / known intermittent / new intermittent',
+            sortKey: 'failing executions (failureCount), ties by path',
+            sortDirection: 'desc',
+            window: 'the push',
+            filters:
+                'test jobs only, non-test jobs opt-in; FAIL, TIMEOUT, CRASH, ERROR and ' +
+                'UNEXPECTED-PASS all count as failures',
+            harness: 'mochitest and xpcshell — whichever the push ran',
+        },
+        divergences: [
+            {
+                field: 'sortKey',
+                reason:
+                    'Same quantity and same direction; the CLI adds a `localeCompare` path tiebreak ' +
+                    'the page does not have (`cli/commands/try.ts:1035`). The page leaves equal ' +
+                    'counts in insertion order and relies on the stability of two `sort()` ' +
+                    'calls, so its tie order is the order eight web workers finished parsing ' +
+                    'profiles fetched 64 at a time — a network race that reshuffles between ' +
+                    'reloads. A command whose output is diffed and pasted into bugs cannot be ' +
+                    'non-deterministic. Declared in `PARITY.md` §5 as a difference that stays.',
+            },
+        ],
+    },
+];
+
+/**
+ * Commands with no corresponding page, per `PARITY.md` §7.
+ *
+ * Listed rather than omitted so the completeness check below can tell "decided
+ * not to cover this" from "forgot". Each says why there is nothing to compare.
+ */
+const UNCOVERED_COMMANDS: Record<string, string> = {
+    guide: 'Prose about what the data can and cannot tell you. No page, and no rows to frame.',
+    dates: 'Lists which dates have published data. A provenance query, not a view of test data.',
+    cache: 'Inspects the local on-disk cache. Nothing upstream to compare against.',
+    crash:
+        'Reads one processed crash or hang dump. `crash-viewer.html` covers the crash mode and ' +
+        'is the first migration target (`PARITY.md` §6.2); the hang mode has no page at all. ' +
+        'Out of scope here: this command takes a task ID and a minidump ID and renders one ' +
+        'dump, so it has no default ranking, window or filter to frame.',
+};
+
+// =========================================================================
+// Harness
+// =========================================================================
+
+const FIXTURES = new URL('./fixtures/', import.meta.url);
+
+async function fixtureBytes(name: string): Promise<Uint8Array> {
+    return new Uint8Array(await readFile(new URL(name, FIXTURES)));
+}
+
+/** Every fixture, under the name the CLI asks for. */
+const FILES: Record<string, string> = {
+    'xpcshell-timings/index.json': 'index.json',
+    'mochitest-timings/index.json': 'index.json',
+    'xpcshell-timings/xpcshell-issues.json': 'xpcshell-issues.json',
+    'xpcshell-timings/xpcshell-2026-08-03-errors.json': 'xpcshell-2026-08-03-errors.json',
+    'mochitest-timings/mochitest-2026-08-03-errors.json': 'mochitest-2026-08-03-errors.json',
+    'manifest-timings/manifests.json': 'manifests.json',
+    'xpcshell-timings/xpcshell-stats.json': 'xpcshell-stats.json',
+    'mochitest-timings/mochitest-stats.json': 'mochitest-stats.json',
+    'xpcshell-timings/xpcshell-00.json': 'xpcshell-00.json',
+    'mochitest-timings/mochitest-00.json': 'mochitest-00.json',
+};
+
+/**
+ * A source over the fixtures, recording what was asked for.
+ *
+ * No network: `PARITY.md`'s brief and `PLAN.md` §3 step 4 both require the
+ * suite to be offline, and the injected source is what makes that structural.
+ * The `requested` log is what lets the harness assertions below check *which*
+ * file a default read, which is the load-bearing half of "defaults to
+ * mochitest".
+ */
+function fixtureSource(): DataSource & { requested: string[] } {
+    const requested: string[] = [];
+    return {
+        name: 'fixtures',
+        requested,
+        async fetch(fileName: DataFileName): Promise<Uint8Array> {
+            const key = `${fileName.index}/${fileName.filename}`;
+            requested.push(key);
+            const local = FILES[key];
+            if (local === undefined) {
+                throw new DataFileNotFoundError(fileName);
+            }
+            return fixtureBytes(local);
+        },
+    };
+}
+
+/** The xpcshell test the bucket fixture is built around. */
+const TEST_PATH = 'dom/indexedDB/test/unit/test_rename_objectStore_errors.js';
+
+/** A Treeherder client over canned jobs, so `try` runs offline. */
+function fakeTreeherder(jobs: TreeherderJob[]): TreeherderClient {
+    return {
+        findPush: () =>
+            Promise.resolve({
+                pushId: 1,
+                revision: 'abcdef1234567890',
+                repository: 'try',
+                revisions: [],
+            }),
+        jobsOfPush: () => Promise.resolve(jobs),
+    };
+}
+
+/**
+ * A profile carrying `Test` markers, in the shape the harness emits.
+ *
+ * `entries` is a list of (test path, how many failing executions) — the axis
+ * that matters here, because the sort key under test is *executions* and the
+ * only way to tell it from a job-run count is a test that failed twice in one
+ * job.
+ */
+function profileWithFailures(entries: { test: string; executions: number }[]): string {
+    const markers: { data: Record<string, unknown>; start: number }[] = [];
+    let clock = 1;
+    for (const entry of entries) {
+        for (let i = 0; i < entry.executions; i++) {
+            markers.push({
+                data: { type: 'Test', test: entry.test, status: 'FAIL', message: 'boom' },
+                start: clock++,
+            });
+        }
+    }
+    return JSON.stringify({
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: ['test'],
+                markers: {
+                    length: markers.length,
+                    name: markers.map(() => 0),
+                    data: markers.map((marker) => marker.data),
+                    startTime: markers.map((marker) => marker.start),
+                    endTime: markers.map((marker) => marker.start + 1),
+                },
+            },
+        ],
+    });
+}
+
+/** Serves one profile per task. */
+function profileFetcher(byTask: Record<string, string>): (url: string) => Promise<Uint8Array | null> {
+    return (url: string) => {
+        const match = /task\/([^/]+)\//.exec(url);
+        const body = match === null ? undefined : byTask[match[1]!];
+        return Promise.resolve(body === undefined ? null : new TextEncoder().encode(body));
+    };
+}
+
+/** Runs one invocation against the fixtures. */
+async function invoke(
+    argv: string[],
+    overrides: Partial<Parameters<typeof run>[0]> = {}
+): Promise<{ code: number; stdout: string; stderr: string; requested: string[] }> {
+    const streams = captureStreams();
+    const source = (overrides.source as DataSource & { requested: string[] }) ?? fixtureSource();
+    const code = await run({
+        argv,
+        streams,
+        source,
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        ...overrides,
+    });
+    return {
+        code,
+        stdout: streams.stdout,
+        stderr: streams.stderr,
+        requested: (source as DataSource & { requested?: string[] }).requested ?? [],
+    };
+}
+
+function json(stdout: string): Record<string, unknown> {
+    return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+/** The entry for a command, or a failure naming the table. */
+function entryFor(command: string): FramingEntry {
+    const found = FRAMING.find((candidate) => candidate.command === command);
+    assert.ok(found !== undefined, `no framing entry for "${command}" — add one to FRAMING`);
+    return found;
+}
+
+/**
+ * Asserts one framing field, with a message a future reader can act on.
+ *
+ * The message is the whole point of this helper. A bare `assert.equal` failure
+ * says two strings differ; this says which command, which dimension, what the
+ * table expected, and **which page line the expectation came from** — so the
+ * reader can go and check whether the CLI regressed or the page moved, which
+ * are opposite conclusions with opposite fixes.
+ */
+function assertFraming(
+    command: string,
+    field: keyof Framing,
+    actual: unknown,
+    expected: unknown
+): void {
+    const entry = entryFor(command);
+    const citation = entry.pageCitations[field];
+    const declared = entry.divergences.find((divergence) => divergence.field === field);
+    const context = [
+        `${command}: default ${field} changed.`,
+        `  table expects: ${JSON.stringify(expected)}`,
+        `  CLI produced:  ${JSON.stringify(actual)}`,
+        `  ${entry.pageFile} does: ${JSON.stringify(entry.page[field])}`,
+        citation === undefined
+            ? `  page fact not cited for this field`
+            : `  derived from ${citation}`,
+        declared === undefined
+            ? '  This field has no declared divergence, so the CLI is expected to match the page.'
+            : `  Declared divergence: ${declared.reason}`,
+        '',
+        '  If the CLI changed deliberately, update FRAMING in test/framing.test.ts and say why.',
+        '  If the page moved, re-read the cited line and update the page side too.',
+    ].join('\n');
+    assert.deepEqual(actual, expected, context);
+}
+
+// =========================================================================
+// The table's own invariants
+// =========================================================================
+
+test('every field where the two sides differ is a declared divergence', () => {
+    // The check that makes the table mean something. Without it a CLI that
+    // quietly drifts away from its page passes, because both columns are just
+    // data in this file — which is the failure mode PARITY.md §1 names: "the
+    // tests verified the code against itself".
+    const fields: (keyof Framing)[] = [
+        'rowUnit',
+        'grouping',
+        'sortKey',
+        'sortDirection',
+        'window',
+        'filters',
+        'harness',
+    ];
+    for (const entry of FRAMING) {
+        const declared = new Set(entry.divergences.map((divergence) => divergence.field));
+        for (const field of fields) {
+            const differs = entry.page[field] !== entry.cli[field];
+            if (differs && !declared.has(field)) {
+                assert.fail(
+                    `${entry.command}: ${entry.pageFile} and the CLI disagree on ${field}, and it ` +
+                        `is not declared.\n` +
+                        `  page: ${JSON.stringify(entry.page[field])}\n` +
+                        `  cli:  ${JSON.stringify(entry.cli[field])}\n` +
+                        `  ${entry.pageCitations[field] ?? '(no citation)'}\n` +
+                        '  Either bring the CLI back to the page, or add a divergences entry ' +
+                        'saying why the difference is correct.'
+                );
+            }
+        }
+    }
+});
+
+test('a declared divergence whose sides have converged is a failure', () => {
+    // The other half of the allow-list discipline PARITY.md §4 sets. A stale
+    // exception is where a regression hides: once the two sides agree, the
+    // entry stops protecting anything and starts excusing whatever drifts next.
+    for (const entry of FRAMING) {
+        for (const divergence of entry.divergences) {
+            assert.notEqual(
+                entry.cli[divergence.field],
+                entry.page[divergence.field],
+                `${entry.command}: the declared divergence on ${divergence.field} no longer ` +
+                    `diverges — both sides say ${JSON.stringify(entry.cli[divergence.field])}. ` +
+                    'Delete the entry; leaving it lets the next real difference through ' +
+                    `unnoticed.\n  Its stated reason was: ${divergence.reason}`
+            );
+        }
+    }
+});
+
+test('every divergence carries a reason, and every page fact a citation', () => {
+    for (const entry of FRAMING) {
+        for (const divergence of entry.divergences) {
+            assert.ok(
+                divergence.reason.length > 40,
+                `${entry.command}/${divergence.field}: a divergence needs a reason someone can ` +
+                    'evaluate, not a label'
+            );
+        }
+        // Every field that differs must be traceable to a line someone can go
+        // and re-read; that is what tells a CLI regression from a page move.
+        for (const divergence of entry.divergences) {
+            const cited =
+                entry.pageCitations[divergence.field] !== undefined ||
+                Object.keys(entry.pageCitations).length > 0;
+            assert.ok(cited, `${entry.command}: no page citations at all`);
+        }
+        for (const [field, citation] of Object.entries(entry.pageCitations)) {
+            assert.match(
+                citation,
+                /\.html/,
+                `${entry.command}/${field}: a citation must name the page file`
+            );
+        }
+    }
+});
+
+test('every implemented command is either framed or explicitly uncovered', async () => {
+    // Completeness, driven off the command list rather than a copy of it: a
+    // command that lands without a framing entry is exactly the case this
+    // catches, and a hand-maintained list would not.
+    const { COMMAND_NAMES } = await import('../cli/main.ts');
+    const framed = new Set(FRAMING.map((entry) => entry.command));
+    for (const name of COMMAND_NAMES) {
+        const covered = framed.has(name) || name in UNCOVERED_COMMANDS;
+        assert.ok(
+            covered,
+            `"${name}" has no framing entry and is not in UNCOVERED_COMMANDS. Either add it ` +
+                'to FRAMING with the page it corresponds to, or record why it has no page ' +
+                '(PARITY.md §7).'
+        );
+    }
+    // And the other direction: a stale entry for a command that no longer
+    // exists would silently stop being checked.
+    for (const entry of FRAMING) {
+        assert.ok(COMMAND_NAMES.includes(entry.command), `FRAMING names "${entry.command}", which is not a command`);
+    }
+    for (const name of Object.keys(UNCOVERED_COMMANDS)) {
+        assert.ok(COMMAND_NAMES.includes(name), `UNCOVERED_COMMANDS names "${name}", which is not a command`);
+    }
+});
+
+// =========================================================================
+// fx-tests issues — the framing bug that motivated all of this
+// =========================================================================
+
+test('issues leads with components, not a flat test list', async () => {
+    // The bug PARITY.md §1 puts in the "right numbers, wrong question" row.
+    // Asserted on real output, not on the constant `runIssues` reads: an
+    // assertion that imports the default and checks the default is used passes
+    // whatever the default says.
+    const { code, stdout } = await invoke(['issues', '--json', '--limit', '3']);
+    assert.equal(code, 0);
+    const result = json(stdout);
+
+    assertFraming('issues', 'grouping', result['groupBy'], 'component');
+
+    // Not merely the label: the rows must actually be components. A component
+    // key is "Product :: Component"; a test path is not.
+    const rows = result['rows'] as { key: string }[];
+    assert.ok(rows.length > 0, 'the fixture must produce component rows');
+    for (const row of rows) {
+        assert.match(
+            row.key,
+            / :: /,
+            `issues rows must be Bugzilla components (issues.html:1933), got "${row.key}" — a ` +
+                'flat test list here is the exact defect PARITY.md §1 records'
+        );
+    }
+});
+
+test('issues ranks components on issueCount descending', async () => {
+    const { stdout } = await invoke(['issues', '--json', '--limit', '0']);
+    const result = json(stdout);
+    assertFraming('issues', 'sortKey', result['sort'], 'issues');
+
+    // The order itself, not the label. `issues.html:663-664` sets sortField to
+    // `issueCount` and the direction to desc; a command reporting `sort:
+    // "issues"` while emitting rate order would pass a label check.
+    const rows = result['rows'] as { key: string; issueCount: number }[];
+    assert.ok(rows.length > 1, 'need at least two rows to observe an order');
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            rows[i - 1]!.issueCount >= rows[i]!.issueCount,
+            `issues must be ranked by issueCount descending (issues.html:663-664, comparator ` +
+                `:2066-2081): row ${i - 1} has ${rows[i - 1]!.issueCount} and row ${i} has ` +
+                `${rows[i]!.issueCount}`
+        );
+    }
+});
+
+test('issues counts all four issue types by default', async () => {
+    const { stdout } = await invoke(['issues', '--json', '--limit', '1']);
+    const types = json(stdout)['types'] as string[];
+    // `issues.html:626-638` — four checkboxes, every one `checked`. Pinned as a
+    // literal set rather than compared against DEFAULT_TYPES, which is the
+    // constant the command itself reads.
+    assertFraming('issues', 'filters', [...types].sort(), ['crash', 'fail', 'skip', 'timeout']);
+});
+
+test('issues reads the 21-day aggregate — the declared divergence from the page', async () => {
+    // The unresolved one. `issues.html:3707-3713` loads a single most recent
+    // day; this reads the whole 21-day window. Both values are asserted so
+    // whichever way it is resolved has to come through the table.
+    const { stdout } = await invoke(['issues', '--json', '--limit', '1']);
+    const header = json(stdout)['header'] as { dayCount: number; singleDay: boolean };
+    assert.equal(
+        header.singleDay,
+        false,
+        'fx-tests issues covers the whole window; issues.html defaults to one day ' +
+            '(issues.html:3707-3713). If this became single-day, the divergence in FRAMING is ' +
+            'resolved and must be deleted.'
+    );
+    assert.equal(header.dayCount, 21, 'the aggregate is 21 days');
+
+    const entry = entryFor('issues');
+    const windowDivergence = entry.divergences.find(
+        (divergence) => divergence.field === 'window'
+    );
+    assert.ok(
+        windowDivergence !== undefined,
+        'the 1-day-vs-21-day split must stay declared while it exists'
+    );
+});
+
+test('issues keeps issue-free tests in a component total, as the page does', async () => {
+    // `issues.html:2007-2013` accumulates `runCount` for every test in the
+    // component and only then gates the *display* list on `hasIssues` (`:2016`)
+    // — so a component's denominator covers its whole population. A CLI that
+    // summed only the failing tests would report a higher rate from the same
+    // data, which is a framing difference disguised as a number.
+    const { stdout } = await invoke(['issues', '--json', '--limit', '0']);
+    const rows = json(stdout)['rows'] as { testCount: number; totalTestCount: number }[];
+    assert.ok(rows.length > 0);
+    assert.ok(
+        rows.some((row) => row.totalTestCount > row.testCount),
+        'at least one fixture component must have clean tests, or this asserts nothing'
+    );
+    for (const row of rows) {
+        assert.ok(
+            row.totalTestCount >= row.testCount,
+            'a component cannot have more tests with issues than tests'
+        );
+    }
+});
+
+// =========================================================================
+// fx-tests failures / crashes / skips
+// =========================================================================
+
+test('failures rows are message strings ranked on count descending', async () => {
+    const { stdout } = await invoke(['failures', '--json', '--limit', '0']);
+    const result = json(stdout);
+    assertFraming('failures', 'grouping', result['groupBy'], 'message');
+    assertFraming('failures', 'sortKey', result['sort'], 'count');
+
+    const rows = result['rows'] as { message: string | null; count: number }[];
+    assert.ok(rows.length > 1);
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            rows[i - 1]!.count >= rows[i]!.count,
+            `failures must rank on count descending (failures.html:102, comparator :602-612)`
+        );
+    }
+});
+
+test('failures keeps the unrecorded-message row, as the page does', async () => {
+    // `failures.html:264` renders '(no failure message)' as a real row. Dropping
+    // it would silently shrink the population — and on the fixture it is the
+    // largest row, so a filtered-out null would change which failure ranks
+    // first.
+    const { stdout } = await invoke(['failures', '--json', '--limit', '0']);
+    const rows = json(stdout)['rows'] as { message: string | null }[];
+    assert.ok(
+        rows.some((row) => row.message === null),
+        'a group with no recorded message must be a row, not dropped (failures.html:264)'
+    );
+});
+
+test('crashes rows are signatures ranked on count descending', async () => {
+    const { stdout } = await invoke(['crashes', '--json', '--limit', '0']);
+    const rows = json(stdout)['rows'] as { signature: string | null; count: number }[];
+    assert.ok(rows.length > 1);
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            rows[i - 1]!.count >= rows[i]!.count,
+            'crashes must rank on count descending (crashes.html:120, comparator :529-539)'
+        );
+    }
+    // One row per signature, so no signature appears twice.
+    const seen = new Set(rows.map((row) => row.signature));
+    assert.equal(seen.size, rows.length, 'the row unit is the signature (crashes.html:484-590)');
+});
+
+test('crashes counts each test once per signature, unlike the page', async () => {
+    // Not a divergence entry, because `testCount` is a value rather than one of
+    // the six framing dimensions — but worth pinning here because the page is
+    // the one that is wrong. `crashes.html:496-498` sums `pathData.tests.size`
+    // across every path a signature appears under, double-counting a test that
+    // crashed under two paths. The CLI's testCount is the distinct-test count,
+    // so it must equal the length of the tests array.
+    const { stdout } = await invoke(['crashes', '--json', '--limit', '0']);
+    const rows = json(stdout)['rows'] as {
+        testCount: number;
+        tests: { test: string }[];
+    }[];
+    assert.ok(rows.length > 0);
+    for (const row of rows) {
+        const distinct = new Set(row.tests.map((entry) => entry.test));
+        assert.equal(
+            row.testCount,
+            distinct.size,
+            'testCount must be distinct tests; crashes.html:496-498 double-counts across paths ' +
+                'and that page bug is deliberately not copied'
+        );
+    }
+});
+
+test('skips rows are tests ranked on skipCount, and exclude run-if', async () => {
+    const { stdout } = await invoke(['skips', '--json', '--limit', '0']);
+    const result = json(stdout);
+    assertFraming('skips', 'grouping', result['groupBy'], 'test');
+    assert.equal(
+        result['includeRunIf'],
+        false,
+        'run-if means "scoped elsewhere", not "disabled", so it is excluded by default'
+    );
+
+    const rows = result['rows'] as { test: string; skipCount: number }[];
+    assert.ok(rows.length > 1);
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            rows[i - 1]!.skipCount >= rows[i]!.skipCount,
+            'skips must rank on skipCount descending'
+        );
+    }
+    // The row unit: a test path, not a component. This is the declared
+    // divergence from issues.html's components view, asserted so that "the CLI
+    // is per-test here" stays a fact rather than an assumption.
+    for (const row of rows) {
+        assert.doesNotMatch(
+            row.test,
+            / :: /,
+            `skips rows are test paths, not components; got "${row.test}"`
+        );
+    }
+});
+
+test('skips says which run-if population it reported, rather than "excluded 0"', async () => {
+    // The measured asymmetry (`FORMATS.md`): the 21-day aggregate already
+    // dropped run-if upstream, so on this file the flag changes nothing.
+    // Reporting "0 excluded" would say there were none rather than that the
+    // generator got there first.
+    const { stdout } = await invoke(['skips', '--json', '--limit', '1']);
+    assert.equal(json(stdout)['runIfIsUpstreamFiltered'], true);
+    const text = await invoke(['skips', '--limit', '1']);
+    assert.match(text.stdout, /generator already dropped run-if skips/);
+});
+
+// =========================================================================
+// fx-tests errors
+// =========================================================================
+
+test('errors defaults to mochitest, and reads the mochitest file', async () => {
+    // The one command that does not default to xpcshell. Both halves matter:
+    // the label, and which file was actually fetched — a command that reported
+    // "mochitest" while reading the xpcshell file would pass a label check and
+    // rank a failing-tests-only population as if it were all of CI.
+    const { stdout, requested } = await invoke(['errors', '--json', '--limit', '1']);
+    assertFraming('errors', 'harness', json(stdout)['harness'], 'mochitest');
+    assert.ok(
+        requested.some((name) => name.includes('mochitest-2026-08-03-errors.json')),
+        `expected the mochitest errors file, got ${requested.join(', ')}`
+    );
+    assert.ok(!requested.some((name) => name.includes('xpcshell-2026-08-03-errors')));
+});
+
+test('the other tree-wide commands default to xpcshell', async () => {
+    // The contrast that makes the line above a fact about `errors` rather than
+    // about the CLI. Four commands, one assertion each, because a change that
+    // flipped the default harness globally would otherwise look like a fix.
+    for (const command of ['issues', 'failures', 'crashes', 'skips']) {
+        const { stdout, requested } = await invoke([command, '--json', '--limit', '1']);
+        const header = json(stdout)['header'] as { harness: string };
+        assertFraming(command, 'harness', header.harness, 'xpcshell');
+        assert.ok(
+            requested.some((name) => name.startsWith('xpcshell-timings/')),
+            `${command} must read the xpcshell index, got ${requested.join(', ')}`
+        );
+    }
+});
+
+test('errors rows are source locations, not message texts', async () => {
+    // The row unit the page's "Message" option actually produces: `messageId`
+    // interns (kind, text, file, line, component) (`errors.html:367`,
+    // `:489-497`), so the same string from two source locations is two rows.
+    // The CLI names that grouping `location` — a declared naming divergence —
+    // and the identity has to be the same or the divergence is hiding a real
+    // difference.
+    const { stdout } = await invoke(['errors', '--json', '--limit', '0']);
+    const result = json(stdout);
+    assertFraming('errors', 'grouping', result['grouping'], 'location');
+
+    const rows = result['rows'] as {
+        kind: string | null;
+        text: string | null;
+        file: string | null;
+        line: number | null;
+        component: string | null;
+    }[];
+    assert.ok(rows.length > 1);
+    // Every row is a distinct 5-tuple, which is what "the row unit is a source
+    // location" means operationally.
+    const keys = rows.map((row) =>
+        JSON.stringify([row.kind, row.text, row.file, row.line, row.component])
+    );
+    assert.equal(new Set(keys).size, keys.length, 'each row must be a distinct messageId');
+
+    // And the discriminating case: the location is part of the identity, so
+    // there is at least one text that appears at more than one location. If the
+    // fixture had no such text this assertion would be vacuous, so it is
+    // checked rather than assumed.
+    const byText = new Map<string, Set<string>>();
+    for (const row of rows) {
+        const text = row.text ?? '';
+        const where = `${row.file}:${row.line}`;
+        const set = byText.get(text) ?? new Set<string>();
+        set.add(where);
+        byText.set(text, set);
+    }
+    const split = [...byText.values()].some((locations) => locations.size > 1);
+    assert.ok(
+        split,
+        'the errors fixture must contain one message text at two locations, or this test cannot ' +
+            'distinguish grouping by location from grouping by text'
+    );
+});
+
+test('errors ranks on occurrences descending, and covers one day', async () => {
+    const { stdout } = await invoke(['errors', '--json', '--limit', '0']);
+    const result = json(stdout);
+    assertFraming('errors', 'sortKey', result['sort'], 'occurrences');
+    const rows = result['rows'] as { count: number }[];
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            rows[i - 1]!.count >= rows[i]!.count,
+            'errors must rank on occurrences descending (errors.html:232, comparator :476-483)'
+        );
+    }
+    // One day, as `errors.html:1144-1152` says in as many words. There is no
+    // multi-day errors aggregate, so this is the one window both sides can have.
+    assert.equal(result['date'], '2026-08-03');
+    assert.equal(
+        result['availableDates'] instanceof Array && (result['availableDates'] as string[]).length,
+        1
+    );
+});
+
+test('errors counts every marker kind the file declares', async () => {
+    // `errors.html:184-190` — seven checkboxes, all checked. The CLI has no
+    // kind filter by default, and the check that says so is that the matched
+    // total equals the file total.
+    const { stdout } = await invoke(['errors', '--json', '--limit', '1']);
+    const totals = json(stdout)['totals'] as { matched: number; file: number };
+    assert.equal(
+        totals.matched,
+        totals.file,
+        'with no --kind, every marker in the file must be counted (errors.html:184-190)'
+    );
+});
+
+// =========================================================================
+// fx-tests manifests
+// =========================================================================
+
+test('manifests rows are manifest paths ranked on median descending', async () => {
+    // The one page whose default sort is not a count. `manifests.html:360-361`
+    // sets `currentSortColumn = 'median'`, applied at `:499`.
+    const { stdout } = await invoke(['manifests', '--json', '--limit', '0']);
+    const result = json(stdout);
+    assertFraming('manifests', 'sortKey', result['sort'], 'median');
+
+    const rows = result['rows'] as {
+        manifest: string;
+        durations: { median: number } | null;
+    }[];
+    assert.ok(rows.length > 1);
+    let previous = Number.POSITIVE_INFINITY;
+    for (const row of rows) {
+        // A skipped manifest has no durations at all and sorts last, which is
+        // the page's treatment of an all-zero pair (`:416`, `:441-442`, `:461`)
+        // — reported as skipped rather than as a 0ms manifest.
+        if (row.durations === null) {
+            previous = Number.NEGATIVE_INFINITY;
+            continue;
+        }
+        assert.ok(
+            row.durations.median <= previous,
+            `manifests must rank on median descending (manifests.html:360-361, applied :499); ` +
+                `${row.manifest} has median ${row.durations.median} after ${previous}`
+        );
+        previous = row.durations.median;
+    }
+    // Row unit: one row per manifest, no repeats.
+    const seen = new Set(rows.map((row) => row.manifest));
+    assert.equal(seen.size, rows.length, 'the row unit is the manifest path (manifests.html:642-679)');
+});
+
+test('manifests reports skipped pairs as skipped, not as zero-duration', async () => {
+    // The page excludes an all-zero pair from its statistics rather than
+    // averaging a 0 into them. A CLI that let zeroes into the median would
+    // report a fast manifest and rank it last, which reads as "this is fine".
+    const { stdout } = await invoke(['manifests', '--json', '--limit', '0']);
+    const result = json(stdout);
+    const zero = result['zeroDurations'] as { skippedPairs: number; totalPairs: number };
+    assert.ok(zero.skippedPairs > 0, 'the fixture must contain skipped pairs');
+    assert.ok(zero.skippedPairs < zero.totalPairs);
+
+    const rows = result['rows'] as { durations: { median: number } | null }[];
+    for (const row of rows) {
+        if (row.durations !== null) {
+            assert.ok(
+                row.durations.median > 0,
+                'a manifest with statistics must have a non-zero median; a zero means a skipped ' +
+                    'pair leaked into the distribution (manifests.html:416, :441-442, :461)'
+            );
+        }
+    }
+});
+
+test('manifests covers one artifact, with no date control', async () => {
+    // `manifests.json` is a single day and there is no window to choose. Both
+    // sides agree, and the CLI states the date rather than leaving the reader
+    // to assume a 21-day window like every other command.
+    const { stdout, requested } = await invoke(['manifests', '--json', '--limit', '1']);
+    const metadata = json(stdout)['metadata'] as { date: string };
+    assert.equal(metadata.date, '2026-08-03');
+    assert.deepEqual(
+        requested,
+        ['manifest-timings/manifests.json'],
+        'one artifact, and no index lookup for a window that does not exist'
+    );
+});
+
+// =========================================================================
+// fx-tests summary
+// =========================================================================
+
+test('summary is a 7-day window per harness, from the stats file', async () => {
+    // The odd one out on two axes, and both are asserted because both are
+    // easy to change by accident: 7 days where everything else is 21
+    // (`index.html:524`, `:534` call `getRecentStats(stats, 7)`), and a
+    // different file — `{harness}-stats.json`, not the issues aggregate.
+    const { stdout, requested } = await invoke(['summary', '--json']);
+    const harnesses = json(stdout)['harnesses'] as {
+        harness: string;
+        current: { dayCount: number };
+        prior: { dayCount: number } | null;
+    }[];
+    assert.deepEqual(
+        harnesses.map((entry) => entry.harness),
+        ['xpcshell', 'mochitest'],
+        'one row per harness, in source order — index.html:517-556 has no ranking'
+    );
+    for (const entry of harnesses) {
+        assertFraming('summary', 'window', entry.current.dayCount, 7);
+        assert.equal(entry.prior?.dayCount, 7, 'compared against the prior 7 days');
+    }
+    assert.deepEqual(
+        [...requested].sort(),
+        ['mochitest-timings/mochitest-stats.json', 'xpcshell-timings/xpcshell-stats.json'],
+        'summary reads {harness}-stats.json, not the 21-day issues aggregate'
+    );
+});
+
+test('summary reports invalid jobs separately rather than mixing them into one rate', async () => {
+    // Not framing drift — a page bug the CLI declines to reproduce.
+    // `index.html:476` subtracts invalid jobs from the Flaky Job Failures
+    // numerator and `:479` leaves them in the denominator, so the rate can go
+    // negative when invalid jobs exceed failed ones. The CLI keeps the two as
+    // separate rows, which is why the numbers here are both non-negative.
+    const { stdout } = await invoke(['summary', '--json', '--harness', 'xpcshell']);
+    const [entry] = json(stdout)['harnesses'] as {
+        current: { jobFailureRate: number; invalidJobRate: number };
+    }[];
+    assert.ok(entry !== undefined);
+    assert.ok(entry.current.jobFailureRate >= 0);
+    assert.ok(entry.current.invalidJobRate >= 0);
+});
+
+// =========================================================================
+// fx-tests test
+// =========================================================================
+
+test('test lists failing configurations ranked on failure rate, not failure count', async () => {
+    // The declared divergence from `test.html`'s variant × platform matrix: one
+    // row per configuration, ranked by how often it fails rather than by run
+    // count.
+    //
+    // Rate rather than count, and the fixture makes the difference observable:
+    // the Windows config fails 4 of 109 runs (3.7%) and macOS 6 of 761 (0.8%),
+    // so a count ranking would put macOS first and report the healthier config
+    // as the worse one. `lib/query/config-stats.ts:362`.
+    const { stdout } = await invoke(['test', TEST_PATH, '--json']);
+    const result = json(stdout);
+    const configs = result['configs'] as {
+        jobName: string;
+        failCount: number;
+        failRate: number;
+    }[];
+    assert.ok(configs.length > 1, 'the fixture test fails on more than one config');
+    for (let i = 1; i < configs.length; i++) {
+        assert.ok(
+            configs[i - 1]!.failRate >= configs[i]!.failRate,
+            `test ranks configurations on failRate descending: ${configs[i - 1]!.jobName} at ` +
+                `${configs[i - 1]!.failRate}% precedes ${configs[i]!.jobName} at ` +
+                `${configs[i]!.failRate}%`
+        );
+    }
+    // And the discriminating check: the two orders genuinely differ on this
+    // fixture, so the assertion above is not passing by coincidence.
+    const byCount = [...configs].sort((a, b) => b.failCount - a.failCount);
+    assert.notDeepEqual(
+        byCount.map((config) => config.jobName),
+        configs.map((config) => config.jobName),
+        'the fixture must order differently by count and by rate, or the rate assertion is vacuous'
+    );
+    // Every listed config failed — the default view is the failing ones, and
+    // `--coverage` is the full picture. A zero-failure row here would mean the
+    // default had quietly become the matrix.
+    for (const config of configs) {
+        assert.ok(
+            config.failCount > 0,
+            `${config.jobName} has no failures but is in the default view; the default is the ` +
+                'failing configs (see the filters divergence in FRAMING)'
+        );
+    }
+});
+
+test('test states the window it used rather than assuming 21 days', async () => {
+    // Marked `assertedFrom: source` in the table for the width itself: the 21
+    // days is a property of the published file, so asserting "21" here would
+    // assert the fixture. What the command can be held to is stating it.
+    const { stdout } = await invoke(['test', TEST_PATH, '--json']);
+    const metadata = json(stdout)['metadata'] as {
+        startDate: string;
+        endDate: string;
+        dayCount: number;
+        singleDay: boolean;
+    };
+    assert.equal(metadata.singleDay, false);
+    assert.ok(metadata.dayCount > 1, 'the default is the whole window, not one day');
+    assert.match(metadata.startDate, /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(metadata.endDate, /^\d{4}-\d{2}-\d{2}$/);
+
+    const entry = entryFor('test');
+    assert.ok(
+        entry.sourceOnly?.window !== undefined,
+        'the window field is source-asserted for `test`; keep the reason in the table'
+    );
+});
+
+test('test infers the harness from the path, as test.html does', async () => {
+    const { stdout } = await invoke(['test', TEST_PATH, '--json']);
+    assertFraming('test', 'harness', json(stdout)['harness'], 'xpcshell');
+    const mochitest = await invoke([
+        'test',
+        'browser/components/tabbrowser/test/browser/tabs/browser_tab_dragdrop2.js',
+        '--json',
+    ]);
+    assert.equal(json(mochitest.stdout)['harness'], 'mochitest');
+});
+
+test('test says where the test runs at all, so the narrowed view is not read as absence', async () => {
+    // What makes the failing-configs default safe rather than misleading. The
+    // page's matrix shows every cell; a terminal list of the failing ones
+    // cannot answer "does this run on Android?", and that has to be settled
+    // before concluding a platform is unaffected.
+    const { stdout } = await invoke(['test', TEST_PATH]);
+    assert.match(stdout, /^Runs on \d+ configs across /m);
+});
+
+// =========================================================================
+// fx-tests try
+// =========================================================================
+
+/**
+ * Runs `try` over canned jobs and profiles.
+ *
+ * Offline by construction: a fake Treeherder client and a profile fetcher over
+ * hand-built profiles, the same seams `cli.test.ts` uses.
+ */
+async function invokeTry(
+    argv: string[],
+    jobs: TreeherderJob[],
+    profiles: Record<string, string>
+): Promise<Record<string, unknown>> {
+    const streams = captureStreams();
+    const code = await run({
+        argv,
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder(jobs),
+        fetchUrl: profileFetcher(profiles),
+    });
+    assert.equal(code, 0, streams.stderr);
+    return json(streams.stdout);
+}
+
+/** A completed job. */
+function job(jobName: string, taskId: string, result: string): TreeherderJob {
+    return { jobId: 1, jobName, taskId, retryId: 0, state: 'completed', result };
+}
+
+test('try ranks on failing executions, not on distinct job runs', async () => {
+    // PARITY.md §1's "order parity" row, and the only one of the three classes
+    // that produces the same set in a different order. `try.html:1749` sorts on
+    // `a.instances.length` — one entry per failing marker — so a test that
+    // failed twice in one job outranks a test that failed once in two jobs.
+    // Ranking on job runs instead flattens both to 2 and reverses them.
+    //
+    // The fixture is built to make exactly that distinction observable: TWICE
+    // fails twice within one job, ONCE_EACH fails once in each of two jobs.
+    const twice = 'dom/base/test/unit/test_twice_in_one_job.js';
+    const onceEach = 'dom/base/test/unit/test_once_in_each_job.js';
+    const result = await invokeTry(
+        ['try', 'abcdef123456', '--json'],
+        [
+            job('test-linux2404-64/opt-xpcshell-1', 'TASKA', 'testfailed'),
+            job('test-linux2404-64/opt-xpcshell-2', 'TASKB', 'testfailed'),
+        ],
+        {
+            TASKA: profileWithFailures([
+                { test: twice, executions: 3 },
+                { test: onceEach, executions: 1 },
+            ]),
+            TASKB: profileWithFailures([{ test: onceEach, executions: 1 }]),
+        }
+    );
+
+    const all = [
+        ...(result['permaFails'] as { path: string; failureCount: number; jobNames: string[] }[]),
+        ...(result['knownIntermittents'] as {
+            path: string;
+            failureCount: number;
+            jobNames: string[];
+        }[]),
+        ...(result['newIntermittents'] as {
+            path: string;
+            failureCount: number;
+            jobNames: string[];
+        }[]),
+    ];
+    const byPath = new Map(all.map((entry) => [entry.path, entry]));
+    const a = byPath.get(twice);
+    const b = byPath.get(onceEach);
+    assert.ok(a !== undefined && b !== undefined, `both tests must appear, got ${[...byPath.keys()]}`);
+
+    // The discriminating pair: 3 executions in 1 job vs 2 executions in 2 jobs.
+    assert.equal(a.failureCount, 3, 'three failing executions in one job');
+    assert.equal(a.jobNames.length, 1, 'from a single configuration');
+    assert.equal(b.failureCount, 2, 'one failing execution in each of two jobs');
+    assert.equal(b.jobNames.length, 2, 'from two configurations');
+
+    // The **emitted order**, which is the assertion that matters and the one an
+    // earlier draft of this test was missing. Checking only that
+    // `a.failureCount > b.failureCount` compares two numbers the command
+    // reported and says nothing about the sequence it put them in: a mutation
+    // ranking on `jobNames.length` instead survived that check, because it
+    // still reported 3 and 2 correctly — it just emitted them the other way
+    // round. That is precisely PARITY.md §1's "same set, wrong order", so the
+    // sequence has to be asserted as a sequence.
+    assert.deepEqual(
+        all.map((entry) => entry.path),
+        [twice, onceEach],
+        'the ranking must put the 3-executions-in-1-job test first (try.html:1749, count = ' +
+            'instances.length). Ranking on distinct job runs puts the 2-jobs test first and ' +
+            'produces the same set in the wrong order — the defect PARITY.md §1 records as ' +
+            'uncatchable by a value diff.'
+    );
+});
+
+test('try breaks ties on the path, which the page does not', async () => {
+    // The declared divergence. The page leaves equal counts in insertion order
+    // and relies on the stability of two `sort()` calls, so its tie order is
+    // the order eight web workers finished parsing profiles fetched 64 at a
+    // time (`try.html:1113`) — a race that reshuffles between reloads. A
+    // command whose output is pasted into bugs cannot be non-deterministic.
+    //
+    // Asserted by feeding the tied tests in reverse alphabetical order: if the
+    // command kept insertion order the output would come back reversed.
+    const first = 'dom/base/test/unit/test_aaa.js';
+    const second = 'dom/base/test/unit/test_zzz.js';
+    const result = await invokeTry(
+        ['try', 'abcdef123456', '--json'],
+        [job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed')],
+        {
+            TASKA: profileWithFailures([
+                { test: second, executions: 2 },
+                { test: first, executions: 2 },
+            ]),
+        }
+    );
+    const all = [
+        ...(result['permaFails'] as { path: string; failureCount: number }[]),
+        ...(result['knownIntermittents'] as { path: string; failureCount: number }[]),
+        ...(result['newIntermittents'] as { path: string; failureCount: number }[]),
+    ];
+    const tied = all.filter((entry) => entry.failureCount === 2).map((entry) => entry.path);
+    assert.deepEqual(
+        tied,
+        [first, second],
+        'equal counts must order by path, not by the order the profiles were parsed'
+    );
+});
+
+test('try counts an UNEXPECTED-PASS as a failure, as the page does', async () => {
+    // `try.html:1486` puts UNEXPECTED-PASS in FAILURE_STATUSES, and it is the
+    // one that reads as a contradiction: a test that passed when the manifest
+    // said it would fail is a change the push caused, so leaving it out would
+    // silently drop a real result. Asserted on output rather than by comparing
+    // the two constant declarations, which would only prove the two files agree
+    // about a name.
+    const path = 'dom/base/test/unit/test_unexpected_pass.js';
+    const streams = captureStreams();
+    const code = await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASKA: JSON.stringify({
+                meta: { startTime: 0 },
+                threads: [
+                    {
+                        stringArray: ['test'],
+                        markers: {
+                            length: 1,
+                            name: [0],
+                            data: [{ type: 'Test', test: path, status: 'UNEXPECTED-PASS' }],
+                            startTime: [1],
+                            endTime: [2],
+                        },
+                    },
+                ],
+            }),
+        }),
+    });
+    assert.equal(code, 0, streams.stderr);
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { path: string }[]),
+        ...(result['knownIntermittents'] as { path: string }[]),
+        ...(result['newIntermittents'] as { path: string }[]),
+    ];
+    assert.deepEqual(
+        all.map((entry) => entry.path),
+        [path],
+        'an UNEXPECTED-PASS must become a failure row (try.html:1486)'
+    );
+});
+
+test('try groups into the three sections and covers the push, not a window', async () => {
+    const result = await invokeTry(
+        ['try', 'abcdef123456', '--json'],
+        [job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed')],
+        { TASKA: profileWithFailures([{ test: TEST_PATH, executions: 1 }]) }
+    );
+    // The grouping is the page's three tables (`try.html:1765-1766`), and every
+    // key must be present even when a section is empty — an absent key would
+    // make "no perma-fails" indistinguishable from "the field was dropped".
+    for (const key of ['permaFails', 'knownIntermittents', 'newIntermittents']) {
+        assert.ok(Array.isArray(result[key]), `try must always emit ${key}`);
+    }
+    // The window is the push: one push id, and the job count is what the fake
+    // Treeherder returned rather than anything read from a 21-day file.
+    assert.equal(result['pushId'], 1);
+    assert.equal(result['jobCount'], 1);
+});
+
+test('try lists only test jobs by default; --all-jobs adds the rest', async () => {
+    // `try.html:706`/`:3775` — the "All jobs" checkbox starts unchecked, and it
+    // changes the universe (`:1342-1344`) rather than only the display.
+    const jobs = [
+        job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed'),
+        job('build-linux64/opt', 'TASKBUILD', 'busted'),
+    ];
+    const profiles = { TASKA: profileWithFailures([{ test: TEST_PATH, executions: 1 }]) };
+    const result = await invokeTry(['try', 'abcdef123456', '--json'], jobs, profiles);
+
+    // The non-test job is reported as such, and it is not a failure row: the
+    // default sections are test failures only.
+    const other = result['otherFailedJobs'] as { jobName: string }[];
+    assert.deepEqual(other.map((entry) => entry.jobName), ['build-linux64/opt']);
+    const all = [
+        ...(result['permaFails'] as { path: string }[]),
+        ...(result['knownIntermittents'] as { path: string }[]),
+        ...(result['newIntermittents'] as { path: string }[]),
+    ];
+    assert.deepEqual(all.map((entry) => entry.path), [TEST_PATH]);
+
+    // And the text default hides the build failures, as the unchecked box does.
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder(jobs),
+        fetchUrl: profileFetcher(profiles),
+    });
+    assert.doesNotMatch(
+        streams.stdout,
+        /build-linux64/,
+        'non-test jobs are behind --all-jobs, as the unchecked "All jobs" box is (try.html:706)'
+    );
+});
