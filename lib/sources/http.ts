@@ -241,9 +241,11 @@ export function taskArtifactSource(options: {
  * Names the artifact of a task run, for `taskArtifactSource`.
  *
  * The path after the task ID is `runs/<retryId>/artifacts/<artifactPath>` —
- * the run segment precedes `artifacts`, which is easy to transpose and
- * produces a URL that 404s in a way indistinguishable from an expired
- * artifact. `lib/links.ts` builds the same path for display.
+ * the run segment precedes `artifacts`, which is easy to transpose. Measured
+ * 2026-08-04: the correct order answers 303 and the transposed one **403**,
+ * so getting it wrong does not even fail like a missing artifact would.
+ * `lib/links.ts` builds the same path for display, and a test asserts the two
+ * agree.
  */
 export function taskArtifactName(
     taskId: string,

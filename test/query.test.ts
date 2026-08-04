@@ -6,7 +6,7 @@
  * summing the raw JSON, and several are cross-checked against a second,
  * independent path in the assertions below.
  *
- * The three things these tests are really defending:
+ * The four things these tests are really defending:
  *
  * 1. **Reconciliation.** A test's per-config run counts must sum to its total
  *    run count. The two are computed by different code over different shapes
@@ -19,6 +19,16 @@
  * 3. **The three coverage states.** ran-and-passed, ran-and-skipped and
  *    never-scheduled are what `--coverage` exists to separate, and the test
  *    asserts a real test that has all three.
+ * 4. **The recent window's exact width.** Sized by run count rather than by
+ *    days, and inclusive at both ends. An off-by-one there reports an 11-day
+ *    window as 10 days — a plausible-looking wrong number, which is the
+ *    failure mode this data keeps producing.
+ *
+ * Where a branch is reachable by the format but absent from today's data —
+ * an `EXPECTED-FAIL` carrying a message, a config with both a `skip-if` and a
+ * `run-if`, a day on which CI did not run — the input is built by hand and
+ * says so. Those are the cases a fixture cannot supply and a mutation would
+ * otherwise survive.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -34,12 +44,15 @@ import {
     type IssuesWithTaskIdsFile,
 } from '../lib/formats/issues.ts';
 import type { StatsFile } from '../lib/formats/stats.ts';
+import { classifyStatus } from '../lib/model/status.ts';
+import { stripChunkSuffix } from '../lib/model/job-name.ts';
 import {
     computeTestStats,
     configFilter,
     crashSignatureCounts,
     failureMessageCounts,
     inDayRange,
+    jobNameOfEntry,
 } from '../lib/query/test-stats.ts';
 import {
     canAttributeConfigs,
@@ -155,6 +168,44 @@ test('configFilter unions the includes and applies the excludes after', () => {
 
     // No includes means everything, which is what "all configs" has to mean.
     assert.equal(configFilter()('anything'), true);
+});
+
+test('a failing entry resolves its job through taskInfo, not through jobName', () => {
+    // The two attribution paths. `durations` and `skip-counts` groups name a
+    // job directly; the failing shapes carry only task-ID indices, so their
+    // configuration has to be looked up through `taskInfo.jobNameIds`. Losing
+    // that hop would leave every fail, timeout and crash unattributed — the
+    // failure and crash groupings would report no configurations at all, and
+    // `computeConfigStats` would drop the failures from its rows.
+    let viaJobName = 0;
+    let viaTaskIndex = 0;
+    for (let testId = 0; testId < bucket.testCount; testId++) {
+        for (const entry of bucket.runsOfTest(testId)) {
+            const jobName = jobNameOfEntry(bucket, entry);
+            assert.notEqual(jobName, null, `${entry.status} entry resolved to no job`);
+            if (entry.jobName !== undefined) {
+                viaJobName += 1;
+            } else {
+                assert.notEqual(entry.taskIdIndexes, undefined);
+                viaTaskIndex += 1;
+                // Only the non-passing shapes take this path.
+                const { kind } = classifyStatus(entry.status);
+                assert.ok(
+                    kind === 'fail' || kind === 'timeout' || kind === 'crash',
+                    `${entry.status} should not need a taskInfo hop`
+                );
+            }
+        }
+    }
+    assert.equal(viaJobName, 11250);
+    assert.equal(viaTaskIndex, 55, 'the failing shapes must go through taskInfo');
+
+    // And the resolved names reach the groupings that depend on them.
+    const crashes = groupCrashesBySignature(bucket);
+    assert.ok(crashes.length > 0);
+    for (const group of crashes) {
+        assert.ok(group.jobNames.size > 0, 'a crash group must know its configs');
+    }
 });
 
 test('failure messages and crash signatures are counted separately', () => {
@@ -294,6 +345,71 @@ test('every config shares one recent window, sized by run count', () => {
     );
 });
 
+test('the recent window covers exactly the days it claims to', () => {
+    // The off-by-one this module's own comment calls the one "most likely to
+    // be simplified away", and the number `CLI.md`'s "recent (7d)" column
+    // prints. `from = newestDay - windowDays + 1` is inclusive at both ends:
+    // a 10-day window ending on day 20 starts at day 11, not day 10.
+    //
+    // The expectation is recomputed here from the entries rather than read off
+    // the function, so it is evidence and not a copy of the answer. Dropping
+    // the `+ 1` would widen the window to 11 days while still reporting
+    // `recentDays: 10` — a wrong number that looks right, which is the failure
+    // mode this project keeps warning about.
+    const identity = bucket.findTest(WINDOWS_TEST)!;
+    const configs = computeConfigStats(bucket, identity.testId);
+    const windowDays = configs[0]!.recentDays;
+    assert.equal(windowDays, 10);
+
+    // Independent per-day tally of everything that counts as a run.
+    const perDay = new Map<number, number>();
+    for (const entry of bucket.runsOfTest(identity.testId)) {
+        const { kind } = classifyStatus(entry.status);
+        if (kind === 'skip' || kind === 'unknown') {
+            continue;
+        }
+        assert.notEqual(entry.day, null, 'a bucket file always carries days');
+        perDay.set(entry.day!, (perDay.get(entry.day!) ?? 0) + entry.count);
+    }
+    const newestDay = Math.max(...perDay.keys());
+    assert.equal(newestDay, 20);
+
+    const runsSince = (from: number): number => {
+        let total = 0;
+        for (const [day, count] of perDay) {
+            if (day >= from) {
+                total += count;
+            }
+        }
+        return total;
+    };
+
+    // Hand-checked: 637 runs fall in days 11..20, and 724 in days 10..20. The
+    // gap between them is what an off-by-one silently absorbs.
+    assert.equal(runsSince(newestDay - windowDays + 1), 637);
+    assert.equal(runsSince(newestDay - windowDays), 724);
+
+    const reported = configs.reduce((sum, config) => sum + config.recentRunCount, 0);
+    assert.equal(reported, 637, 'the reported window must be the inclusive one');
+    assert.notEqual(reported, 724, 'an 11-day window must not be reported as 10 days');
+
+    // Per config, so the boundary is pinned on each row and not only in total.
+    assert.deepEqual(
+        configs.map((config) => [config.jobName, config.recentRunCount]),
+        [
+            ['test-windows11-64-25h2-shippable/opt-xpcshell', 26],
+            ['test-windows10-64-2009-qr/debug-xpcshell', 138],
+            ['test-windows10-64-2009-qr/opt-xpcshell', 120],
+            ['test-windows11-64-25h2/opt-xpcshell', 109],
+            ['test-windows11-64-25h2/debug-xpcshell', 150],
+            ['test-windows11-64-24h2-artifact/opt-xpcshell', 25],
+            ['test-windows11-64-24h2-artifact/debug-xpcshell', 25],
+            ['test-windows11-64-25h2-ccov/opt-xpcshell', 23],
+            ['test-windows10-64-2009-shippable-qr/opt-xpcshell', 21],
+        ]
+    );
+});
+
 test('a config too sparse for the minimum gets null, not zero', () => {
     const identity = bucket.findTest(WINDOWS_TEST)!;
     // A minimum no config can reach in the window leaves every recent rate
@@ -362,6 +478,166 @@ test('same-message rates separate "fails" from "fails this way"', () => {
     const matched = computeConfigStats(bucket, identity.testId, { tryMessages: messages });
     const matchedTotal = matched.reduce((sum, config) => sum + config.sameMsgFailCount, 0);
     assert.equal(matchedTotal, computeTestStats(bucket, identity.testId).failCount);
+});
+
+test('config rows are chunk-stripped, so chunks of one config aggregate', () => {
+    // The daily files keep the chunk suffix and the aggregates do not, so
+    // without stripping the same configuration splits into one row per chunk
+    // on one family and not on the other. On this test the raw job names
+    // number 85 and the configurations 34 — a table 2.5x too long, with every
+    // rate computed over a chunk's runs instead of a config's.
+    const identity = daily.findTest(
+        'toolkit/components/extensions/test/xpcshell/test_ext_geckoProfiler_control.js'
+    )!;
+
+    // Chunked job names, counting only entries that reach a verdict — skips
+    // are not runs and `computeConfigStats` excludes configs that only ever
+    // skipped, so collecting every status here would compare two different
+    // populations. 85 names appear in total, 47 of them on runs.
+    const rawJobNames = new Set<string>();
+    const runJobNames = new Set<string>();
+    for (const entry of daily.runsOfTest(identity.testId)) {
+        const { kind } = classifyStatus(entry.status);
+        const names: string[] = [];
+        if (entry.jobName !== undefined) {
+            names.push(entry.jobName);
+        } else if (entry.taskIdIndexes !== undefined) {
+            for (const taskIdIndex of entry.taskIdIndexes) {
+                const jobName = daily.jobNameOfTaskIndex(taskIdIndex);
+                if (jobName !== null) {
+                    names.push(jobName);
+                }
+            }
+        }
+        for (const name of names) {
+            rawJobNames.add(name);
+            if (kind !== 'skip' && kind !== 'unknown') {
+                runJobNames.add(name);
+            }
+        }
+    }
+    assert.equal(rawJobNames.size, 85, 'the daily file names each chunk separately');
+    assert.equal(runJobNames.size, 47, '47 chunked job names actually ran this test');
+
+    const configs = computeConfigStats(daily, identity.testId);
+    assert.equal(configs.length, 34, 'chunks of one config must collapse into one row');
+
+    // No reported row may carry a chunk suffix, and every raw name must strip
+    // onto one of them — the property that makes 85 become 34.
+    const reported = new Set(configs.map((config) => config.jobName));
+    for (const jobName of reported) {
+        assert.equal(jobName, stripChunkSuffix(jobName), jobName);
+    }
+    for (const raw of runJobNames) {
+        assert.ok(reported.has(stripChunkSuffix(raw)), `${raw} has no config row`);
+    }
+    // Stripping is exactly what collapses 47 onto 34 — asserted as a set
+    // identity so a stripping rule that merged too much also fails.
+    assert.deepEqual(
+        [...new Set([...runJobNames].map(stripChunkSuffix))].sort(),
+        [...reported].sort()
+    );
+});
+
+test('crashes match a try push on their signature, not on a message', () => {
+    // CRASH groups carry `crashSignatureIds` and no `messageIds` at all, so
+    // matching them against a try push has to read the signature. Reading
+    // `message` instead would find nothing and report every crash as new —
+    // the "is this crash pre-existing?" path in `fx-tests try`.
+    const identity = bucket.findTest('dom/indexedDB/test/unit/test_setVersion_exclusion.js')!;
+    const stats = computeTestStats(bucket, identity.testId);
+    assert.equal(stats.crashCount, 10);
+
+    const signatures = [...crashSignatureCounts(bucket, identity.testId).keys()].filter(
+        (signature): signature is string => signature !== null
+    );
+    assert.equal(signatures.length, 1);
+
+    const matched = computeConfigStats(bucket, identity.testId, { tryMessages: signatures });
+    assert.equal(
+        matched.reduce((sum, config) => sum + config.sameMsgFailCount, 0),
+        10,
+        'every crash with a known signature must count as the same failure'
+    );
+
+    // A signature that is not in the push matches nothing, so the count is
+    // discriminating rather than always-on.
+    const unmatched = computeConfigStats(bucket, identity.testId, {
+        tryMessages: ['@ something_that_never_crashed'],
+    });
+    assert.equal(
+        unmatched.reduce((sum, config) => sum + config.sameMsgFailCount, 0),
+        0
+    );
+});
+
+test('an expected-fail is never counted as a matching failure', () => {
+    // `EXPECTED-FAIL` groups in the published files carry no messages, so this
+    // guard cannot be exercised from a fixture. A test annotated `fail-if`
+    // that failed did what it was told, and letting its message match a try
+    // push's would report an annotation working as a pre-existing failure.
+    // Built by hand because the case is reachable by the format and simply
+    // absent from today's data.
+    const synthetic = decodeBucket({
+        metadata: {
+            startDate: '2026-07-14',
+            endDate: '2026-08-03',
+            days: 21,
+            startTime: 0,
+            generatedAt: '',
+            totalTestCount: 1,
+            testsWithFailures: 1,
+            aggregatedFrom: [],
+            totalBuckets: 64,
+            bucketIndex: 0,
+        },
+        tables: {
+            jobNames: ['test-linux2404-64/opt-xpcshell'],
+            testPaths: ['a/b'],
+            testNames: ['test_x.js'],
+            repositories: ['mozilla-central'],
+            statuses: ['PASS', 'EXPECTED-FAIL', 'FAIL'],
+            taskIds: ['AAA.0', 'BBB.0'],
+            messages: ['annotated failure', 'real failure'],
+            crashSignatures: [],
+            components: ['Core :: X'],
+            commitIds: ['abc'],
+        },
+        taskInfo: {
+            repositoryIds: [0, 0],
+            jobNameIds: [0, 0],
+            commitIds: [0, 0],
+            chunks: [null, null],
+        },
+        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+        testRuns: [
+            [
+                { days: [20], durations: [[100, 100, 100]], jobNameIds: [0] },
+                { days: [20], taskIdIds: [[0]], messageIds: [0] },
+                { days: [20], taskIdIds: [[1]], messageIds: [1] },
+            ],
+        ],
+    } as unknown as BucketFile);
+
+    // Sanity: the synthetic file really does put a message on the
+    // EXPECTED-FAIL group, or this test would pass vacuously.
+    const statuses = new Map<string, string | null | undefined>();
+    for (const entry of synthetic.runsOfTest(0)) {
+        statuses.set(entry.status, entry.message);
+    }
+    assert.equal(statuses.get('EXPECTED-FAIL'), 'annotated failure');
+
+    // The annotated message must not match: the run behaved as annotated.
+    const annotated = computeConfigStats(synthetic, 0, { tryMessages: ['annotated failure'] });
+    assert.equal(annotated[0]!.sameMsgFailCount, 0);
+    // A real failure with the same shape does match, so the zero above is the
+    // guard and not an inert code path.
+    const real = computeConfigStats(synthetic, 0, { tryMessages: ['real failure'] });
+    assert.equal(real[0]!.sameMsgFailCount, 1);
+
+    // And `expected-fail` is not a failure: 5 runs, one of which failed.
+    assert.equal(annotated[0]!.runCount, 5);
+    assert.equal(annotated[0]!.failCount, 1);
 });
 
 test('timeouts and crashes match on the status, since they record no message', () => {
@@ -438,6 +714,68 @@ test('coverage row counts reconcile with the test totals', () => {
     assert.equal(sum((row) => row.runCount), stats.runCount);
 });
 
+test('a config that never passed is perma-fail, not intermittent', () => {
+    // The highest-signal thing the matrix says: a config where the test ran
+    // and *never* passed is broken there, not flaky there, and `CLI.md`'s try
+    // triage keys its top section ("these are almost certainly yours") on the
+    // distinction. Collapsing the two would put a perma-fail in the same
+    // bucket as a 1-in-400 intermittent.
+    const permaFails: { test: string; jobName: string; runCount: number }[] = [];
+    let intermittent = 0;
+    for (let testId = 0; testId < daily.testCount; testId++) {
+        for (const config of coverageOf(daily, testId).configs) {
+            if (config.state === 'perma-fail') {
+                permaFails.push({
+                    test: daily.testAt(testId).fullPath,
+                    jobName: config.jobName,
+                    runCount: config.runCount,
+                });
+                // The defining property: it ran, and not one run passed.
+                assert.ok(config.runCount > 0);
+                assert.equal(config.passCount, 0);
+                assert.equal(
+                    config.failCount + config.timeoutCount + config.crashCount,
+                    config.runCount
+                );
+            }
+            if (config.state === 'intermittent') {
+                // The contrast: it ran, failed at least once, and passed at
+                // least once.
+                assert.ok(config.passCount > 0);
+                assert.ok(config.failCount + config.timeoutCount + config.crashCount > 0);
+                intermittent += 1;
+            }
+        }
+    }
+
+    // Hand-checked against the fixture. Note the failure modes differ — two
+    // crashed every run, one failed, one timed out — so the state is about
+    // never passing rather than about any single non-passing status.
+    assert.deepEqual(permaFails, [
+        {
+            test: 'toolkit/components/extensions/test/xpcshell/test_ext_background_early_shutdown.js',
+            jobName: 'test-linux2404-64-ccov/opt-xpcshell',
+            runCount: 2,
+        },
+        {
+            test: 'toolkit/components/extensions/test/xpcshell/test_ext_background_early_shutdown.js',
+            jobName: 'test-linux2404-64-ccov/opt-xpcshell-nofis',
+            runCount: 2,
+        },
+        {
+            test: 'toolkit/components/extensions/test/xpcshell/test_ext_dnr_dynamic_rules.js',
+            jobName: 'test-linux2404-64-shippable/opt-xpcshell-nofis',
+            runCount: 1,
+        },
+        {
+            test: 'toolkit/components/extensions/test/xpcshell/test_ext_downloads_cookies.js',
+            jobName: 'test-windows11-32-25h2-shippable/opt-xpcshell',
+            runCount: 1,
+        },
+    ]);
+    assert.equal(intermittent, 51, 'the two states must stay distinct, not merge');
+});
+
 test('a run-if-only config reads as not-applicable, not as skipped', () => {
     // Only reachable from a daily file: the aggregates drop `run-if` skips
     // upstream, so a config that appears solely through one is invisible
@@ -460,15 +798,108 @@ test('a run-if-only config reads as not-applicable, not as skipped', () => {
         }
     }
     assert.equal(notApplicable, 11, 'the daily fixture has 11 run-if-only configs');
+    // A concrete count, not `>= 0`: the two states have to be distinguished
+    // from each other, so asserting only the interesting one would still pass
+    // if every `skip-if` row were relabelled.
+    assert.equal(skipped, 50, 'the daily fixture has 50 genuinely disabled configs');
 
     // The aggregates cannot produce the state at all, because the generator
-    // already filtered those rows out.
+    // already filtered those rows out — and they still have skipped rows, so
+    // the absence is about `run-if` and not about skips in general.
+    let aggregateSkipped = 0;
     for (let testId = 0; testId < bucket.testCount; testId++) {
         for (const config of coverageOf(bucket, testId).configs) {
             assert.notEqual(config.state, 'not-applicable');
+            if (config.state === 'skipped') {
+                aggregateSkipped += 1;
+            }
         }
     }
-    assert.ok(skipped >= 0);
+    assert.equal(aggregateSkipped, 25);
+});
+
+test('a config with both a skip-if and a run-if reads as disabled', () => {
+    // The precedence rule inside `stateOf`. No row in the real data has both
+    // annotations at once — a config either scopes the test out or disables
+    // it — so this is built by hand rather than found: it is reachable by the
+    // format and would be mislabelled if the `skipCount === 0` guard were
+    // dropped, reporting a disabled config as merely "scoped elsewhere".
+    //
+    // A `skip-if` is work someone owes and a `run-if` is the annotation
+    // working, so when both are present the reportable one has to win.
+    const synthetic = decodeDaily({
+        metadata: {
+            date: '2026-08-03',
+            startTime: 0,
+            generatedAt: '',
+            jobCount: 1,
+            processedJobCount: 1,
+            invalidJobCount: 0,
+        },
+        tables: {
+            jobNames: ['test-linux2404-64/opt-xpcshell'],
+            testPaths: ['a/b'],
+            testNames: ['test_x.js'],
+            repositories: ['mozilla-central'],
+            taskIds: ['AAA.0', 'BBB.0'],
+            components: ['Core :: X'],
+            commitIds: ['abc'],
+            statuses: ['SKIP'],
+            messages: ["skip-if: os == 'linux'", "run-if: os == 'win'"],
+            crashSignatures: [],
+        },
+        taskInfo: { repositoryIds: [0, 0], jobNameIds: [0, 0], commitIds: [0, 0] },
+        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+        testRuns: [
+            [
+                {
+                    taskIdIds: [0, 1],
+                    durations: [0, 0],
+                    timestamps: [0, 0],
+                    messageIds: [0, 1],
+                },
+            ],
+        ],
+    } as unknown as DailyFile);
+
+    const [row] = coverageOf(synthetic, 0).configs;
+    assert.ok(row);
+    // Both annotations landed on the one config, which is what makes the
+    // precedence question live rather than hypothetical.
+    assert.equal(row.skipCount, 1);
+    assert.equal(row.runIfSkipCount, 1);
+    assert.equal(row.runCount, 0);
+    assert.equal(row.state, 'skipped', 'a reportable skip outranks a run-if');
+
+    // With the `skip-if` removed the same row is correctly not-applicable, so
+    // the assertion above is about precedence and not about the state being
+    // unreachable.
+    const runIfOnly = decodeDaily({
+        metadata: {
+            date: '2026-08-03',
+            startTime: 0,
+            generatedAt: '',
+            jobCount: 1,
+            processedJobCount: 1,
+            invalidJobCount: 0,
+        },
+        tables: {
+            jobNames: ['test-linux2404-64/opt-xpcshell'],
+            testPaths: ['a/b'],
+            testNames: ['test_x.js'],
+            repositories: ['mozilla-central'],
+            taskIds: ['AAA.0'],
+            components: ['Core :: X'],
+            commitIds: ['abc'],
+            statuses: ['SKIP'],
+            messages: ["run-if: os == 'win'"],
+            crashSignatures: [],
+        },
+        taskInfo: { repositoryIds: [0], jobNameIds: [0], commitIds: [0] },
+        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+        testRuns: [[{ taskIdIds: [0], durations: [0], timestamps: [0], messageIds: [0] }]],
+    } as unknown as DailyFile);
+    assert.equal(coverageOf(runIfOnly, 0).configs[0]!.state, 'not-applicable');
 });
 
 test('never-scheduled is null when no universe was supplied', () => {
@@ -754,6 +1185,55 @@ test('a period with no prior window reports null rather than inventing one', () 
         skipRate: null,
         invalidJobRate: null,
     });
+});
+
+test('a period with no runs reports null rates, not 0%', () => {
+    // "No data" and "0% failures" are different claims, and the second is the
+    // one that reads as good news. A day on which CI did not run — a closed
+    // tree, an outage — produces zero denominators; none of the 199 real dates
+    // in the fixture does, so the case is built rather than found.
+    const empty: StatsFile = {
+        metadata: { generatedAt: '', harness: 'xpcshell' },
+        dates: ['2026-08-01', '2026-08-02'],
+        totalTestRuns: [0, 0],
+        failedTestRuns: [0, 0],
+        skippedTestRuns: [0, 0],
+        processedJobCount: [0, 0],
+        failedJobs: [0, 0],
+        ignoredJobs: [0, 0],
+        invalidJobs: [0, 0],
+        markerCounts: {},
+    };
+    const summary = computeSummary(empty, { days: 1 });
+    assert.equal(summary.current.testFailureRate, null);
+    assert.equal(summary.current.jobFailureRate, null);
+    assert.equal(summary.current.skipRate, null);
+    assert.equal(summary.current.invalidJobRate, null);
+    // Explicitly not zero: `0` would print as "0.00%", which claims the tree
+    // was green on a day nothing ran.
+    assert.notEqual(summary.current.testFailureRate, 0);
+    assert.notEqual(summary.current.jobFailureRate, 0);
+
+    // A null on either side makes the delta unknown rather than a swing from
+    // or to zero.
+    assert.deepEqual(summary.delta, {
+        testFailureRate: null,
+        jobFailureRate: null,
+        skipRate: null,
+        invalidJobRate: null,
+    });
+
+    // The counters themselves are still reported, so a caller can tell an
+    // empty period from a missing one.
+    assert.equal(summary.current.totalTestRuns, 0);
+    assert.equal(summary.current.dayCount, 1);
+
+    // And the real file, whose denominators are all non-zero, yields numbers
+    // rather than nulls — so the nulls above are the zero-denominator path and
+    // not a rate that never computes.
+    const real = computeSummary(xpcshellStats);
+    assert.notEqual(real.current.testFailureRate, null);
+    assert.notEqual(real.current.jobFailureRate, null);
 });
 
 test('marker totals come from the file, and the kinds differ by harness', () => {

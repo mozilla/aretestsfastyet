@@ -232,9 +232,13 @@ export function treeherderClient(options: TreeherderOptions): TreeherderClient {
                     next?: string | null;
                 } = await getJson(url);
 
-                // The names come with the first page and are not repeated;
-                // holding them across pages is what makes the positional
-                // decoding work for page two onwards.
+                // Treeherder does repeat `job_property_names` on every page —
+                // verified on page 2 of push 1991182 — so holding the first
+                // page's is not strictly required. It is kept because the
+                // alternative is trusting that every page agrees: re-reading
+                // them per page would silently re-map the columns if one ever
+                // differed, where this decodes every page against the layout
+                // the first one declared and cannot drift mid-push.
                 propertyNames ??= data.job_property_names ?? null;
                 if (propertyNames === null) {
                     throw new TreeherderError(

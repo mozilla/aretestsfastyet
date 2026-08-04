@@ -46,8 +46,10 @@ import {
 } from '../lib/sources/http.ts';
 import { resourceUsageProfileUrl, taskArtifactUrl } from '../lib/links.ts';
 import {
+    FAILED_JOB_RESULTS,
     PushNotFoundError,
     TreeherderError,
+    type TreeherderJob,
     findTimingsJobs,
     isFailedJob,
     treeherderClient,
@@ -429,6 +431,36 @@ test('an HTTP failure from Treeherder is reported with its status', async () => 
         (error: Error) =>
             error instanceof TreeherderError && (error as TreeherderError).status === 503
     );
+});
+
+test('a retried job is not a failed job', () => {
+    // `retry` means the job was superseded by another run of the same task —
+    // an infrastructure hiccup, not a test failure. Counting it would inflate
+    // a push's failure count with jobs that were re-run and may have passed,
+    // and `fx-tests try`'s "37 failed" line is built from exactly this set.
+    assert.deepEqual([...FAILED_JOB_RESULTS].sort(), ['busted', 'exception', 'testfailed']);
+    assert.equal(FAILED_JOB_RESULTS.has('retry'), false);
+    assert.equal(FAILED_JOB_RESULTS.has('success'), false);
+    assert.equal(FAILED_JOB_RESULTS.has('unknown'), false);
+
+    const job = (result: string): TreeherderJob => ({
+        jobId: 1,
+        jobName: 'test-linux2404-64/opt-xpcshell-1',
+        taskId: 'AAA',
+        retryId: 0,
+        state: 'completed',
+        result,
+    });
+    assert.equal(isFailedJob(job('testfailed')), true);
+    assert.equal(isFailedJob(job('busted')), true);
+    assert.equal(isFailedJob(job('exception')), true);
+    assert.equal(isFailedJob(job('retry')), false);
+    assert.equal(isFailedJob(job('success')), false);
+    assert.equal(isFailedJob(job('unknown')), false);
+
+    // Over a mixed push, only three of the six count.
+    const results = ['success', 'testfailed', 'retry', 'busted', 'exception', 'unknown'];
+    assert.equal(results.map(job).filter(isFailedJob).length, 3);
 });
 
 test('findTimingsJobs keeps the last completed job per harness', () => {

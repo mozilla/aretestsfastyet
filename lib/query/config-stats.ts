@@ -65,7 +65,7 @@
 
 import type { DecodedTimingFile, RunEntry } from '../formats/decode.ts';
 import { stripChunkSuffix } from '../model/job-name.ts';
-import { classifyStatus, type StatusKind } from '../model/status.ts';
+import { classifyStatus } from '../model/status.ts';
 
 /** Failure rates for one configuration. */
 export interface ConfigStats {
@@ -214,8 +214,14 @@ export function computeConfigStats(
             continue;
         }
 
+        // `expected-fail` is deliberately not a failure: the test failed as its
+        // annotation said it would, so counting it inflates failure rates and
+        // — via `sameMsg` below — would report a working annotation as a
+        // pre-existing failure matching a try push.
         const isFail = kind === 'fail' || kind === 'timeout' || kind === 'crash';
-        const sameMsg = entryMatches(entry, kind, tryMessages, options);
+        const sameMsg = isFail
+            ? entryMatches(entry, kind, tryMessages, options)
+            : false;
 
         if (entry.jobName !== undefined) {
             // PASS and SKIP groups attribute each entry to a job directly.
@@ -238,22 +244,36 @@ export function computeConfigStats(
     return summarize(byJob, minRecentRuns, options.recentDays);
 }
 
+/** The kinds that count as a failure, and the only ones `entryMatches` sees. */
+type FailureKind = 'fail' | 'timeout' | 'crash';
+
 /**
- * Whether an entry's message is one of the messages seen on try.
+ * Whether a failing entry's message is one of the messages seen on try.
  *
  * Crashes match on the signature and everything else on the message, because
  * those are the fields each status actually carries. Timeouts and crashes
  * often carry neither, which is what `matchAnyTimeout`/`matchAnyCrash` are for.
+ *
+ * Takes a `FailureKind` rather than any `StatusKind` deliberately. This used to
+ * open with `if (kind === 'pass' || kind === 'expected-fail') return false`,
+ * which read as a guard and was not one: the result is only ever consumed under
+ * `if (isFail && sameMsg)`, so a pass or an expected-fail could never reach the
+ * counter whatever this returned. A mutation removing that clause left the
+ * suite green *and* changed no output on any input, because the branch was
+ * unreachable-by-effect rather than merely untested. Narrowing the parameter
+ * says the same thing in a way the compiler enforces and no test has to.
+ *
+ * The behaviour it encoded still holds and still matters: a test annotated
+ * `fail-if` that failed did what it was told, so it must never be reported as
+ * a failure matching a try push's. That is now guaranteed by `expected-fail`
+ * not being in `isFail` at the one call site.
  */
 function entryMatches(
     entry: RunEntry,
-    kind: StatusKind,
+    kind: FailureKind,
     tryMessages: ReadonlySet<string>,
     options: ConfigStatsOptions
 ): boolean {
-    if (kind === 'pass' || kind === 'expected-fail') {
-        return false;
-    }
     if (kind === 'timeout' && options.matchAnyTimeout) {
         return true;
     }

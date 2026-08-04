@@ -69,7 +69,12 @@ export type CoverageState =
      * `run-if` is the test correctly not applying here. Only ever produced
      * from a **daily** file: the 21-day aggregates drop `run-if` skips
      * upstream, so on those families such a config simply does not appear
-     * (`FORMATS.md`). On the daily fixture 11 rows are in this state.
+     * (`FORMATS.md`).
+     *
+     * Not a rare state. 11 rows in `test/fixtures/xpcshell-2026-08-03.json`,
+     * which holds 11 tests, and 9,111 in the full file for that date — so the
+     * fixture number is a property of the cut and the state is common in
+     * practice.
      */
     | 'not-applicable'
     /**
