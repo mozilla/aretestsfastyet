@@ -9,10 +9,26 @@
  * `mac_crash_info`, `handles`) are `null` off their platform. Treat every
  * field as optional except `threads` and `thread_count`.
  *
- * The report covers hangs as well as crashes. A hang-kill dump looks like an
- * ordinary crash — the killing signal is real — but has many threads (87 on
- * one Windows dump checked here, 78 of them parked in a wait) and its
- * interesting content is the breadth across threads, not the depth of one.
+ * The report covers hangs as well as crashes, and **the two are not
+ * distinguishable from `crash_info.type`**. The hang fixture
+ * (`test/fixtures/stackwalk-hang.json`, macOS, 26 threads) reports
+ * `EXC_SOFTWARE / SIGABRT`, which an ordinary abort also reports: the process
+ * was killed from outside and breakpad wrote the dump, so the evidence for a
+ * hang is that the crashing thread's innermost frames are breakpad's own
+ * (`ReceivePort::WaitForMessage`, `CrashGenerationClient::RequestDumpForException`)
+ * sitting on top of a thread that was otherwise waiting — here `MainThread`
+ * parked in `RunCurrentEventLoopInMode`.
+ *
+ * The consequence for `fx-tests crash`: a hang's interesting content is the
+ * breadth across threads rather than the depth of one, which is why
+ * `--all-threads` exists and why it defaults to shallower frames. Since the
+ * type cannot be trusted to say which case this is, the command should not
+ * try to auto-detect it — let the caller choose the view.
+ *
+ * The crash fixture (`test/fixtures/stackwalk-crash.json`, Windows, 59
+ * threads) is the contrasting case, and it is a useful reminder that the
+ * "obvious" fields are not reliable: its `crashing_thread.thread_name` is
+ * `null` and its crashing thread has exactly **one** frame.
  */
 
 /** Hex address string, e.g. `"0x00007f7b2e35c7e2"`. */

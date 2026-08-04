@@ -276,21 +276,67 @@ async function main(): Promise<void> {
     say();
 
     // Per-harness run totals, so UNKNOWN's absence has a denominator.
+    //
+    // Counted **per family**, never summed across families. `issues`,
+    // `issues-with-taskids` and the 64 bucket files are three encodings of the
+    // same 21 days and report identical per-status totals, so adding them
+    // multiplies the population by the number of ways it was encoded — which
+    // an earlier version of this report did, inflating the figure ~4×.
     say(`### Runs by status, for scale`);
     say();
-    for (const harness of ['xpcshell', 'mochitest']) {
-        const bag = merged.get(`statusRuns/${harness}`);
+    say(
+        `Counted separately per file family. The aggregates re-encode the same ` +
+            `21 days, so these columns must not be added together.`
+    );
+    say();
+    const runsByFamily = new Map<string, Map<string, number>>();
+    for (const r of results) {
+        const bag = r.observations?.[`statusRuns/${r.harness}`];
         if (!bag) {
             continue;
         }
-        const total = [...bag.values()].reduce((a, b) => a + b, 0);
-        say(`**${harness}** — ${total.toLocaleString('en-US')} runs across everything swept:`);
-        say();
-        say(`| status | runs |`);
-        say(`| --- | --- |`);
-        for (const [status, count] of [...bag].sort((a, b) => b[1] - a[1])) {
-            say(`| \`${status}\` | ${count.toLocaleString('en-US')} |`);
+        const key = `${r.harness}/${r.family}`;
+        let target = runsByFamily.get(key);
+        if (!target) {
+            target = new Map();
+            runsByFamily.set(key, target);
         }
+        for (const [status, count] of Object.entries(bag)) {
+            target.set(status, (target.get(status) ?? 0) + count);
+        }
+    }
+    for (const harness of ['xpcshell', 'mochitest']) {
+        const families = [...runsByFamily.keys()]
+            .filter((k) => k.startsWith(`${harness}/`))
+            .sort();
+        if (families.length === 0) {
+            continue;
+        }
+        const statuses = new Set<string>();
+        for (const family of families) {
+            for (const status of runsByFamily.get(family)!.keys()) {
+                statuses.add(status);
+            }
+        }
+        say(`**${harness}**`);
+        say();
+        say(`| status | ${families.map((f) => f.split('/')[1]).join(' | ')} |`);
+        say(`| --- | ${families.map(() => '---').join(' | ')} |`);
+        const sorted = [...statuses].sort(
+            (a, b) =>
+                (runsByFamily.get(families[0]!)!.get(b) ?? 0) -
+                (runsByFamily.get(families[0]!)!.get(a) ?? 0)
+        );
+        for (const status of sorted) {
+            const cells = families.map((f) =>
+                (runsByFamily.get(f)!.get(status) ?? 0).toLocaleString('en-US')
+            );
+            say(`| \`${status}\` | ${cells.join(' | ')} |`);
+        }
+        const totals = families.map((f) =>
+            [...runsByFamily.get(f)!.values()].reduce((a, b) => a + b, 0)
+        );
+        say(`| **total** | ${totals.map((t) => t.toLocaleString('en-US')).join(' | ')} |`);
         say();
     }
 

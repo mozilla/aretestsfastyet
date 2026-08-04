@@ -12,8 +12,7 @@
         "node": ">=20"
     },
     "scripts": {
-        "build": "esbuild cli/bin/fx-tests.ts --bundle --platform=node --format=esm --target=node20 --outfile=bin/fx-tests.js --sourcemap --banner:js='#!/usr/bin/env node'",
-        "dev": "npm run build -- --watch",
+        "build": "echo 'No CLI to build yet: cli/bin/fx-tests.ts arrives in step 4 of docs/PLAN.md. Use npm run typecheck and npm test.' >&2 && exit 1",
         "typecheck": "tsc --noEmit",
         "fixtures": "node --experimental-strip-types tools/make-fixtures.ts",
         "test": "node --experimental-strip-types --test 'test/**/*.test.ts'"

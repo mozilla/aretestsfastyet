@@ -32,7 +32,7 @@
  * first element is an absolute index and later ones are increments.
  */
 
-import type { TableIndex } from './common.ts';
+import type { TableIndex, TaskInfo, TestInfo } from './common.ts';
 
 export interface ErrorsMetadata {
     date: string;
@@ -73,25 +73,32 @@ export interface ErrorsTables {
  */
 export interface ErrorsMessages {
     markerNameIds: TableIndex[];
-    textIds: TableIndex[];
+    /**
+     * `null` when the message has no text at all — an empty log line. Rare
+     * (124 mochitest, 1 xpcshell over the sweep) but real, so anything
+     * grouping by text has to cope with it.
+     */
+    textIds: (TableIndex | null)[];
     /** `null` when the message carries no source file. */
     fileIds: (TableIndex | null)[];
-    /** `null` when the message carries no line number. */
+    /**
+     * `null` when the message carries no line number. Not the same set as a
+     * null `fileIds`: a message can have a line and no file. See `FORMATS.md`.
+     */
     lines: (number | null)[];
-    componentIds: TableIndex[];
+    /** `null` when the message has no Bugzilla component. */
+    componentIds: (TableIndex | null)[];
 }
 
-export interface ErrorsTaskInfo {
-    repositoryIds: TableIndex[];
-    jobNameIds: TableIndex[];
-    commitIds: TableIndex[];
-}
+/**
+ * `taskInfo` here is the shared shape minus `chunks`, which the errors files
+ * never carry — `TaskInfo.chunks` is optional, so the shared type describes
+ * this correctly and there is no reason for a parallel declaration.
+ */
+export type ErrorsTaskInfo = TaskInfo;
 
-export interface ErrorsTestInfo {
-    testPathIds: TableIndex[];
-    testNameIds: TableIndex[];
-    componentIds: TableIndex[];
-}
+/** Identical to the shared `testInfo`, nullable `componentIds` included. */
+export type ErrorsTestInfo = TestInfo;
 
 /**
  * The (test, message) groups. All four arrays have the same length; within a

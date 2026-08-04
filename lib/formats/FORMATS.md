@@ -85,8 +85,8 @@ date inside the 21-day window can still legitimately have no errors data. The
 storing the bare ID with `.0` omitted and non-zero retries suffixed. The
 omission of `.0` is confirmed — **no** entry ends in `.0` in any of the 42
 resource files swept. Non-zero retries do carry a suffix, but they are rare:
-between 0.5% and 5% of entries per file (for example 42 of 1,434 on
-xpcshell 2026-07-30).
+**0.50% to 5.60%** of entries per file across the 42 swept, the maximum being
+61 of 1,089 on xpcshell 2026-07-14.
 
 The consequence for joining stands and is worth restating: the timing files
 store `"<taskId>.<retryId>"` **always**, including `.0`, so a join against a
@@ -113,13 +113,35 @@ Occurrence counts are over the whole sweep, so the bucket rows aggregate all
 | `statusGroup.minidumps[]` | `null` | 58 (mochitest) | A crash whose minidump was not uploaded — `fx-tests crash` has nothing to fetch. Always the same 58 entries as the null signatures. |
 | `tables.crashSignatures` | **empty** | 20 of 64 mochitest buckets | The whole table, not an entry: a third of mochitest buckets saw no crash at all. An empty table is not an error. |
 
-Two shape facts that are absences rather than nulls, and that a decoder will
-trip over:
+#### `messageIds` presence follows the status, not the shape
 
-- **`TIMEOUT` groups carry no `messageIds` field at all** — absent from the
-  group, not null within it. Reading `messageIds` unconditionally yields
-  `undefined` for every timeout, not a list of nulls.
-- `crashSignatureIds` and `minidumps` appear **only** on `CRASH` groups.
+The single most important thing on this page for Step 1, because it breaks the
+assumption that the shape discriminant tells you which fields exist. Within the
+*same* `task-ids` shape, whether a group has `messageIds` depends on its
+status — and it is all-or-nothing per status, never mixed:
+
+| status | shape | `messageIds` |
+| --- | --- | --- |
+| `FAIL`, `FAIL-PARALLEL`, `FAIL-SEQUENTIAL` | task-ids | **always** |
+| `SKIP` | task-ids / skip-counts | **always** |
+| `TIMEOUT`, `TIMEOUT-PARALLEL`, `TIMEOUT-SEQUENTIAL` | task-ids | **never** |
+| `CRASH` | task-ids | **never** — carries `crashSignatureIds` instead |
+| `EXPECTED-FAIL` | task-ids | **never** |
+| `PASS`, `PASS-PARALLEL`, `PASS-SEQUENTIAL` | durations / counts | **never** |
+
+In `xpcshell-issues-with-taskids.json`: all 3,689 `FAIL-PARALLEL` groups carry
+`messageIds`; all 767 `TIMEOUT-PARALLEL` groups, in the identical shape, do
+not. Same in every bucket file and for mochitest.
+
+So the unified iterator in `formats/status-group.ts` must branch on the
+**status string** as well as on the shape. Reading `messageIds` off a
+`task-ids` group because its shape allows it yields `undefined` for every
+timeout and crash, which then reads as "failed with no message" rather than
+"this status does not record messages" — a distinction `fx-tests test`'s
+failure-message list depends on.
+
+`crashSignatureIds` and `minidumps` are the mirror image: they appear **only**
+on `CRASH` groups, in every family.
 
 ### `{harness}-{date}-errors.json`
 
@@ -238,14 +260,47 @@ not zero-count-but-declared, simply not emitted.
 | Files carrying a `tables.statuses` | 174 |
 | …in which `UNKNOWN` appears | **0** |
 | Runs recorded as `UNKNOWN` | **0** |
-| Runs of any status, for scale | 854,914,907 |
+| Distinct runs of any status, for scale | **212,361,640** |
 
-Per harness, across everything swept:
+Per harness, over the 21-day window:
 
 | harness | runs | distinct statuses |
 | --- | --- | --- |
-| xpcshell | 167,048,147 | 12 |
-| mochitest | 687,866,760 | 6 |
+| xpcshell | 40,804,055 | 12 |
+| mochitest | 171,557,585 | 6 |
+
+**These are runs, not file-rows.** `issues.json`, `issues-with-taskids.json`
+and the 64 bucket files are three encodings of the *same* 21 days and report
+byte-identical per-status totals, so adding them up multiplies the population
+by the number of ways it was encoded. The figures above are the aggregate
+counted once. (An earlier revision of this document quoted 854,914,907 by
+summing all four families; that number was a counting artefact, not a
+measurement, and is wrong by about 4×.)
+
+### The daily files and the aggregates disagree, and only on `SKIP`
+
+Counting the same 21 days from the daily files instead gives a slightly larger
+number:
+
+| harness | from the aggregates | from the daily files | difference |
+| --- | --- | --- | --- |
+| xpcshell | 40,804,055 | 44,635,982 | +3,831,927 (+9.4%) |
+| mochitest | 171,557,585 | 173,194,005 | +1,636,420 (+1.0%) |
+
+**Every status except `SKIP` matches exactly.** The whole difference is skips:
+xpcshell 2,166,688 in the aggregates against 5,998,615 in the daily files.
+
+This is a real difference in the data, not a counting artefact of the kind
+above — checked per test on a single day, the daily file records more skips
+than the aggregate does for the same test on the same date (for one test, 702
+against 113). So the two sources genuinely do not agree about how many times a
+test was skipped, and any command that reports a skip count will produce a
+different number depending on which file it read.
+
+Step 1 should not paper over this: `query/` needs to say which source a skip
+count came from, and the `skips`-related commands in `CLI.md` are specified
+against `-issues.json`, which is the lower of the two. Worth understanding
+before `fx-tests skips` quotes a number.
 
 This is what `PLAN.md` §2 gates the deletion on, so to be explicit about what
 it does and does not license: **the generator did not emit `UNKNOWN` on any of
@@ -346,10 +401,45 @@ node --experimental-strip-types tools/validate/report.ts \
     artifacts/sweep-results.jsonl  # writes this document's numbers
 ```
 
+`--all` includes the daily and errors families and a sample of
+minidump-stackwalk artifacts (`STACKWALK_SAMPLE`, default 8), discovered from
+`CRASH` groups the same way `crashes.html` finds them.
+
+**It will not reproduce these numbers exactly, and cannot.** The index
+publishes a rolling 21-day window, so a sweep run tomorrow covers a different
+21 days: counts move, the errors window slides, and dumps referenced by an
+older run expire. What should reproduce is the *shape* of the result — clean
+validation, the same status and marker-kind sets, no `UNKNOWN`. Treat a
+difference in those as a finding; treat a difference in the totals as the
+calendar.
+
+### Validating a single file
+
+```sh
+npx esbuild tools/validate/main.ts --bundle --platform=node \
+    --format=esm --target=node20 --outfile=artifacts/validate.mjs
+node artifacts/validate.mjs bucket xpcshell 00
+node artifacts/validate.mjs errors mochitest 2026-08-03
+node artifacts/validate.mjs stackwalk stackwalk --url <artifact-url>
+node artifacts/validate.mjs daily xpcshell 2026-08-03 --file ./local-copy.json
+```
+
+Exit 0 clean, 1 with validation errors, 3 if the file could not be fetched.
+
 ## The fixtures
 
 `test/fixtures/` holds truncated real files, regenerated by `npm run fixtures`
 and re-validated by `npm test` with the same checkers the sweep used.
+
+**Regeneration is not idempotent, by construction.** `npm run fixtures` picks
+the most recent weekday from a rolling window, so re-running it on a different
+day produces different files: the date in the filenames moves, the checked-in
+`stats.json` files grow by a row a day, and the counts change. The stackwalk
+fixtures are worse — they are discovered from whichever crashes are in the
+current window, and Taskcluster expires the artifacts, so an old dump cannot
+be re-fetched at all. Regenerate deliberately (when the generator's format
+changes), not routinely, and expect the diff to touch every file. Pass
+`--date YYYY-MM-DD` to pin the day while it is still in the window.
 
 They are cut **from a weekday** and, crucially, **not from a prefix of the
 file**. Keeping the first N tests is circular — the first `FAIL` group in

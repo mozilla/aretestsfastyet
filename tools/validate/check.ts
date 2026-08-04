@@ -8,16 +8,32 @@
  * Three kinds of output, and the distinction matters:
  *
  *  - **errors** — the declared type is wrong about this file. A field is
- *    missing, holds the wrong type, or an index points outside its table.
- *  - **notes** — the file is fine but the declaration is imprecise: a field
- *    declared non-null was observed null, or an optional field was absent.
- *    This is the `nullable/absent` census step 0 has to produce.
+ *    missing where the declaration requires it, holds the wrong type, is
+ *    `null` where the declaration says it cannot be, or indexes outside its
+ *    table.
+ *  - **notes** — the census. A field the declaration *permits* to be `null` or
+ *    absent was observed so, with a count. This is the `nullable/absent` list
+ *    step 0 has to produce.
  *  - **observations** — free-form facts collected for the report (every status
  *    string seen, every marker kind, the `UNKNOWN` census).
  *
- * A `null` where a number was assumed is a *note*, not an error, because the
- * whole point of the sweep is to find those; the declaration is then corrected
- * to match. An index out of range is always an error.
+ * ### Presence is an argument, not an inference
+ *
+ * Every primitive takes a `Presence`: `'required'`, `'nullable'`, `'optional'`
+ * or `'optional-nullable'`. An unexpected `null` or absence is an **error**; an
+ * expected one is a **note**, counted for the census.
+ *
+ * This started out the other way round — every `null` and every absence was a
+ * note, never an error — which was the right default while the shapes were
+ * still being discovered, and wrong once they were known. It made the
+ * validator unable to fail: deleting the whole top-level `markers` object from
+ * an errors file still validated clean, because the absence was merely noted.
+ * Three fields in `formats/errors.ts` were left declared non-nullable against
+ * a census that recorded thousands of nulls in them, and nothing complained.
+ *
+ * So the expectations are now written down at each call site and enforced. The
+ * census still comes out, because a permitted null is still counted — what
+ * changed is that an *un*permitted one now fails.
  */
 
 export interface Note {
@@ -25,6 +41,16 @@ export interface Note {
     path: string;
     kind: 'null' | 'absent' | 'empty';
 }
+
+/**
+ * What the declaration says about a field being missing or `null`.
+ *
+ * - `required` — must be present and non-null. Anything else is an error.
+ * - `nullable` — must be present; `null` is permitted and counted.
+ * - `optional` — may be absent; if present it must be non-null.
+ * - `optional-nullable` — may be absent or `null`.
+ */
+export type Presence = 'required' | 'nullable' | 'optional' | 'optional-nullable';
 
 /**
  * The `noteCounts` key for a field and kind.
@@ -110,25 +136,54 @@ export class Checker {
         bag.set(value, (bag.get(value) ?? 0) + count);
     }
 
+    // --- presence ----------------------------------------------------------
+
+    /**
+     * Decides whether a value is worth type-checking, and records the verdict.
+     *
+     * Returns `true` when the caller should go on to check the type, `false`
+     * when the value was `null`/`undefined` — noted if `presence` permits it,
+     * errored if it does not.
+     *
+     * Every primitive below funnels through here, so there is exactly one
+     * place that decides what an unexpected absence means.
+     */
+    #present(value: unknown, presence: Presence, segment: string): boolean {
+        if (value === undefined) {
+            if (presence === 'optional' || presence === 'optional-nullable') {
+                this.note('absent', segment);
+            } else {
+                this.error('required field is absent', segment);
+            }
+            return false;
+        }
+        if (value === null) {
+            if (presence === 'nullable' || presence === 'optional-nullable') {
+                this.note('null', segment);
+            } else {
+                this.error('field is null but the declaration says it cannot be', segment);
+            }
+            return false;
+        }
+        return true;
+    }
+
     // --- scalar checks -----------------------------------------------------
 
-    /** Asserts a finite number. Returns false if it was not one. */
-    number(value: unknown, segment = ''): value is number {
+    /** Asserts a finite number. Returns false if it was absent or not one. */
+    number(value: unknown, segment = '', presence: Presence = 'required'): value is number {
+        if (!this.#present(value, presence, segment)) {
+            return false;
+        }
         if (typeof value === 'number' && Number.isFinite(value)) {
             return true;
         }
-        if (value === undefined) {
-            this.note('absent', segment);
-        } else if (value === null) {
-            this.note('null', segment);
-        } else {
-            this.error(`expected a number, got ${describe(value)}`, segment);
-        }
+        this.error(`expected a number, got ${describe(value)}`, segment);
         return false;
     }
 
-    integer(value: unknown, segment = ''): value is number {
-        if (!this.number(value, segment)) {
+    integer(value: unknown, segment = '', presence: Presence = 'required'): value is number {
+        if (!this.number(value, segment, presence)) {
             return false;
         }
         if (!Number.isInteger(value)) {
@@ -138,37 +193,31 @@ export class Checker {
         return true;
     }
 
-    string(value: unknown, segment = ''): value is string {
+    string(value: unknown, segment = '', presence: Presence = 'required'): value is string {
+        if (!this.#present(value, presence, segment)) {
+            return false;
+        }
         if (typeof value === 'string') {
             return true;
         }
-        if (value === undefined) {
-            this.note('absent', segment);
-        } else if (value === null) {
-            this.note('null', segment);
-        } else {
-            this.error(`expected a string, got ${describe(value)}`, segment);
-        }
+        this.error(`expected a string, got ${describe(value)}`, segment);
         return false;
     }
 
-    boolean(value: unknown, segment = ''): value is boolean {
+    boolean(value: unknown, segment = '', presence: Presence = 'required'): value is boolean {
+        if (!this.#present(value, presence, segment)) {
+            return false;
+        }
         if (typeof value === 'boolean') {
             return true;
         }
-        if (value === undefined) {
-            this.note('absent', segment);
-        } else if (value === null) {
-            this.note('null', segment);
-        } else {
-            this.error(`expected a boolean, got ${describe(value)}`, segment);
-        }
+        this.error(`expected a boolean, got ${describe(value)}`, segment);
         return false;
     }
 
     /** A `YYYY-MM-DD` date string. */
-    date(value: unknown, segment = ''): value is string {
-        if (!this.string(value, segment)) {
+    date(value: unknown, segment = '', presence: Presence = 'required'): value is string {
+        if (!this.string(value, segment, presence)) {
             return false;
         }
         if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -179,8 +228,8 @@ export class Checker {
     }
 
     /** An ISO timestamp, as `metadata.generatedAt` carries. */
-    timestamp(value: unknown, segment = ''): value is string {
-        if (!this.string(value, segment)) {
+    timestamp(value: unknown, segment = '', presence: Presence = 'required'): value is string {
+        if (!this.string(value, segment, presence)) {
             return false;
         }
         if (Number.isNaN(Date.parse(value))) {
@@ -190,34 +239,37 @@ export class Checker {
         return true;
     }
 
-    object(value: unknown, segment = ''): value is Record<string, unknown> {
-        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    object(
+        value: unknown,
+        segment = '',
+        presence: Presence = 'required'
+    ): value is Record<string, unknown> {
+        if (!this.#present(value, presence, segment)) {
+            return false;
+        }
+        if (typeof value === 'object' && !Array.isArray(value)) {
             return true;
         }
-        if (value === undefined) {
-            this.note('absent', segment);
-        } else if (value === null) {
-            this.note('null', segment);
-        } else {
-            this.error(`expected an object, got ${describe(value)}`, segment);
-        }
+        this.error(`expected an object, got ${describe(value)}`, segment);
         return false;
     }
 
-    array(value: unknown, segment = ''): value is unknown[] {
+    /**
+     * An array. An empty one is noted, not errored — several tables are
+     * legitimately empty (`tables.crashSignatures` in a bucket that saw no
+     * crash), and the census is where that belongs.
+     */
+    array(value: unknown, segment = '', presence: Presence = 'required'): value is unknown[] {
+        if (!this.#present(value, presence, segment)) {
+            return false;
+        }
         if (Array.isArray(value)) {
             if (value.length === 0) {
                 this.note('empty', segment);
             }
             return true;
         }
-        if (value === undefined) {
-            this.note('absent', segment);
-        } else if (value === null) {
-            this.note('null', segment);
-        } else {
-            this.error(`expected an array, got ${describe(value)}`, segment);
-        }
+        this.error(`expected an array, got ${describe(value)}`, segment);
         return false;
     }
 
@@ -237,9 +289,13 @@ export class Checker {
         return true;
     }
 
-    /** A string table: an array of strings. Returns its length. */
-    stringTable(value: unknown, segment = ''): string[] {
-        if (!this.array(value, segment)) {
+    /**
+     * A string table: an array of strings, required and non-nullable in every
+     * file family. Returns the strings, so callers can both length-check
+     * indices against it and read the values.
+     */
+    stringTable(value: unknown, segment = '', presence: Presence = 'required'): string[] {
+        if (!this.array(value, segment, presence)) {
             return [];
         }
         const out: string[] = [];
@@ -254,37 +310,50 @@ export class Checker {
         return out;
     }
 
-    /** An array of integers, each a valid index into a table of `limit`. */
-    indexArray(value: unknown, limit: number, table: string, segment = ''): void {
-        if (!this.array(value, segment)) {
+    /**
+     * An array of table indices.
+     *
+     * `elements` says whether an individual entry may be `null` — which is a
+     * different question from whether the array itself may be absent, hence
+     * the two parameters. Getting these the wrong way round is how
+     * `messages.componentIds` stayed declared non-nullable against a census
+     * recording 5,207 nulls in it.
+     */
+    indexArray(
+        value: unknown,
+        limit: number,
+        table: string,
+        segment = '',
+        elements: Presence = 'required',
+        presence: Presence = 'required'
+    ): void {
+        if (!this.array(value, segment, presence)) {
             return;
         }
         for (const entry of value) {
-            this.index(entry, limit, table, `${segment}[]`);
-        }
-    }
-
-    /** An array of integers, each an index or `null`. */
-    nullableIndexArray(value: unknown, limit: number, table: string, segment = ''): void {
-        if (!this.array(value, segment)) {
-            return;
-        }
-        for (const entry of value) {
-            if (entry === null) {
-                this.note('null', `${segment}[]`);
+            if (entry === null || entry === undefined) {
+                this.#present(entry, elements, `${segment}[]`);
                 continue;
             }
             this.index(entry, limit, table, `${segment}[]`);
         }
     }
 
-    numberArray(value: unknown, segment = '', { nonNegative = false } = {}): void {
-        if (!this.array(value, segment)) {
+    numberArray(
+        value: unknown,
+        segment = '',
+        {
+            nonNegative = false,
+            elements = 'required' as Presence,
+            presence = 'required' as Presence,
+        } = {}
+    ): void {
+        if (!this.array(value, segment, presence)) {
             return;
         }
         for (const entry of value) {
-            if (entry === null) {
-                this.note('null', `${segment}[]`);
+            if (entry === null || entry === undefined) {
+                this.#present(entry, elements, `${segment}[]`);
                 continue;
             }
             if (!this.number(entry, `${segment}[]`)) {

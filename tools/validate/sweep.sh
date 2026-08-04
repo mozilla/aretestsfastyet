@@ -86,4 +86,53 @@ for harness in xpcshell mochitest; do
     done
 done
 
+# Minidump-stackwalk artifacts.
+#
+# Unlike everything above these are per-task, so there is no "every published
+# file" to sweep — the set is effectively unbounded and the artifacts expire.
+# What the sweep can do is take a sample, discovered the same way the
+# dashboards discover them: CRASH status groups carry `minidumps` parallel to
+# `taskIdIds`, and the dump lives under that task's `test_info/`.
+STACKWALK_SAMPLE="${STACKWALK_SAMPLE:-8}"
+echo "sampling $STACKWALK_SAMPLE minidump-stackwalk artifacts" >&2
+"$NODE" - "$STACKWALK_SAMPLE" <<'FINDCRASHES' > artifacts/sweep/stackwalk-urls.txt
+const limit = Number(process.argv[2] ?? 8);
+const INDEX = 'https://firefox-ci-tc.services.mozilla.com/api/index/v1/task';
+const QUEUE = 'https://firefox-ci-tc.services.mozilla.com/api/queue/v1/task';
+const seen = new Set();
+// Walk buckets until enough distinct dumps are found. Crashes cluster, so a
+// couple of buckets is usually plenty.
+for (let n = 0; n < 64 && seen.size < limit; n++) {
+    const name = `xpcshell-${n.toString(16).padStart(2, '0')}.json`;
+    const url = `${INDEX}/gecko.v2.mozilla-central.latest.source.test-info-xpcshell-timings/artifacts/public/${name}`;
+    const response = await fetch(url);
+    if (!response.ok) continue;
+    const data = await response.json();
+    const statusId = data.tables.statuses.indexOf('CRASH');
+    if (statusId < 0) continue;
+    for (const perTest of data.testRuns) {
+        const group = perTest?.[statusId];
+        if (!group?.minidumps) continue;
+        for (let i = 0; i < group.minidumps.length && seen.size < limit; i++) {
+            const dumps = Array.isArray(group.minidumps[i]) ? group.minidumps[i] : [group.minidumps[i]];
+            const tasks = Array.isArray(group.taskIdIds[i]) ? group.taskIdIds[i] : [group.taskIdIds[i]];
+            for (let j = 0; j < dumps.length && seen.size < limit; j++) {
+                if (!dumps[j]) continue;
+                const suffixed = data.tables.taskIds[tasks[j] ?? tasks[0]];
+                if (!suffixed) continue;
+                const [taskId, retryId = '0'] = suffixed.split('.');
+                seen.add(`${QUEUE}/${taskId}/runs/${retryId}/artifacts/public/test_info/${dumps[j]}.json`);
+            }
+        }
+        if (seen.size >= limit) break;
+    }
+}
+console.log([...seen].join('\n'));
+FINDCRASHES
+
+while read -r url; do
+    [ -z "$url" ] && continue
+    check stackwalk stackwalk --url "$url"
+done < artifacts/sweep/stackwalk-urls.txt
+
 echo "results in $OUT" >&2

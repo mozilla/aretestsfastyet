@@ -154,12 +154,11 @@ function checkTestInfo(
         c.noExtraKeys(value, ['testPathIds', 'testNameIds', 'componentIds']);
         c.indexArray(value['testPathIds'], tables.testPaths, 'tables.testPaths', '.testPathIds');
         c.indexArray(value['testNameIds'], tables.testNames, 'tables.testNames', '.testNameIds');
-        c.nullableIndexArray(
+        c.indexArray(
             value['componentIds'],
             tables.components,
             'tables.components',
-            '.componentIds'
-        );
+            '.componentIds', 'nullable');
         return (
             c.parallel({
                 testPathIds: value['testPathIds'],
@@ -328,21 +327,45 @@ function checkStatusGroup(
         }
     }
 
-    if (group['messageIds'] !== undefined) {
-        c.nullableIndexArray(
+    // `messageIds` presence is decided by the status, not the shape: FAIL* and
+    // SKIP always carry it, TIMEOUT*/CRASH/EXPECTED-FAIL/PASS* never do, and
+    // no status is mixed. Asserting that here is what would catch the
+    // generator starting to attach messages to timeouts — which would
+    // otherwise look like an ordinary optional field appearing.
+    const expectsMessages = /^(FAIL|SKIP)(-|$)/.test(status);
+    if (group['messageIds'] === undefined) {
+        if (expectsMessages) {
+            c.error(`${status} group has no messageIds, which this status always carries`);
+        }
+    } else {
+        if (!expectsMessages) {
+            c.error(`${status} group carries messageIds, which this status never does`);
+        }
+        c.indexArray(
             group['messageIds'],
             tables.messages,
             'tables.messages',
-            '.messageIds'
+            '.messageIds',
+            'nullable'
         );
     }
+    // The mirror image: crashSignatureIds and minidumps are CRASH-only.
     if (group['crashSignatureIds'] !== undefined) {
-        c.nullableIndexArray(
+        if (status !== 'CRASH') {
+            c.error(`${status} group carries crashSignatureIds, which only CRASH does`);
+        }
+        c.indexArray(
             group['crashSignatureIds'],
             tables.crashSignatures,
             'tables.crashSignatures',
-            '.crashSignatureIds'
+            '.crashSignatureIds',
+            'nullable'
         );
+    } else if (status === 'CRASH') {
+        c.error('CRASH group has no crashSignatureIds');
+    }
+    if (group['minidumps'] !== undefined && status !== 'CRASH') {
+        c.error(`${status} group carries minidumps, which only CRASH does`);
     }
     if (group['minidumps'] !== undefined) {
         if (c.array(group['minidumps'], '.minidumps')) {
@@ -815,28 +838,29 @@ export function checkErrors(c: Checker, data: unknown, ctx: FileContext): void {
                 'tables.markerNames',
                 '.markerNameIds'
             );
+            // textIds, fileIds, lines and componentIds are all nullable — the
+            // census recorded nulls in every one of them, including 124
+            // textIds on mochitest.
             c.indexArray(
                 messages['textIds'],
                 len(tables, 'messageTexts'),
                 'tables.messageTexts',
-                '.textIds'
+                '.textIds',
+                'nullable'
             );
-            c.nullableIndexArray(messages['fileIds'], len(tables, 'files'), 'tables.files', '.fileIds');
-            if (c.array(messages['lines'], '.lines')) {
-                for (const line of messages['lines'] as unknown[]) {
-                    if (line === null) {
-                        c.note('null', '.lines[]');
-                        continue;
-                    }
-                    c.integer(line, '.lines[]');
-                }
-            }
-            c.nullableIndexArray(
+            c.indexArray(
+                messages['fileIds'],
+                len(tables, 'files'),
+                'tables.files',
+                '.fileIds',
+                'nullable'
+            );
+            c.numberArray(messages['lines'], '.lines', { elements: 'nullable' });
+            c.indexArray(
                 messages['componentIds'],
                 len(tables, 'components'),
                 'tables.components',
-                '.componentIds'
-            );
+                '.componentIds', 'nullable');
             messageCount =
                 c.parallel({
                     markerNameIds: messages['markerNameIds'],

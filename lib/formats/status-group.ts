@@ -26,6 +26,32 @@
  *   file does not have task IDs for passing runs, despite its name.
  * - `minidumps` is a flat `string` per entry in the daily files, and a
  *   `string[]` per entry everywhere else — the same axis as `taskIdIds`.
+ *
+ * ## `messageIds` presence follows the *status*, not the shape
+ *
+ * This is the one that will bite a unified iterator, because it breaks the
+ * assumption the shape discriminant is sufficient. Within the single
+ * `task-ids` shape, whether `messageIds` exists depends on which status the
+ * group belongs to, and it is all-or-nothing per status — never mixed:
+ *
+ * | status | shape | `messageIds` |
+ * | --- | --- | --- |
+ * | `FAIL`, `FAIL-PARALLEL`, `FAIL-SEQUENTIAL` | task-ids | **always** |
+ * | `SKIP` | task-ids (issues-with-taskids) / skip-counts (buckets) | **always** |
+ * | `TIMEOUT`, `TIMEOUT-PARALLEL`, `TIMEOUT-SEQUENTIAL` | task-ids | **never** |
+ * | `CRASH` | task-ids | **never** — it carries `crashSignatureIds` instead |
+ * | `EXPECTED-FAIL` | task-ids | **never** |
+ * | `PASS*` | durations / counts | **never** |
+ *
+ * Measured over every bucket and both issues files: e.g. in
+ * `xpcshell-issues-with-taskids.json`, all 3,689 `FAIL-PARALLEL` groups have
+ * `messageIds` and all 767 `TIMEOUT-PARALLEL` groups — same shape — do not.
+ *
+ * So `formats/status-group.ts`'s iterator must branch on the **status string**
+ * as well as the shape. Reading `messageIds` off a `task-ids` group because
+ * the shape says it might be there yields `undefined` for every timeout and
+ * every crash, which then reads as "failed with no message" rather than "this
+ * status does not record messages".
  */
 
 import type { DeltaDays, TableIndex } from './common.ts';
