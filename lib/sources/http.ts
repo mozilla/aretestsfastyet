@@ -216,10 +216,7 @@ export function taskArtifactSource(options: {
     return {
         name: 'task-artifacts',
         async fetch(name: DataFileName): Promise<Uint8Array> {
-            // `/task/<id>/runs/<n>/artifacts/<path>`: the run comes *before*
-            // `artifacts`, not after. `name.filename` already carries the
-            // `runs/<n>/artifacts/` prefix from `taskArtifactName()`.
-            const url = `${root}/api/queue/v1/task/${name.index}/${name.filename}`;
+            const url = taskArtifactUrl(name, root);
             let response: FetchLikeResponse;
             try {
                 response = await options.fetch(url);
@@ -235,6 +232,22 @@ export function taskArtifactSource(options: {
             return new Uint8Array(await response.arrayBuffer());
         },
     };
+}
+
+/**
+ * The queue URL `taskArtifactSource` fetches a name from.
+ *
+ * `/task/<id>/runs/<n>/artifacts/<path>`: the run comes *before* `artifacts`,
+ * not after. `name.filename` already carries the `runs/<n>/artifacts/` prefix
+ * from `taskArtifactName()`.
+ *
+ * Extracted so the disk cache can key an entry on the same URL the source
+ * would have fetched, without the source having to report it. Two callers
+ * building the string separately is exactly how a cache ends up keyed on
+ * something the fetch does not use.
+ */
+export function taskArtifactUrl(name: DataFileName, root: string = FIREFOX_CI_ROOT): string {
+    return `${root}/api/queue/v1/task/${name.index}/${name.filename}`;
 }
 
 /**
