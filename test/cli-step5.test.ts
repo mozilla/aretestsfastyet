@@ -1140,6 +1140,88 @@ test('skips totals match the fixture', async () => {
     assert.equal(result['runIfIsUpstreamFiltered'], true);
 });
 
+/**
+ * `skips --group-by` used to be accepted, validated, echoed into the JSON and
+ * then ignored — `--group-by component` printed the per-test table, byte for
+ * byte. An option that changes nothing is worse than a rejected one, because
+ * the reader believes the answer is about components.
+ *
+ * Goldens summed from the fixture's raw arrays without going through the
+ * decoder, as `artifacts/goldens.mjs` does for the rest of this file:
+ * WebExtensions :: General has 10,713 skipped runs over 4 of its 7 tests, Core
+ * :: Networking 7,074 over 1 of 2. They add up to the 17,787 total the flat
+ * view asserts above, which is the cross-check that they are the same data.
+ */
+test('skips --group-by component aggregates rather than printing the per-test table', async () => {
+    const { stdout } = await invoke(['skips', '--json', '--limit', '0', '--group-by', 'component']);
+    const result = json(stdout);
+    const rows = result['rows'] as {
+        key: string;
+        skipCount: number;
+        testCount: number;
+        totalTestCount: number;
+        messages: { message: string; count: number }[];
+    }[];
+    assert.deepEqual(
+        rows.map((row) => [row.key, row.skipCount, row.testCount, row.totalTestCount]),
+        [
+            ['WebExtensions :: General', 10_713, 4, 7],
+            ['Core :: Networking', 7_074, 1, 2],
+        ]
+    );
+    // The group's skips must be the same population the flat view reports, or
+    // the two views are answering about different trees.
+    assert.equal(
+        rows.reduce((sum, row) => sum + row.skipCount, 0),
+        17_787
+    );
+    // `N/M` is only worth a column if M is the whole group, clean tests
+    // included — `findSkips` returns neither, so the denominator has to come
+    // from the file. 4 of 7 and 1 of 2 are both strict.
+    assert.ok(rows.every((row) => row.totalTestCount > row.testCount));
+    // The conditions are the actionable part, aggregated over the group.
+    assert.equal(rows[0]!.messages[0]!.message, "os == 'android'");
+    assert.equal(rows[0]!.messages[0]!.count, 7_859);
+    for (const row of rows) {
+        for (let i = 1; i < row.messages.length; i++) {
+            assert.ok(row.messages[i - 1]!.count >= row.messages[i]!.count);
+        }
+    }
+});
+
+test('skips --group-by directory groups on the directory, not the test', async () => {
+    const { stdout } = await invoke(['skips', '--json', '--limit', '0', '--group-by', 'directory']);
+    const rows = json(stdout)['rows'] as { key: string; skipCount: number }[];
+    assert.deepEqual(
+        rows.map((row) => [row.key, row.skipCount]),
+        [
+            ['toolkit/components/extensions/test/xpcshell', 10_713],
+            ['netwerk/test/unit', 7_074],
+        ]
+    );
+});
+
+test('skips --group-by really changes the table, and keeps the run-if statement', async () => {
+    const flat = await invoke(['skips', '--limit', '5']);
+    const byComponent = await invoke(['skips', '--group-by', 'component', '--limit', '5']);
+    assert.notEqual(
+        flat.stdout,
+        byComponent.stdout,
+        '--group-by component must not print the per-test table'
+    );
+    assert.match(byComponent.stdout, /skips by component/);
+    assert.match(byComponent.stdout, /Component\s+skips ▼\s+tests\s+reason/);
+    // The per-test view keeps its reviewed shape exactly.
+    assert.match(flat.stdout, /Test\s+skips ▼\s+reason/);
+    assert.doesNotMatch(flat.stdout, /skips by component/);
+    // The population statement is the point of the command; a grouped view that
+    // dropped it would be the same "excluded 0" ambiguity in a new table.
+    for (const out of [flat.stdout, byComponent.stdout]) {
+        assert.match(out, /generator already dropped run-if skips/);
+        assert.match(out, /17,787 skipped runs across 5 tests/);
+    }
+});
+
 test('failures groups by message and reports the test spread', async () => {
     const { stdout } = await invoke(['failures', '--json', '--limit', '0']);
     const rows = json(stdout)['rows'] as {
@@ -1463,6 +1545,164 @@ test('the sort marker follows --sort rather than being hardcoded', async () => {
         await headerOf(['issues', '--group-by', 'test', '--limit', '3', '--sort', 'rate']),
         /rate ▼/,
         'the per-test view follows --sort rate'
+    );
+});
+
+/**
+ * `--sort count` orders by fail+timeout+crash+skip, which is not a column.
+ *
+ * The marker used to be put on `fail`, so a ▼ sat on a column the rows were not
+ * ordered by and which was visibly non-monotone: on the real file the first
+ * rows of `issues --group-by test --sort count` read 0, 0, 1, 0, 0 under
+ * `fail ▼`. Both renderers built their column lists separately and both did it.
+ */
+test('--sort count marks no column, since no column is what it orders by', async () => {
+    for (const argv of [
+        ['issues', '--limit', '5', '--sort', 'count'],
+        ['issues', '--group-by', 'test', '--limit', '5', '--sort', 'count'],
+        ['issues', '--group-by', 'directory', '--limit', '5', '--sort', 'count'],
+        ['issues', '--group-by', 'test', '--limit', '5', '--sort', 'count', '--type', 'crash'],
+    ]) {
+        const { stdout } = await invoke(argv);
+        assert.doesNotMatch(
+            stdout,
+            /[▼▲]/,
+            `${argv.join(' ')}: a marker here would name a column the rows are not ordered by`
+        );
+    }
+    // And the marker is still there for the sorts that do name a column, so
+    // this is not "the marker was deleted".
+    const { stdout: byIssues } = await invoke(['issues', '--limit', '3', '--sort', 'issues']);
+    assert.match(byIssues, /issues ▼/);
+});
+
+/**
+ * `--sort count` must mean one thing at both levels.
+ *
+ * The row sum included `skipCount` and the group sum did not, so the ranking
+ * quantity depended on `--group-by` with nothing saying so. Skips are in the
+ * `--type` default and the header calls them issues, so excluding them from a
+ * "count" ranking is the side that cannot be defended.
+ *
+ * Goldens summed from the fixture's raw arrays: by component, the two groups
+ * with skips total 14,222 and 7,083 non-passing runs with skips counted, and
+ * 3,509 and 9 without.
+ *
+ * The fixture's *component* order happens to be the same under both
+ * definitions, so a monotonicity check on the groups cannot see this bug — one
+ * written that way stayed green when the skip-excluding sum was put back. What
+ * discriminates is asking the two levels for the same quantity and requiring
+ * the answers to agree: the rank the grouped view gives a component must be the
+ * rank its own rows produce. Per test the two definitions do diverge, and
+ * `--type skip` below is where that shows.
+ */
+test('--sort count ranks on the same quantity for rows and for groups', async () => {
+    const nonPass = (row: {
+        failCount: number;
+        timeoutCount: number;
+        crashCount: number;
+        skipCount: number;
+    }): number => row.failCount + row.timeoutCount + row.crashCount + row.skipCount;
+
+    const grouped = await invoke(['issues', '--json', '--limit', '0', '--sort', 'count']);
+    const groups = json(grouped.stdout)['rows'] as {
+        key: string;
+        failCount: number;
+        timeoutCount: number;
+        crashCount: number;
+        skipCount: number;
+    }[];
+    assert.ok(groups.length > 1);
+    const byKey = new Map(groups.map((group) => [group.key, nonPass(group)]));
+    assert.equal(byKey.get('WebExtensions :: General'), 14_222);
+    assert.equal(byKey.get('Core :: Networking'), 7_083);
+    for (let i = 1; i < groups.length; i++) {
+        assert.ok(
+            nonPass(groups[i - 1]!) >= nonPass(groups[i]!),
+            `groups are not ordered by fail+timeout+crash+skip at ${groups[i]!.key}`
+        );
+    }
+    // Skips dominate this fixture, so a group sum that dropped them would be a
+    // different number — 3,509 rather than 14,222.
+    assert.ok(
+        groups.some((group) => group.skipCount > 0),
+        'the fixture must have grouped skips or this asserts nothing'
+    );
+
+    // The ranking the grouped view produced must be the one its own rows
+    // produce under the same definition. This is what catches a group sum that
+    // silently drops skips, since the resulting order can coincide by luck.
+    const perTestAll = await invoke(['issues', '--json', '--limit', '0', '--group-by', 'test']);
+    const rowsByComponent = new Map<string, number>();
+    for (const row of json(perTestAll.stdout)['rows'] as {
+        component: string | null;
+        failCount: number;
+        timeoutCount: number;
+        crashCount: number;
+        skipCount: number;
+    }[]) {
+        const key = row.component ?? '(no component)';
+        rowsByComponent.set(key, (rowsByComponent.get(key) ?? 0) + nonPass(row));
+    }
+    assert.deepEqual(
+        groups.map((group) => group.key),
+        [...groups]
+            .map((group) => group.key)
+            .sort(
+                (a, b) =>
+                    (rowsByComponent.get(b) ?? 0) - (rowsByComponent.get(a) ?? 0) ||
+                    a.localeCompare(b)
+            ),
+        'the grouped ranking disagrees with the one its own rows imply'
+    );
+    for (const group of groups) {
+        assert.equal(
+            rowsByComponent.get(group.key),
+            nonPass(group),
+            `${group.key}: the group total is not the sum of its rows`
+        );
+    }
+
+    const perTest = await invoke([
+        'issues', '--json', '--limit', '0', '--group-by', 'test', '--sort', 'count',
+    ]);
+    const rows = json(perTest.stdout)['rows'] as {
+        test: string;
+        failCount: number;
+        timeoutCount: number;
+        crashCount: number;
+        skipCount: number;
+    }[];
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            nonPass(rows[i - 1]!) >= nonPass(rows[i]!),
+            `rows are not ordered by fail+timeout+crash+skip at ${rows[i]!.test}`
+        );
+    }
+    assert.equal(
+        rows[0]!.test,
+        'toolkit/components/extensions/test/xpcshell/test_ext_geckoProfiler_control.js'
+    );
+    assert.equal(nonPass(rows[0]!), 7_482);
+
+    // Where the two definitions visibly disagree: restricted to tests with a
+    // skip, `test_ext_geckoProfiler_control.js` leads on 7,482 runs of which
+    // only 3 are not skips, so a skip-excluding sum ranks it last of five
+    // rather than first. The exact order is the golden.
+    const skipOnly = await invoke([
+        'issues', '--json', '--limit', '0', '--group-by', 'test', '--sort', 'count',
+        '--type', 'skip',
+    ]);
+    const skipRows = json(skipOnly.stdout)['rows'] as { test: string }[];
+    assert.deepEqual(
+        skipRows.map((row) => row.test.split('/').pop()),
+        [
+            'test_ext_geckoProfiler_control.js',
+            'test_trr_https_fallback.js',
+            'test_ext_contentscript_context.js',
+            'test_ext_background_early_shutdown.js',
+            'test_ext_alarms.js',
+        ]
     );
 });
 

@@ -4259,13 +4259,17 @@ function issueRowJson(row) {
     issueRate: row.issueRate
   };
 }
+function nonPassCount(counts) {
+  return counts.failCount + counts.timeoutCount + counts.crashCount + counts.skipCount;
+}
 function sortIssueRows(rows2, sort) {
   const sorted = [...rows2];
   if (sort === "name") {
     sorted.sort((a, b) => a.fullPath.localeCompare(b.fullPath));
   } else if (sort === "count") {
-    const nonPass = (row) => row.failCount + row.timeoutCount + row.crashCount + row.skipCount;
-    sorted.sort((a, b) => nonPass(b) - nonPass(a) || a.fullPath.localeCompare(b.fullPath));
+    sorted.sort(
+      (a, b) => nonPassCount(b) - nonPassCount(a) || a.fullPath.localeCompare(b.fullPath)
+    );
   } else if (sort === "issues") {
     sorted.sort((a, b) => b.issueCount - a.issueCount || a.fullPath.localeCompare(b.fullPath));
   }
@@ -4276,15 +4280,14 @@ function sortGroups(groups, sort) {
   if (sort === "name") {
     sorted.sort((a, b) => a.key.localeCompare(b.key));
   } else if (sort === "count") {
-    const nonPass = (g) => g.failCount + g.timeoutCount + g.crashCount;
-    sorted.sort((a, b) => nonPass(b) - nonPass(a) || a.key.localeCompare(b.key));
+    sorted.sort((a, b) => nonPassCount(b) - nonPassCount(a) || a.key.localeCompare(b.key));
   } else if (sort === "rate") {
     sorted.sort((a, b) => b.issueRate - a.issueRate || a.key.localeCompare(b.key));
   }
   return sorted;
 }
 function renderIssueRows(result) {
-  const sortColumn = { issues: "issues", rate: "rate", count: "fail", name: "Test" }[result.sort];
+  const sortColumn = { issues: "issues", rate: "rate", name: "Test" }[result.sort];
   const column = (header, rest = {}) => ({
     header,
     ...rest,
@@ -4326,7 +4329,11 @@ function renderIssueRows(result) {
 }
 function renderIssueGroups(result) {
   const keyHeader = result.groupBy === "component" ? "Component" : "Directory";
-  const sortColumn = { issues: "issues", rate: "rate", count: "fail", name: keyHeader }[result.sort];
+  const sortColumn = {
+    issues: "issues",
+    rate: "rate",
+    name: keyHeader
+  }[result.sort];
   const column = (header, rest = {}) => ({
     header,
     ...rest,
@@ -4553,6 +4560,26 @@ async function runSkips(context, args) {
     includeRunIf
   });
   const runIfIsUpstreamFiltered = query.file.family !== "daily";
+  const totalSkips = rows2.reduce((sum, row) => sum + row.skipCount, 0);
+  if (groupBy === "component" || groupBy === "directory") {
+    const groups = sortSkipGroups(
+      groupSkips(rows2, groupBy, testsPerGroup(query, groupBy)),
+      "skips"
+    );
+    const shown2 = applyLimit(groups, limit);
+    const result2 = {
+      header: query.header,
+      groupBy,
+      includeRunIf,
+      runIfIsUpstreamFiltered,
+      rowCount: groups.length,
+      totalSkips,
+      skippedTestCount: rows2.length,
+      rows: shown2.map(skipGroupJson)
+    };
+    emitResult(context, result2, () => renderSkipGroups(result2));
+    return;
+  }
   const sorted = [...rows2].sort((a, b) => b.skipCount - a.skipCount);
   const shown = applyLimit(sorted, limit);
   const result = {
@@ -4561,10 +4588,108 @@ async function runSkips(context, args) {
     includeRunIf,
     runIfIsUpstreamFiltered,
     rowCount: sorted.length,
-    totalSkips: sorted.reduce((sum, row) => sum + row.skipCount, 0),
+    totalSkips,
+    skippedTestCount: sorted.length,
     rows: shown.map(skipRowJson)
   };
   emitResult(context, result, () => renderSkips(result));
+}
+function testsPerGroup(query, by) {
+  const totals = /* @__PURE__ */ new Map();
+  for (let testId = 0; testId < query.file.testCount; testId++) {
+    const identity = query.file.testAt(testId);
+    if (query.pathPrefix !== void 0 && !identity.fullPath.startsWith(query.pathPrefix)) {
+      continue;
+    }
+    if (query.component !== void 0) {
+      const component = identity.component;
+      if (component === null || !component.toLowerCase().includes(query.component.toLowerCase())) {
+        continue;
+      }
+    }
+    const key = by === "component" ? identity.component ?? "(no component)" : identity.directory;
+    totals.set(key, (totals.get(key) ?? 0) + 1);
+  }
+  return totals;
+}
+function groupSkips(rows2, by, totals) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of rows2) {
+    const key = by === "component" ? row.component ?? "(no component)" : row.directory;
+    let group = groups.get(key);
+    if (group === void 0) {
+      group = {
+        key,
+        skipCount: 0,
+        testCount: 0,
+        totalTestCount: totals.get(key) ?? 0,
+        messages: [],
+        byMessage: /* @__PURE__ */ new Map()
+      };
+      groups.set(key, group);
+    }
+    group.skipCount += row.skipCount;
+    group.testCount += 1;
+    for (const [message, count2] of row.messages) {
+      group.byMessage.set(message, (group.byMessage.get(message) ?? 0) + count2);
+    }
+  }
+  const out = [];
+  for (const group of groups.values()) {
+    const { byMessage, ...rest } = group;
+    out.push({
+      ...rest,
+      messages: [...byMessage].map(([message, count2]) => ({ message, count: count2 })).sort((a, b) => b.count - a.count || a.message.localeCompare(b.message))
+    });
+  }
+  return out;
+}
+function sortSkipGroups(groups, sort) {
+  void sort;
+  return [...groups].sort((a, b) => b.skipCount - a.skipCount || a.key.localeCompare(b.key));
+}
+function skipGroupJson(group) {
+  return {
+    key: group.key,
+    skipCount: group.skipCount,
+    testCount: group.testCount,
+    totalTestCount: group.totalTestCount,
+    messages: group.messages
+  };
+}
+function renderSkipGroups(result) {
+  const keyHeader = result.groupBy === "component" ? "Component" : "Directory";
+  return {
+    preamble: skipsPreamble(result, `skips by ${result.groupBy}`),
+    table: {
+      columns: [
+        {
+          header: keyHeader,
+          ...result.groupBy === "directory" ? { path: true } : {}
+        },
+        // Ordered by skipped runs; the only order this view offers, so
+        // the marker is unconditional as it is on the per-test table.
+        { header: "skips", align: "right", sort: "desc" },
+        { header: "tests", align: "right" },
+        { header: "reason" }
+      ],
+      rows: result.rows.map((row) => {
+        const messages = row.messages;
+        return [
+          String(row.key),
+          count(Number(row.skipCount)),
+          `${count(Number(row.testCount))}/${count(Number(row.totalTestCount))}`,
+          truncate(oneLine2(messages[0]?.message ?? "(no reason recorded)"), 50) + (messages.length > 1 ? ` (+${messages.length - 1} more)` : "")
+        ];
+      })
+    },
+    total: result.rowCount,
+    shown: result.rows.length,
+    epilogue: result.rows.length === 0 ? [] : [
+      '  Drill in with --component "<name>", or --group-by test for the tests themselves.'
+    ],
+    empty: emptyMessage(result.header, void 0, "skipped test")
+  };
 }
 function skipRowJson(row) {
   return {
@@ -4577,10 +4702,10 @@ function skipRowJson(row) {
     jobNames: [...row.jobNames]
   };
 }
-function renderSkips(result) {
-  const preamble = headerLines2(result.header, "skips");
+function skipsPreamble(result, subject) {
+  const preamble = headerLines2(result.header, subject);
   preamble.push(
-    `  ${count(result.totalSkips)} skipped runs across ${count(result.rowCount)} tests.`
+    `  ${count(result.totalSkips)} skipped runs across ${count(result.skippedTestCount)} tests.`
   );
   if (result.runIfIsUpstreamFiltered) {
     preamble.push(
@@ -4601,8 +4726,11 @@ function renderSkips(result) {
     );
     preamble.push('  "disabled" (--include-run-if to keep them).');
   }
+  return preamble;
+}
+function renderSkips(result) {
   return {
-    preamble,
+    preamble: skipsPreamble(result, "skips"),
     table: {
       columns: [
         { header: "Test", path: true },
@@ -7818,6 +7946,7 @@ var COMMANDS = [
     }
   }
 ];
+var COMMAND_NAMES = COMMANDS.map((command) => command.name);
 var PLANNED_COMMANDS = {};
 var VERSION = "0.0.0";
 async function run(options) {

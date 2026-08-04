@@ -416,15 +416,49 @@ function issueRowJson(row: IssueRow): Record<string, unknown> {
     };
 }
 
-/** Sorts issue rows. */
-function sortIssueRows(rows: readonly IssueRow[], sort: string): IssueRow[] {
+/**
+ * What `--sort count` ranks on, at both the row and the group level.
+ *
+ * All four outcomes, skips included. The two levels used to disagree — the row
+ * sum included `skipCount` and the group sum did not — so `--sort count` ranked
+ * by a different quantity depending on `--group-by`, with nothing in the output
+ * saying so. Measured on the real file, the group order put Toolkit :: Telemetry
+ * (6,815 non-pass without skips) above Firefox :: Address Bar, whose 21,120
+ * issues are mostly its 15,107 skips.
+ *
+ * Skips are in because `--type` defaults to all four and the header calls them
+ * issues: counting a skip as an issue and then excluding it from the "count"
+ * ranking is not a distinction a reader can be expected to hold.
+ *
+ * This is the union over *every* outcome rather than over the requested
+ * `--type`s, which is what makes it different from `issueCount` and so worth
+ * offering as a separate sort at all: `--sort issues` already ranks by the
+ * `--type` union.
+ */
+function nonPassCount(counts: {
+    failCount: number;
+    timeoutCount: number;
+    crashCount: number;
+    skipCount: number;
+}): number {
+    return counts.failCount + counts.timeoutCount + counts.crashCount + counts.skipCount;
+}
+
+/**
+ * Sorts issue rows.
+ *
+ * Exported for the tests: the fixture's component ranking is the same under
+ * either definition of `--sort count`, so nothing a command prints can pin the
+ * comparator. `step5-query.test.ts` drives it with the discriminating input.
+ */
+export function sortIssueRows(rows: readonly IssueRow[], sort: string): IssueRow[] {
     const sorted = [...rows];
     if (sort === 'name') {
         sorted.sort((a, b) => a.fullPath.localeCompare(b.fullPath));
     } else if (sort === 'count') {
-        const nonPass = (row: IssueRow): number =>
-            row.failCount + row.timeoutCount + row.crashCount + row.skipCount;
-        sorted.sort((a, b) => nonPass(b) - nonPass(a) || a.fullPath.localeCompare(b.fullPath));
+        sorted.sort(
+            (a, b) => nonPassCount(b) - nonPassCount(a) || a.fullPath.localeCompare(b.fullPath)
+        );
     } else if (sort === 'issues') {
         // The per-test analogue of the component ranking, and the default here
         // too, so `--group-by test` and the default view agree on what "worst"
@@ -435,14 +469,14 @@ function sortIssueRows(rows: readonly IssueRow[], sort: string): IssueRow[] {
     return sorted;
 }
 
-/** Sorts grouped rows. */
-function sortGroups(groups: readonly IssueGroup[], sort: string): IssueGroup[] {
+/** Sorts grouped rows. Exported for the same reason as `sortIssueRows`. */
+export function sortGroups(groups: readonly IssueGroup[], sort: string): IssueGroup[] {
     const sorted = [...groups];
     if (sort === 'name') {
         sorted.sort((a, b) => a.key.localeCompare(b.key));
     } else if (sort === 'count') {
-        const nonPass = (g: IssueGroup): number => g.failCount + g.timeoutCount + g.crashCount;
-        sorted.sort((a, b) => nonPass(b) - nonPass(a) || a.key.localeCompare(b.key));
+        // The same definition as the per-test view — see `nonPassCount()`.
+        sorted.sort((a, b) => nonPassCount(b) - nonPassCount(a) || a.key.localeCompare(b.key));
     } else if (sort === 'rate') {
         sorted.sort((a, b) => b.issueRate - a.issueRate || a.key.localeCompare(b.key));
     }
@@ -460,7 +494,16 @@ function renderIssueRows(result: {
 }): Rendered {
     // Which column the rows are ordered by, so the marker follows `--sort`
     // rather than asserting an order the command may not have produced.
-    const sortColumn = { issues: 'issues', rate: 'rate', count: 'fail', name: 'Test' }[result.sort];
+    //
+    // `count` has no entry on purpose, so it gets no marker: it orders by
+    // fail+timeout+crash+skip, a sum no column shows. It used to mark `fail`,
+    // which put a ▼ on a visibly non-monotone column — the first rows of
+    // `--sort count` on the real file read 0, 0, 1, 0, 0 under `fail ▼`. A
+    // marker pointing at a column the rows are not ordered by is worse than
+    // none, since it is read as a claim about the order.
+    const sortColumn: string | undefined = { issues: 'issues', rate: 'rate', name: 'Test' }[
+        result.sort as 'issues' | 'rate' | 'name'
+    ];
     const column = (header: string, rest: Omit<Column, 'header'> = {}): Column => ({
         header,
         ...rest,
@@ -511,9 +554,13 @@ function renderIssueGroups(result: {
     rows: IssueGroup[];
 }): Rendered {
     const keyHeader = result.groupBy === 'component' ? 'Component' : 'Directory';
-    const sortColumn = { issues: 'issues', rate: 'rate', count: 'fail', name: keyHeader }[
-        result.sort
-    ];
+    // No `count` entry, for the reason given in `renderIssueRows()`: the sum it
+    // orders by is not one of these columns.
+    const sortColumn: string | undefined = {
+        issues: 'issues',
+        rate: 'rate',
+        name: keyHeader,
+    }[result.sort as 'issues' | 'rate' | 'name'];
     const column = (header: string, rest: Omit<Column, 'header'> = {}): Column => ({
         header,
         ...rest,
@@ -819,6 +866,35 @@ export async function runSkips(context: CommandContext, args: ParsedArgs): Promi
     // run-if skips" and "this file never had any to begin with".
     const runIfIsUpstreamFiltered = query.file.family !== 'daily';
 
+    // `totalSkips` is over every matching test, not over the groups or the
+    // limited page, so the two views agree on the population they summarise.
+    const totalSkips = rows.reduce((sum, row) => sum + row.skipCount, 0);
+
+    if (groupBy === 'component' || groupBy === 'directory') {
+        // "which component disables the most tests" needs the group's whole
+        // population as the denominator, the way `groupIssues` gets it from
+        // `findIssues(keepClean)`: `findSkips` returns only tests with a skip,
+        // so the count of tests that exist in the group has to come from the
+        // file rather than from the rows.
+        const groups = sortSkipGroups(
+            groupSkips(rows, groupBy, testsPerGroup(query, groupBy)),
+            'skips'
+        );
+        const shown = applyLimit(groups, limit);
+        const result = {
+            header: query.header,
+            groupBy,
+            includeRunIf,
+            runIfIsUpstreamFiltered,
+            rowCount: groups.length,
+            totalSkips,
+            skippedTestCount: rows.length,
+            rows: shown.map(skipGroupJson),
+        };
+        emitResult(context, result, () => renderSkipGroups(result));
+        return;
+    }
+
     const sorted = [...rows].sort((a, b) => b.skipCount - a.skipCount);
     const shown = applyLimit(sorted, limit);
     const result = {
@@ -827,10 +903,171 @@ export async function runSkips(context: CommandContext, args: ParsedArgs): Promi
         includeRunIf,
         runIfIsUpstreamFiltered,
         rowCount: sorted.length,
-        totalSkips: sorted.reduce((sum, row) => sum + row.skipCount, 0),
+        totalSkips,
+        skippedTestCount: sorted.length,
         rows: shown.map(skipRowJson),
     };
     emitResult(context, result, () => renderSkips(result));
+}
+
+/** A component's or directory's skips. */
+interface SkipGroup {
+    key: string;
+    /** Skipped runs over every test in the group. */
+    skipCount: number;
+    /** Tests in the group with at least one skip. */
+    testCount: number;
+    /** Every test in the group, skip-free ones included. */
+    totalTestCount: number;
+    /** The distinct skip conditions, most-skipped first. */
+    messages: { message: string; count: number }[];
+}
+
+/**
+ * How many tests exist under each key, skip-free ones included.
+ *
+ * Counted over the file with the command's own `--path`/`--component` filters,
+ * because the "N/M tests" column is only meaningful against the population the
+ * query was scoped to. `findSkips` cannot supply the M: it drops every test with
+ * no skip, which is most of them.
+ */
+function testsPerGroup(query: TreeQuery, by: 'component' | 'directory'): Map<string, number> {
+    const totals = new Map<string, number>();
+    for (let testId = 0; testId < query.file.testCount; testId++) {
+        const identity = query.file.testAt(testId);
+        if (query.pathPrefix !== undefined && !identity.fullPath.startsWith(query.pathPrefix)) {
+            continue;
+        }
+        if (query.component !== undefined) {
+            const component = identity.component;
+            if (
+                component === null ||
+                !component.toLowerCase().includes(query.component.toLowerCase())
+            ) {
+                continue;
+            }
+        }
+        const key =
+            by === 'component' ? (identity.component ?? '(no component)') : identity.directory;
+        totals.set(key, (totals.get(key) ?? 0) + 1);
+    }
+    return totals;
+}
+
+/** Groups skip rows by component or directory. */
+function groupSkips(
+    rows: readonly SkipRow[],
+    by: 'component' | 'directory',
+    totals: ReadonlyMap<string, number>
+): SkipGroup[] {
+    const groups = new Map<string, SkipGroup & { byMessage: Map<string, number> }>();
+    for (const row of rows) {
+        const key = by === 'component' ? (row.component ?? '(no component)') : row.directory;
+        let group = groups.get(key);
+        if (group === undefined) {
+            group = {
+                key,
+                skipCount: 0,
+                testCount: 0,
+                totalTestCount: totals.get(key) ?? 0,
+                messages: [],
+                byMessage: new Map(),
+            };
+            groups.set(key, group);
+        }
+        group.skipCount += row.skipCount;
+        group.testCount += 1;
+        for (const [message, count] of row.messages) {
+            group.byMessage.set(message, (group.byMessage.get(message) ?? 0) + count);
+        }
+    }
+    const out: SkipGroup[] = [];
+    for (const group of groups.values()) {
+        const { byMessage, ...rest } = group;
+        out.push({
+            ...rest,
+            messages: [...byMessage]
+                .map(([message, count]) => ({ message, count }))
+                .sort((a, b) => b.count - a.count || a.message.localeCompare(b.message)),
+        });
+    }
+    return out;
+}
+
+/** Sorts skip groups. Only the one order for now, as the per-test view has. */
+function sortSkipGroups(groups: readonly SkipGroup[], sort: 'skips'): SkipGroup[] {
+    void sort;
+    return [...groups].sort((a, b) => b.skipCount - a.skipCount || a.key.localeCompare(b.key));
+}
+
+/** One skip group's JSON. */
+function skipGroupJson(group: SkipGroup): Record<string, unknown> {
+    return {
+        key: group.key,
+        skipCount: group.skipCount,
+        testCount: group.testCount,
+        totalTestCount: group.totalTestCount,
+        messages: group.messages,
+    };
+}
+
+/**
+ * Renders the grouped skips table.
+ *
+ * The columns follow `renderIssueGroups`: the key, the quantity the rows are
+ * ranked on, then "N/M tests" for how much of the group is affected. That last
+ * one is what separates "this component disabled three tests a lot" from "this
+ * component is switched off", and one number cannot say which — the same reason
+ * `issues` shows it. The reason column stays because the conditions are the
+ * actionable part of a skip, aggregated over the group rather than per test.
+ */
+function renderSkipGroups(result: {
+    header: TreeHeader;
+    groupBy: string;
+    includeRunIf: boolean;
+    runIfIsUpstreamFiltered: boolean;
+    rowCount: number;
+    totalSkips: number;
+    skippedTestCount: number;
+    rows: Record<string, unknown>[];
+}): Rendered {
+    const keyHeader = result.groupBy === 'component' ? 'Component' : 'Directory';
+    return {
+        preamble: skipsPreamble(result, `skips by ${result.groupBy}`),
+        table: {
+            columns: [
+                {
+                    header: keyHeader,
+                    ...(result.groupBy === 'directory' ? { path: true } : {}),
+                },
+                // Ordered by skipped runs; the only order this view offers, so
+                // the marker is unconditional as it is on the per-test table.
+                { header: 'skips', align: 'right', sort: 'desc' },
+                { header: 'tests', align: 'right' },
+                { header: 'reason' },
+            ],
+            rows: result.rows.map((row) => {
+                const messages = row.messages as { message: string; count: number }[];
+                return [
+                    String(row.key),
+                    fmtCount(Number(row.skipCount)),
+                    `${fmtCount(Number(row.testCount))}/${fmtCount(Number(row.totalTestCount))}`,
+                    truncate(oneLine(messages[0]?.message ?? '(no reason recorded)'), 50) +
+                        (messages.length > 1 ? ` (+${messages.length - 1} more)` : ''),
+                ];
+            }),
+        },
+        total: result.rowCount,
+        shown: result.rows.length,
+        epilogue:
+            result.rows.length === 0
+                ? []
+                : [
+                      '  Drill in with --component "<name>", or --group-by test for the tests ' +
+                          'themselves.',
+                  ],
+        empty: emptyMessage(result.header, undefined, 'skipped test'),
+    };
 }
 
 /** One skip row's JSON. */
@@ -846,21 +1083,34 @@ function skipRowJson(row: SkipRow): Record<string, unknown> {
     };
 }
 
-/** Renders the skips table. */
-function renderSkips(result: {
-    header: TreeHeader;
-    includeRunIf: boolean;
-    runIfIsUpstreamFiltered: boolean;
-    rowCount: number;
-    totalSkips: number;
-    rows: Record<string, unknown>[];
-}): Rendered {
-    const preamble = headerLines(result.header, 'skips');
+/**
+ * The header and population statement both skips views print.
+ *
+ * Shared so the two cannot drift on which run-if population they claim to be
+ * reporting — that statement is the whole point of tracking
+ * `runIfIsUpstreamFiltered`, and a grouped view that dropped it would be the
+ * same "excluded 0" ambiguity in a different table.
+ */
+function skipsPreamble(
+    result: {
+        header: TreeHeader;
+        includeRunIf: boolean;
+        runIfIsUpstreamFiltered: boolean;
+        totalSkips: number;
+        /**
+         * Tests with a skip. Passed rather than read off `rowCount`, which is a
+         * count of components in the grouped view — "across 137 tests" of a
+         * component count would be a wrong number stated confidently.
+         */
+        skippedTestCount: number;
+    },
+    subject: string
+): string[] {
+    const preamble = headerLines(result.header, subject);
     preamble.push(
-        `  ${fmtCount(result.totalSkips)} skipped runs across ${fmtCount(result.rowCount)} tests.`
+        `  ${fmtCount(result.totalSkips)} skipped runs across ` +
+            `${fmtCount(result.skippedTestCount)} tests.`
     );
-    // The population statement. Which of these prints is the whole point of
-    // tracking `runIfIsUpstreamFiltered`.
     if (result.runIfIsUpstreamFiltered) {
         preamble.push(
             '  This is a 21-day aggregate, and the generator already dropped run-if skips from it,'
@@ -880,9 +1130,21 @@ function renderSkips(result: {
         );
         preamble.push('  "disabled" (--include-run-if to keep them).');
     }
+    return preamble;
+}
 
+/** Renders the skips table. */
+function renderSkips(result: {
+    header: TreeHeader;
+    includeRunIf: boolean;
+    runIfIsUpstreamFiltered: boolean;
+    rowCount: number;
+    totalSkips: number;
+    skippedTestCount: number;
+    rows: Record<string, unknown>[];
+}): Rendered {
     return {
-        preamble,
+        preamble: skipsPreamble(result, 'skips'),
         table: {
             columns: [
                 { header: 'Test', path: true },

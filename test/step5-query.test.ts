@@ -16,6 +16,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { sortGroups, sortIssueRows } from '../cli/commands/issues.ts';
+import type { IssueGroup, IssueRow } from '../lib/query/issues.ts';
 import { type ErrorsFile, decodeErrors } from '../lib/formats/errors.ts';
 import { type ManifestsFile, decodeManifests } from '../lib/formats/manifests.ts';
 import { kindTotals, matchesTest, rankErrors } from '../lib/query/error-ranking.ts';
@@ -664,3 +666,103 @@ function buildManifestsFile(specs: ManifestSpec[]): ManifestsFile {
         runs,
     };
 }
+
+// =========================================================================
+// `--sort count`, at both levels
+
+/**
+ * `--sort count` must rank on one quantity, whichever `--group-by` is in play.
+ *
+ * The row comparator summed fail+timeout+crash+skip and the group comparator
+ * dropped the skips, so the same flag ranked by different things at the two
+ * levels. Driven directly because the fixture cannot show it: its largest
+ * component leads on either definition, so every ordering the CLI can print is
+ * identical under both and a command-level assertion stays green on the bug.
+ *
+ * The input below is chosen to separate them — `mostly-skips` wins on the
+ * skip-inclusive sum (1,000 against 30) and loses badly without it (0 against
+ * 30). Skips belong in because `--type` counts them as issues by default.
+ */
+const countRow = (
+    fullPath: string,
+    counts: { fail?: number; timeout?: number; crash?: number; skip?: number }
+): IssueRow => ({
+    testId: 0,
+    fullPath,
+    directory: 'dir',
+    component: 'Comp',
+    runCount: 0,
+    passCount: 0,
+    failCount: counts.fail ?? 0,
+    timeoutCount: counts.timeout ?? 0,
+    crashCount: counts.crash ?? 0,
+    expectedFailCount: 0,
+    skipCount: counts.skip ?? 0,
+    failRate: 0,
+    issueCount: 0,
+    issueRate: 0,
+});
+
+const countGroup = (
+    key: string,
+    counts: { fail?: number; timeout?: number; crash?: number; skip?: number }
+): IssueGroup => ({
+    key,
+    testCount: 1,
+    totalTestCount: 1,
+    runCount: 0,
+    failCount: counts.fail ?? 0,
+    timeoutCount: counts.timeout ?? 0,
+    crashCount: counts.crash ?? 0,
+    skipCount: counts.skip ?? 0,
+    failRate: 0,
+    issueCount: 0,
+    issueRate: 0,
+});
+
+test('--sort count counts skips, for rows and for groups alike', () => {
+    const order = ['mostly-skips', 'no-skips'];
+    assert.deepEqual(
+        sortIssueRows(
+            [
+                countRow('no-skips', { fail: 10, timeout: 10, crash: 10 }),
+                countRow('mostly-skips', { skip: 1_000 }),
+            ],
+            'count'
+        ).map((row) => row.fullPath),
+        order
+    );
+    assert.deepEqual(
+        sortGroups(
+            [
+                countGroup('no-skips', { fail: 10, timeout: 10, crash: 10 }),
+                countGroup('mostly-skips', { skip: 1_000 }),
+            ],
+            'count'
+        ).map((group) => group.key),
+        order,
+        'the group comparator must count skips exactly as the row one does'
+    );
+});
+
+/** All four outcomes contribute, so dropping any one of them is visible. */
+test('--sort count is the union of all four outcomes', () => {
+    for (const outcome of ['fail', 'timeout', 'crash', 'skip'] as const) {
+        assert.deepEqual(
+            sortIssueRows(
+                [countRow('quiet', {}), countRow('loud', { [outcome]: 5 })],
+                'count'
+            ).map((row) => row.fullPath),
+            ['loud', 'quiet'],
+            `${outcome} is missing from the row --sort count sum`
+        );
+        assert.deepEqual(
+            sortGroups(
+                [countGroup('quiet', {}), countGroup('loud', { [outcome]: 5 })],
+                'count'
+            ).map((group) => group.key),
+            ['loud', 'quiet'],
+            `${outcome} is missing from the group --sort count sum`
+        );
+    }
+});

@@ -591,6 +591,13 @@ Options: `--component <substring>`, `--path <prefix>` (directory subtree),
 change or infra fault often shows up as the same message across dozens of
 tests, and grouping by message makes that one line instead of thirty.
 
+`--sort count` ranks on fail+timeout+crash+skip — every outcome, not just the
+`--type` union, which is what makes it different from `--sort issues`. It means
+the same thing at both levels; a version that counted skips per test and not per
+component ranked by a different quantity depending on `--group-by`. Because that
+sum is not one of the displayed columns, the sorted-column marker is omitted for
+it rather than pointed at a column the rows are not ordered by.
+
 ### `fx-tests failures` / `fx-tests crashes` — group by message / signature
 
 `failures` groups failing runs by message; `crashes` groups by crash signature
@@ -853,10 +860,21 @@ xpcshell   (7d ending 2026-08-02)          vs prior 7d
 
 ### `fx-tests skips` — what is disabled and where
 
-Skipped tests grouped by directory or component with their `skip-if`
-conditions — for "what is turned off on Windows?". `run-if` annotations mean
-"not applicable on this platform" rather than "disabled because broken", and
-are excluded by default; `--include-run-if` keeps them.
+Skipped tests with their `skip-if` conditions — for "what is turned off on
+Windows?". `run-if` annotations mean "not applicable on this platform" rather
+than "disabled because broken", and are excluded by default;
+`--include-run-if` keeps them.
+
+Options: `--component <substring>`, `--path <prefix>`, `--include-run-if`,
+`--group-by <test|component|directory>` (default `test`).
+
+`--group-by component` answers "which component disables the most tests". Its
+rows carry the group's skipped runs, then `N/M tests` — how many of the group's
+tests are skipped at all, out of how many exist — because a component that
+disables three tests heavily and one that is switched off wholesale have similar
+run totals and want opposite responses. That is the same convention
+`issues --group-by component` uses, and the M likewise counts the group's whole
+population rather than only the rows shown.
 
 ### `fx-tests guide` — orientation for an agent
 
