@@ -238,8 +238,8 @@ declares them so. The ones that matter for the CLI:
 | `crash_info.adjusted_address` | `null` | Only set when the address is recognizable, e.g. a null-pointer dereference. |
 | `crash_info.assertion`, `.instruction` | `null` | Frequently absent in practice. |
 | `thread.thread_name` | `null` | Unnamed thread. Observed on the crashing thread itself. |
-| `frame.inlines` | **absent** | Present only on frames with inlined callees — 119 of 1,025 frames on one dump. |
-| `frame.registers` | **absent** | Declared as present on the innermost frame of the crashing thread, but absent from **every** frame of both fixture dumps. Do not rely on it. |
+| `frame.inlines` | `null` | Corrected: **`null`, not absent.** The key is present on every frame and holds an array only where there are inlined callees — 119 of 1,025 frames on one dump, and `null` on 4,083 frames across 7 dumps with **absent on none**. The declaration spells it `inlines?:`, which permits absent and not null, so a consumer needs `?? []` rather than `?.`; `for…of` over the null throws. |
+| `frame.registers` | **absent from `threads[]`, present on `crashing_thread`** | Corrected. An earlier revision said "absent from every frame of both fixture dumps", which is true only of the `threads[]` array — the sweep walked that and not the sibling `crashing_thread` object. `crashing_thread.frames[0]` **does** carry registers, in all **7** dumps re-checked, while the *same* frame reached through `threads[crash_info.crashing_thread]` does not. So the two copies of the crashing thread are not identical, and a consumer wanting register state must read `crashing_thread`. Still absent from every non-innermost frame, in all 7. |
 | `module.*` (most) | `null` | Symbol metadata missing for system modules. |
 
 ## Status strings

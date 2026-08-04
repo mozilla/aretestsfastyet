@@ -66,9 +66,14 @@ const xpcshellDaily = await fixture<DailyFile>('xpcshell-2026-08-03.json');
 // --- the taxonomy's decisions -------------------------------------------
 
 test('every observed status classifies to exactly one kind and mode', () => {
-    // The twelve strings `FORMATS.md` found across 854,914,907 runs. Written
-    // out rather than derived, so that a change to the classifier has to
-    // change a table someone can read.
+    // The twelve strings `FORMATS.md` found across 212,361,640 distinct runs.
+    // Written out rather than derived, so that a change to the classifier has
+    // to change a table someone can read.
+    //
+    // The figure was 854,914,907 here until it was re-measured: that summed the
+    // same 21 days once per file family, and the families are three encodings
+    // of one population. Corrected in `FORMATS.md` first; this copy and the one
+    // in `lib/model/status.ts` were missed at the time.
     const expected: Record<string, [string, string | null]> = {
         PASS: ['pass', null],
         'PASS-PARALLEL': ['pass', 'parallel'],

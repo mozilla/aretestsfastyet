@@ -21,9 +21,19 @@
  * without structured logging did not report an outcome, so putting its runs in
  * either bucket invents information. Two pages currently guess such runs into
  * passes, which inflates a pass rate rather than a failure count.
- * `FORMATS.md`'s census found zero occurrences across 854,914,907 runs on 21
- * days of both harnesses, so this costs one enum member and buys visibility if
- * the status ever returns.
+ * `FORMATS.md`'s census found zero occurrences across **212,361,640** distinct
+ * runs on 21 days of both harnesses — xpcshell 40,804,055 and mochitest
+ * 171,557,585 — so this costs one enum member and buys visibility if the status
+ * ever returns.
+ *
+ * That figure was 854,914,907 here until it was re-measured. The larger number
+ * was a counting artefact: `issues.json`, `issues-with-taskids.json` and the 64
+ * bucket files are three encodings of the *same* 21 days with byte-identical
+ * totals, so summing across families multiplies the population by the number of
+ * ways it was written down. `FORMATS.md` was corrected and this copy of the
+ * number was missed — worth noting, because a figure duplicated outside the
+ * document that owns it is a figure that will go stale silently. The conclusion
+ * is unaffected: zero is zero at any scale.
  *
  * **No duration heuristics.** `xpcshell-timings.html:684`, `:1213` and
  * `issues.html:1024` guess an outcome from a runtime (`<100ms` → skip,
