@@ -390,6 +390,15 @@ tests, and grouping by message makes that one line instead of thirty.
 and can print minidump IDs (`--minidumps`), which `fx-tests crash` then reads.
 Both accept `--limit`, `--path`, `--component`, `--config`, `--day`.
 
+**Measured caveat, and it changes where `--minidumps` works.** Both commands
+read `{harness}-issues.json`, whose `CRASH` groups carry `counts`, `days` and
+`crashSignatureIds` and **no `minidumps` field at all** — 0 of 676 groups in one
+file. So `--minidumps` cannot be answered there and is a usage error rather than
+an empty section, and the same file's inability to name a job makes `--config` a
+usage error too. The bucket files *do* carry structured `minidumps` arrays, so
+the dump IDs come from `fx-tests test <path> --task-ids`, which prints each one
+as the `fx-tests crash` invocation that reads it.
+
 ### `fx-tests crash <task-id> <minidump-id>` — read a processed crash dump
 
 Prints a symbolized report from a job's minidump-stackwalk JSON: signature,
@@ -453,10 +462,16 @@ convention in the data files — the `taskIds` table stores `"<id>.<retry>"`, an
 the resource-usage files omit `.0` exactly this way (`JSON_FORMAT.md`) — so a
 task ID copied from any other command or file works unchanged.
 
-Both arguments are required. A minidump ID is always available from wherever the
-crash was found (`fx-tests crashes --minidumps`, `fx-tests test --task-ids`), and
-making it optional would mean fetching the task's artifact listing to guess —
-a round trip to solve a problem the caller does not have.
+Both arguments are required. A minidump ID comes from wherever the crash was
+found — in practice `fx-tests test <path> --task-ids`, which reads a bucket file
+and emits the whole invocation ready to paste; `fx-tests crashes --minidumps`
+serves the same purpose on a file family that records them. Making the argument
+optional would mean fetching the task's artifact listing to guess — a round trip
+to solve a problem the caller does not have.
+
+Not every crash has a dump: a crash whose minidump was never uploaded is still a
+crash, and those rows carry no ID rather than a placeholder that looks
+fetchable.
 
 ### `fx-tests manifests` — which manifests run where, and for how long
 

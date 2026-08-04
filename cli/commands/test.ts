@@ -94,7 +94,11 @@ export const TEST_OPTIONS: OptionSpecs = {
         placeholder: '<n>',
         describe: 'Override the automatically-sized recent window.',
     },
-    'task-ids': { type: 'boolean', describe: 'Print the task IDs behind each failure.' },
+    'task-ids': {
+        type: 'boolean',
+        describe:
+            'Print the task IDs behind each failure, and the minidump IDs of any crashes.',
+    },
     profiles: {
         type: 'boolean',
         describe: 'Print raw profile artifact URLs for each failure.',
@@ -227,6 +231,16 @@ interface TaskIdJson {
     status: string;
     day: string | null;
     message: string | null;
+    /**
+     * The processed crash dump, on a `CRASH` row whose dump was uploaded.
+     *
+     * Absent rather than null when there is none: a crash can be recorded with
+     * no dump — 58 such entries in the sweep — and an explicit null would read
+     * as "there is a dump, and it is null".
+     */
+    minidumpId?: string;
+    /** The `fx-tests crash` invocation that reads it, ready to paste. */
+    crashCommand?: string;
 }
 
 interface ProfileJson {
@@ -825,7 +839,20 @@ function buildHistory(
     return [...rows.values()];
 }
 
-/** The task IDs behind each failure, for `--task-ids`. */
+/**
+ * The task IDs behind each failure, for `--task-ids`.
+ *
+ * Also the **minidump IDs**, which is what makes `fx-tests crash` reachable
+ * from here. `CRASH` groups in a bucket file carry a `minidumps` array parallel
+ * to `taskIdIds` (`FORMATS.md`), and `status-entries.ts` already decodes it —
+ * but nothing read it, so the hint pointing a caller here for a dump ID was
+ * false as shipped. A dump ID is useless without the task that produced it and
+ * vice versa, so emitting the two together is the whole point.
+ *
+ * A `null` entry is a crash whose dump was **never uploaded** — 58 of them in
+ * the sweep, always the same entries whose signature is also null. Those get no
+ * `minidumpId`, rather than a placeholder that would look fetchable.
+ */
 function buildTaskIds(
     // Optional, because only the bucket files carry `taskInfo.chunks` at all
     // (`FORMATS.md`: it is absent from every daily, issues-with-taskids and
@@ -848,7 +875,7 @@ function buildTaskIds(
         entry.taskIds.forEach((raw2, i) => {
             const { taskId, retryId } = parseTaskId(raw2);
             const taskIdIndex = entry.taskIdIndexes?.[i];
-            rows.push({
+            const row: TaskIdJson = {
                 taskId,
                 retryId,
                 jobName:
@@ -863,7 +890,17 @@ function buildTaskIds(
                         ? null
                         : dateOfDayIndex(file.endDate, days, entry.day),
                 message: entry.message ?? null,
-            });
+            };
+            // `minidumps[i]` belongs to `taskIds[i]`: same bucket, same order,
+            // which is the join `crashes.ts` relies on too. Falsy means the
+            // dump was never uploaded, so there is nothing to fetch and the
+            // field is omitted rather than set to null.
+            const minidumpId = entry.minidumps?.[i];
+            if (minidumpId) {
+                row.minidumpId = minidumpId;
+                row.crashCommand = `fx-tests crash ${taskId}.${retryId} ${minidumpId}`;
+            }
+            rows.push(row);
         });
     }
     void window;
@@ -1109,8 +1146,22 @@ function renderText(result: TestJson, limit: number): string {
                     `${row.day ?? '—'}  ${row.jobName ?? '(unknown job)'}` +
                     (row.chunk === null ? '' : ` chunk ${row.chunk}`)
             );
+            // The command rather than the bare ID: a dump ID is only usable
+            // paired with its task, and pasting is the point.
+            if (row.crashCommand !== undefined) {
+                lines.push(`    ${row.crashCommand}`);
+            }
         }
         lines.push(moreLine(result.taskIds.length, shown.length));
+        const crashRows = shown.filter((row) => row.status.startsWith('CRASH'));
+        if (crashRows.length > 0 && crashRows.every((row) => row.minidumpId === undefined)) {
+            // A crash with no dump is real — the dump was never uploaded — and
+            // saying so beats leaving a caller to wonder whether the command
+            // forgot to look.
+            lines.push(
+                '  (no minidump was uploaded for these crashes, so there is nothing to read)'
+            );
+        }
     }
     if (result.profiles !== undefined) {
         lines.push('');

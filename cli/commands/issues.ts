@@ -59,6 +59,7 @@ import { usageError } from '../errors.ts';
 import { toJson } from '../format/json.ts';
 import * as md from '../format/markdown.ts';
 import {
+    type Column,
     applyLimit,
     count as fmtCount,
     dateWithWeekday,
@@ -416,17 +417,11 @@ function renderIssueRows(result: {
     header: TreeHeader;
     rowCount: number;
     rows: Record<string, unknown>[];
-}): string {
-    const lines: (string | null)[] = [];
-    lines.push(...headerLines(result.header, 'issues'));
-    lines.push('');
-    if (result.rows.length === 0) {
-        lines.push('No test matched.');
-        return joinLines(lines);
-    }
-    lines.push(
-        ...table(
-            [
+}): Rendered {
+    return {
+        preamble: headerLines(result.header, 'issues'),
+        table: {
+            columns: [
                 { header: 'Test' },
                 { header: 'runs', align: 'right' },
                 { header: 'fail', align: 'right' },
@@ -434,18 +429,20 @@ function renderIssueRows(result: {
                 { header: 'crash', align: 'right' },
                 { header: 'rate', align: 'right' },
             ],
-            result.rows.map((row) => [
+            rows: result.rows.map((row) => [
                 truncate(String(row.test), 62),
                 fmtCount(Number(row.runCount)),
                 fmtCount(Number(row.failCount)),
                 fmtCount(Number(row.timeoutCount)),
                 fmtCount(Number(row.crashCount)),
                 percent(Number(row.failRate)),
-            ])
-        )
-    );
-    lines.push(moreLine(result.rowCount, result.rows.length));
-    return joinLines(lines);
+            ]),
+        },
+        total: result.rowCount,
+        shown: result.rows.length,
+        epilogue: [],
+        empty: 'No test matched.',
+    };
 }
 
 /** Renders the grouped issues table. */
@@ -454,34 +451,30 @@ function renderIssueGroups(result: {
     groupBy: string;
     rowCount: number;
     rows: IssueGroup[];
-}): string {
-    const lines: (string | null)[] = [];
-    lines.push(...headerLines(result.header, `issues by ${result.groupBy}`));
-    lines.push('');
-    if (result.rows.length === 0) {
-        lines.push('No test matched.');
-        return joinLines(lines);
-    }
-    lines.push(
-        ...table(
-            [
+}): Rendered {
+    return {
+        preamble: headerLines(result.header, `issues by ${result.groupBy}`),
+        table: {
+            columns: [
                 { header: result.groupBy === 'component' ? 'Component' : 'Directory' },
                 { header: 'tests', align: 'right' },
                 { header: 'runs', align: 'right' },
                 { header: 'fail', align: 'right' },
                 { header: 'rate', align: 'right' },
             ],
-            result.rows.map((group) => [
+            rows: result.rows.map((group) => [
                 truncate(group.key, 58),
                 fmtCount(group.testCount),
                 fmtCount(group.runCount),
                 fmtCount(group.failCount + group.timeoutCount + group.crashCount),
                 percent(group.failRate),
-            ])
-        )
-    );
-    lines.push(moreLine(result.rowCount, result.rows.length));
-    return joinLines(lines);
+            ]),
+        },
+        total: result.rowCount,
+        shown: result.rows.length,
+        epilogue: [],
+        empty: 'No test matched.',
+    };
 }
 
 // --- fx-tests failures ---------------------------------------------------
@@ -526,33 +519,29 @@ function failureGroupJson(group: FailureGroup): Record<string, unknown> {
 function renderFailures(
     result: { header: TreeHeader; rowCount: number; rows: Record<string, unknown>[] },
     subject: string
-): string {
-    const lines: (string | null)[] = [];
-    lines.push(...headerLines(result.header, subject));
-    lines.push('');
-    if (result.rows.length === 0) {
-        lines.push('No failure matched.');
-        return joinLines(lines);
-    }
-    // `tests` is the discriminator here for the same reason it is in `errors`:
-    // one message across thirty tests is one bug, and across one test is
-    // another kind of bug entirely.
-    lines.push(
-        ...table(
-            [
+): Rendered {
+    return {
+        preamble: headerLines(result.header, subject),
+        // `tests` is the discriminator here for the same reason it is in
+        // `errors`: one message across thirty tests is one bug, and across one
+        // test is another kind of bug entirely.
+        table: {
+            columns: [
                 { header: 'failures', align: 'right' },
                 { header: 'tests', align: 'right' },
                 { header: 'message' },
             ],
-            result.rows.map((row) => [
+            rows: result.rows.map((row) => [
                 fmtCount(Number(row.count)),
                 fmtCount(Number(row.testCount)),
                 truncate(oneLine(String(row.message ?? '(no message recorded)')), 84),
-            ])
-        )
-    );
-    lines.push(moreLine(result.rowCount, result.rows.length));
-    return joinLines(lines);
+            ]),
+        },
+        total: result.rowCount,
+        shown: result.rows.length,
+        epilogue: [],
+        empty: 'No failure matched.',
+    };
 }
 
 // --- fx-tests crashes ----------------------------------------------------
@@ -616,32 +605,8 @@ function renderCrashes(
     result: { rowCount: number; rows: Record<string, unknown>[] },
     withMinidumps: boolean,
     header: TreeHeader
-): string {
-    const lines: (string | null)[] = [];
-    lines.push(...headerLines(header, 'crashes by signature'));
-    lines.push('');
-    if (result.rows.length === 0) {
-        lines.push('No crash matched.');
-        return joinLines(lines);
-    }
-    lines.push(
-        ...table(
-            [
-                { header: 'crashes', align: 'right' },
-                { header: 'tests', align: 'right' },
-                { header: 'dumps', align: 'right' },
-                { header: 'signature' },
-            ],
-            result.rows.map((row) => [
-                fmtCount(Number(row.count)),
-                fmtCount(Number(row.testCount)),
-                fmtCount(Number(row.minidumpCount)),
-                truncate(String(row.signature ?? '(not symbolized)'), 76),
-            ])
-        )
-    );
-    lines.push(moreLine(result.rowCount, result.rows.length));
-
+): Rendered {
+    const epilogue: string[] = [];
     const anyDumps = result.rows.some((row) => Number(row.minidumpCount) > 0);
 
     if (!header.recordsMinidumps) {
@@ -651,28 +616,26 @@ function renderCrashes(
         // groups have one. So "0 dumps" here is not "the dumps were never
         // uploaded", it is "this file does not record them", and the two would
         // otherwise be indistinguishable.
-        lines.push('');
-        lines.push(
+        epilogue.push(
             '  This file records no minidump IDs, so the dumps column is 0 for every row — that'
         );
-        lines.push(
+        epilogue.push(
             '  is a property of the file, not of the crashes. `fx-tests test <path> --task-ids`'
         );
-        lines.push('  reads a bucket file, which does carry them.');
+        epilogue.push('  reads a bucket file, which does carry them.');
     } else if (withMinidumps) {
-        lines.push('');
-        lines.push('Minidumps');
+        epilogue.push('Minidumps');
         for (const row of result.rows) {
             const dumps = row.minidumps as { command: string }[] | undefined;
             if (dumps === undefined || dumps.length === 0) {
                 continue;
             }
-            lines.push(`  ${truncate(String(row.signature ?? '(not symbolized)'), 76)}`);
+            epilogue.push(`  ${truncate(String(row.signature ?? '(not symbolized)'), 76)}`);
             for (const dump of dumps.slice(0, 3)) {
-                lines.push(`    ${dump.command}`);
+                epilogue.push(`    ${dump.command}`);
             }
             if (dumps.length > 3) {
-                lines.push(`    … ${dumps.length - 3} more`);
+                epilogue.push(`    … ${dumps.length - 3} more`);
             }
         }
     } else {
@@ -681,17 +644,37 @@ function renderCrashes(
         // *and* a null minidump, the dump never having been uploaded.
         const noDumps = result.rows.filter((row) => Number(row.minidumpCount) === 0);
         if (noDumps.length > 0) {
-            lines.push('');
-            lines.push(
+            epilogue.push(
                 `  ${noDumps.length} of these have no minidump to fetch: the dump was never ` +
                     'uploaded, so the crash is counted but cannot be read.'
             );
         }
         if (anyDumps) {
-            lines.push('  --minidumps prints the IDs, which `fx-tests crash` reads.');
+            epilogue.push('  --minidumps prints the IDs, which `fx-tests crash` reads.');
         }
     }
-    return joinLines(lines);
+
+    return {
+        preamble: headerLines(header, 'crashes by signature'),
+        table: {
+            columns: [
+                { header: 'crashes', align: 'right' },
+                { header: 'tests', align: 'right' },
+                { header: 'dumps', align: 'right' },
+                { header: 'signature' },
+            ],
+            rows: result.rows.map((row) => [
+                fmtCount(Number(row.count)),
+                fmtCount(Number(row.testCount)),
+                fmtCount(Number(row.minidumpCount)),
+                truncate(String(row.signature ?? '(not symbolized)'), 76),
+            ]),
+        },
+        total: result.rowCount,
+        shown: result.rows.length,
+        epilogue,
+        empty: 'No crash matched.',
+    };
 }
 
 // --- fx-tests skips ------------------------------------------------------
@@ -750,52 +733,56 @@ function renderSkips(result: {
     rowCount: number;
     totalSkips: number;
     rows: Record<string, unknown>[];
-}): string {
-    const lines: (string | null)[] = [];
-    lines.push(...headerLines(result.header, 'skips'));
-    lines.push(
+}): Rendered {
+    const preamble = headerLines(result.header, 'skips');
+    preamble.push(
         `  ${fmtCount(result.totalSkips)} skipped runs across ${fmtCount(result.rowCount)} tests.`
     );
-    // The population statement. Which of these two lines prints is the whole
-    // point of tracking `runIfIsUpstreamFiltered`.
-    lines.push(
-        result.runIfIsUpstreamFiltered
-            ? '  This is a 21-day aggregate, and the generator already dropped run-if skips from ' +
-              'it,\n  so --include-run-if would change nothing here. A daily file keeps them — on ' +
-              'one\n  measured day they were 63.6% of all skipped runs.'
-            : result.includeRunIf
-              ? '  Including run-if skips, which mean "not applicable on this platform" rather ' +
-                'than "disabled".'
-              : '  Excluding run-if skips, which mean "not applicable on this platform" rather ' +
-                'than "disabled" (--include-run-if to keep them).'
-    );
-    lines.push('');
-    if (result.rows.length === 0) {
-        lines.push('No skipped test matched.');
-        return joinLines(lines);
+    // The population statement. Which of these prints is the whole point of
+    // tracking `runIfIsUpstreamFiltered`.
+    if (result.runIfIsUpstreamFiltered) {
+        preamble.push(
+            '  This is a 21-day aggregate, and the generator already dropped run-if skips from it,'
+        );
+        preamble.push(
+            '  so --include-run-if would change nothing here. A daily file keeps them — on one'
+        );
+        preamble.push('  measured day they were 63.6% of all skipped runs.');
+    } else if (result.includeRunIf) {
+        preamble.push(
+            '  Including run-if skips, which mean "not applicable on this platform" rather than'
+        );
+        preamble.push('  "disabled".');
+    } else {
+        preamble.push(
+            '  Excluding run-if skips, which mean "not applicable on this platform" rather than'
+        );
+        preamble.push('  "disabled" (--include-run-if to keep them).');
     }
-    lines.push(
-        ...table(
-            [
+
+    return {
+        preamble,
+        table: {
+            columns: [
                 { header: 'Test' },
                 { header: 'skips', align: 'right' },
                 { header: 'reason' },
             ],
-            result.rows.map((row) => {
+            rows: result.rows.map((row) => {
                 const messages = row.messages as { message: string; count: number }[];
                 return [
                     truncate(String(row.test), 56),
                     fmtCount(Number(row.skipCount)),
-                    truncate(
-                        oneLine(messages[0]?.message ?? '(no reason recorded)'),
-                        50
-                    ) + (messages.length > 1 ? ` (+${messages.length - 1} more)` : ''),
+                    truncate(oneLine(messages[0]?.message ?? '(no reason recorded)'), 50) +
+                        (messages.length > 1 ? ` (+${messages.length - 1} more)` : ''),
                 ];
-            })
-        )
-    );
-    lines.push(moreLine(result.rowCount, result.rows.length));
-    return joinLines(lines);
+            }),
+        },
+        total: result.rowCount,
+        shown: result.rows.length,
+        epilogue: [],
+        empty: 'No skipped test matched.',
+    };
 }
 
 // --- shared helpers ------------------------------------------------------
@@ -866,25 +853,86 @@ function readPercent(value: string | undefined, flag: string): number | undefine
     return parsed;
 }
 
+/**
+ * What a tree-wide command produces, before it is laid out.
+ *
+ * Separating the content from the layout is what lets one renderer serve both
+ * text and Markdown. The alternative — render text and fence it for
+ * `--markdown` — is what these four used to do, and it made them the only
+ * commands in the CLI whose `--markdown` was not real Markdown: someone pasting
+ * `manifests` and `issues` into one bug got a table and a code block.
+ */
+interface Rendered {
+    /** Lines above the table: the provenance header and any caveats. */
+    preamble: string[];
+    /** The table, or `null` for a command that has nothing to show. */
+    table: { columns: Column[]; rows: string[][] } | null;
+    /** The `… n more` line's inputs. */
+    total: number;
+    shown: number;
+    /** Lines below the table. */
+    epilogue: string[];
+    /** Shown instead of the table when there are no rows. */
+    empty: string;
+}
+
 /** Emits in whichever format was asked for. */
-function emitResult(
-    context: CommandContext,
-    result: unknown,
-    renderText: () => string
-): void {
+function emitResult(context: CommandContext, result: unknown, build: () => Rendered): void {
     if (context.globals.format === 'json') {
         emit(context, toJson(result));
         return;
     }
-    const text = renderText();
-    if (context.globals.format === 'markdown') {
-        // The tables are the content; Markdown wraps them in a fenced block
-        // rather than re-laying them out, which keeps the alignment that makes
-        // them readable and avoids a second renderer per command.
-        emit(context, md.fence(text).join('\n'));
-        return;
+    const content = build();
+    emit(
+        context,
+        context.globals.format === 'markdown'
+            ? renderMarkdownFrom(content)
+            : renderTextFrom(content)
+    );
+}
+
+/** Plain text: the shared aligned-column layout. */
+function renderTextFrom(content: Rendered): string {
+    const lines: (string | null)[] = [...content.preamble, ''];
+    if (content.table === null || content.table.rows.length === 0) {
+        lines.push(content.empty);
+    } else {
+        lines.push(...table(content.table.columns, content.table.rows));
+        lines.push(moreLine(content.total, content.shown));
     }
-    emit(context, text);
+    lines.push(...content.epilogue);
+    return joinLines(lines);
+}
+
+/**
+ * Markdown: a real table, matching every other command.
+ *
+ * The preamble becomes prose rather than staying inside a fence, so a pasted
+ * report reads as a report. `md.table` escapes cell contents, which matters
+ * here because a failure message can contain a pipe.
+ */
+function renderMarkdownFrom(content: Rendered): string {
+    const lines: (string | null)[] = [];
+    const [heading, ...caveats] = content.preamble;
+    lines.push(md.heading(heading ?? 'Results', 1));
+    lines.push('');
+    for (const caveat of caveats) {
+        lines.push(caveat.trim());
+        lines.push('');
+    }
+    if (content.table === null || content.table.rows.length === 0) {
+        lines.push(content.empty);
+    } else {
+        lines.push(...md.table(content.table.columns, content.table.rows));
+        lines.push(md.moreLine(content.total, content.shown));
+    }
+    if (content.epilogue.length > 0) {
+        lines.push('');
+        for (const line of content.epilogue) {
+            lines.push(line.trim());
+        }
+    }
+    return joinLines(lines);
 }
 
 /** Collapses a multi-line message onto one line. */
