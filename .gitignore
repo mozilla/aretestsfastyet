@@ -10,6 +10,10 @@ data/
 # Scratch directory for downloaded data files and one-off check scripts
 artifacts/
 
+# npm dependencies and the bundler's output (built in CI, never committed)
+node_modules/
+bin/
+
 # V8 profiling logs
 isolate-*.log
 jit-*.dump
