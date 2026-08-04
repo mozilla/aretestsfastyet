@@ -770,6 +770,21 @@ test('coveragePlatforms separates ran from scheduled-but-skipped', () => {
         android.skippedCount > 0,
         'android scheduled it and skipped it, which is not the same as not scheduling it'
     );
+
+    // Sorted by how much of the test is scheduled there, biggest first, ties
+    // broken by name. The rollup is often the last thing on screen and a
+    // reader takes the top row as the main story, so insertion order — which
+    // is whatever the file happened to hold — would put an arbitrary platform
+    // there.
+    //
+    // Pinned as an exact list rather than as "is sorted", because this fixture
+    // ties at 11 configs each and a self-consistency check cannot see a
+    // comparator that returns 0. Insertion order here is windows-then-android;
+    // the tiebreak makes it android-then-windows.
+    assert.deepEqual(
+        platforms.map((entry) => `${entry.platform}:${entry.ranCount + entry.skippedCount}`),
+        ['android:11', 'windows:11']
+    );
 });
 
 test('coveragePlatforms has no row for a platform with nothing scheduled', () => {
