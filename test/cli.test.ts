@@ -3353,6 +3353,31 @@ test('try scopes the rerun sentence to the configs it applies to', async () => {
         /reran it in the same job — intermittent\./,
         'the unscoped sentence must be gone'
     );
+    // The rerun sentence names only the config it rescued. Naming the
+    // permanent one there would put the same config on both lines and say
+    // opposite things about it — worse than the unscoped sentence it replaced.
+    const rerun = streams.stdout
+        .split('\n')
+        .find((line) => line.includes('Passed when the harness reran it'));
+    assert.ok(rerun !== undefined);
+    assert.doesNotMatch(
+        rerun,
+        /opt-xpcshell-b/,
+        'the config the rerun did not rescue must not be listed as rescued'
+    );
+    // Both configs are named on the row, each on its own line, so the two
+    // facts can be told apart. Without the "failed every run" line the row
+    // states only where the rerun passed, and the section it sits in looks
+    // wrong.
+    const everyRun = streams.stdout
+        .split('\n')
+        .find((line) => line.includes('Failed every run on'));
+    assert.ok(everyRun !== undefined, 'the permanent config must be stated even so');
+    assert.doesNotMatch(
+        everyRun,
+        /opt-xpcshell-a/,
+        'the rescued config must not be listed as failing every run'
+    );
 });
 
 test('try treats a green FAIL as an expected failure, not a failure', async () => {
@@ -3520,6 +3545,17 @@ test('a profile with a trailing newline is not mistaken for a streamed one', asy
     assert.equal(isStreamedProfile(new TextEncoder().encode('{"threads": [\n{}')), false);
     // Two complete documents is.
     assert.equal(isStreamedProfile(new TextEncoder().encode(`{"type":"meta"}\n${finished}`)), true);
+    // What follows the first document has to *be* a document. A profile with a
+    // log line appended parses its first line and has trailing content, so
+    // only the leading `{` separates it from the streamed shape — and it is a
+    // genuine read failure, not a killed job.
+    assert.equal(isStreamedProfile(new TextEncoder().encode('{"a":1}\nnot json')), false);
+    assert.equal(isStreamedProfile(new TextEncoder().encode('{"a":1}\n[1,2]')), false);
+    // No newline at all is not the streamed shape, whatever the content. The
+    // check has to be on the newline rather than on what a slice happens to
+    // parse as: `{}\t ` has no newline, and slicing to `newline` would hand
+    // `JSON.parse` the string minus its last character, which parses.
+    assert.equal(isStreamedProfile(new TextEncoder().encode('{}\t ')), false);
 });
 
 test('try --perma-only omits the other sections from the text output', async () => {

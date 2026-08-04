@@ -464,11 +464,12 @@ export function isStreamedProfile(bytes: Uint8Array): boolean {
         // tell, so it stays with the genuine read failures.
         return false;
     }
+    // A single document with a trailing newline leaves this empty, and an
+    // empty string starts with nothing, so the final test already rejects it.
+    // There is deliberately no separate `rest === ''` guard: it reads as
+    // load-bearing and decides nothing, and a mutation removing it could not
+    // be distinguished from the original on 400,000 generated inputs.
     const rest = head.slice(newline + 1).trim();
-    if (rest === '') {
-        // A single document with a trailing newline — an ordinary profile.
-        return false;
-    }
     try {
         JSON.parse(head.slice(0, newline));
     } catch {
@@ -476,6 +477,9 @@ export function isStreamedProfile(bytes: Uint8Array): boolean {
         // here is not "several documents concatenated".
         return false;
     }
+    // What follows has to be another document. Trailing text that is not one —
+    // a log line appended to a profile, say — is a different problem and
+    // belongs with the genuine read failures.
     return rest.startsWith('{');
 }
 

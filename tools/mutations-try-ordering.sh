@@ -124,11 +124,11 @@ mutate cli/commands/try.ts \
     '                missing++;' \
     'the streamed count is folded into the missing one'
 
-# A single document is not streamed, whatever else is true of it.
-mutate cli/commands/try.ts \
-    '    if (rest === '"''"') {' \
-    '    if (false) {' \
-    'a profile with a trailing newline counts as streamed'
+# Not mutated: the `rest === ''` early return that used to sit here. A single
+# document with a trailing newline leaves `rest` empty, and `''.startsWith('{')`
+# is already false, so the guard decided nothing — no distinguishing input
+# exists among 400,000 generated ones. It has been removed rather than pinned
+# by a test that could only assert the same answer twice.
 
 # The first line has to be a complete document; a truncated one is a genuine
 # read failure and must stay in the other bucket.
