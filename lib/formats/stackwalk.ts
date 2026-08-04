@@ -72,7 +72,12 @@ export interface Frame {
     missing_symbols: boolean;
     /** Frames inlined into this one, outermost-callee first. */
     inlines?: InlineFrame[];
-    /** Only on the innermost frame of the crashing thread. */
+    /**
+     * Documented as appearing on the innermost frame of the crashing thread,
+     * but absent from every frame of both dumps checked — treat it as
+     * something that may never arrive rather than as the crash's register
+     * state.
+     */
     registers?: Record<string, HexAddress>;
     /** How the frame was recovered: `"context"`, `"cfi"`, `"scan"`, `"frame_pointer"`. */
     trust: string;

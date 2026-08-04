@@ -8,6 +8,14 @@
  * here, and "was this error present when the test passed?" is answered by
  * comparing two files, not by joining inside one.
  *
+ * **And not for every date.** `index.json` lists 21 dates and the index task
+ * publishes 21 daily and 21 resources files, but only **5** errors files —
+ * 2026-07-30 … 2026-08-03 when this was measured, for both harnesses; the
+ * other 16 dates 404. So the errors window is its own, shorter window, and a
+ * date inside the 21-day one can still have no errors data. A caller must
+ * discover which dates exist rather than deriving them from `index.json`.
+ * See `FORMATS.md`.
+ *
  * **Coverage differs by harness.** xpcshell runs its tests in parallel and can
  * only replay a test's stdout when it fails, so the xpcshell file is limited
  * to failing tests' output — a biased population, not a small sample. Mochitest
