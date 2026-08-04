@@ -15,16 +15,33 @@ declarations, and update this file — in that order.
 
 ## Summary
 
-- **No validation errors.** Every file swept matched its declaration: every
-  field present with the declared type, every table index in range, every
-  parallel array the same length, and no unexpected keys.
+- **No validation errors** across all 238 files: every required field present
+  and non-null, every nullable field null only where the declaration permits,
+  every table index in range, every parallel array the same length, no
+  unexpected keys.
 - Four claims made before the sweep turned out to be **wrong**, and are
   corrected below: `aggregatedFrom` holds filenames, the `manifests.json`
   job-name redundancy is not a redundancy, the errors files do not exist for
   every published date, and the resource files' `.0` convention is not what
   `JSON_FORMAT.md` describes.
+- **The 21-day aggregates and the daily files do not cover the same skips.**
+  The aggregates drop `run-if` skips and the daily files keep them — 63.6% of
+  one full daily file's skipped runs. A skip count means a different thing
+  depending on which family it came from; see below.
 - `UNKNOWN` **does not occur** — see the census below. It is not rare; it is
   absent from every `tables.statuses` swept.
+- **`messageIds` presence depends on the status, not the shape** — the finding
+  most likely to break Step 1's unified iterator. See below.
+
+> **On the strength of "no validation errors".** The first version of this
+> validator could not fail on a missing or `null` field — both went to the
+> census rather than to an error — so "clean" meant less than it sounded. That
+> is fixed: presence and nullability are now declared per field and enforced,
+> `test/mutations.test.ts` breaks each fixture 42 ways and asserts the checker
+> notices, and the sweep above was **re-run in full against the stricter
+> validator**. It found nothing new, which is now a meaningful statement:
+> against the previous validator the same suite let 14 of those 42 mutations
+> through.
 
 ## Corrections to what was assumed
 
@@ -92,6 +109,52 @@ The consequence for joining stands and is worth restating: the timing files
 store `"<taskId>.<retryId>"` **always**, including `.0`, so a join against a
 resources file needs normalization on one side. Neither side can be assumed to
 match the other textually.
+
+### The 21-day aggregates drop `run-if` skips; the daily files keep them
+
+Found by decoding a daily file and an aggregate and comparing a shared test's
+per-day counts: every status agreed except `SKIP`. `run-if` is a manifest
+annotation scoping a test to some other platform, so it not running here is the
+annotation working rather than a problem — and the generator applies that
+filter when it aggregates, but not when it writes a per-date file.
+
+| file | `tables.messages` | starting `run-if` | starting `skip-if` |
+| --- | --- | --- | --- |
+| `xpcshell-2026-07-30.json` (daily) | 457 | **28** | 47 |
+| `xpcshell-issues.json` | 2,888 | **0** | 48 |
+| `mochitest-issues.json` | 2,233 | **0** | 173 |
+| `mochitest-issues-with-taskids.json` | 2,233 | **0** | 173 |
+| `xpcshell-00.json` (bucket) | 24 | **0** | 11 |
+| `mochitest-00.json` (bucket) | 62 | **0** | 32 |
+
+Not a rounding difference. On the full xpcshell daily file for 2026-07-30,
+**253,252 of 398,212 skipped runs are `run-if`** — 63.6% of them — and every
+aggregate has none at all.
+
+So the same question gets a different answer depending on which file it is
+asked of, and the discrepancy is upstream rather than in any decoder:
+
+- A skip count from a bucket or issues file is **already filtered**. Applying
+  `!msg.startsWith('run-if')` to it again is a no-op.
+- A skip count from a daily file is **not**, and needs the filter. Reporting a
+  raw daily skip count as though it were comparable to a bucket one overstates
+  it by whatever share of the tests are platform-scoped — on 2026-07-30, by
+  2.7×.
+
+`lib/model/skips.ts` owns the filter, and `test/formats.test.ts` asserts both
+halves of this so the asymmetry cannot regress unnoticed.
+
+### The daily and 21-day files disagree by one run on `PASS-SEQUENTIAL`
+
+Of the eight tests the daily and issues **fixtures** share, three report
+exactly one more `PASS-SEQUENTIAL` run in the aggregate's day-20 counts than in
+the daily file, and nothing else disagrees on any status — including the
+`task-ids` and `durations` shapes, which are counted in completely different
+ways. The difference is visible in the raw JSON before any decoding.
+
+Small and one-sided enough not to change a conclusion, and recorded because a
+test asserts the exact shape of it: if a decoder change ever makes the
+disagreement *broader*, that is a decoder bug and not this.
 
 ## Fields observed `null`, absent or empty
 
@@ -386,12 +449,12 @@ What was swept:
 | stats | both | 2 | the whole file, all 199 / 66 dates |
 | manifests | — | 1 | the whole file |
 | index | — | 1 | the whole file |
-| minidump-stackwalk | — | 7 | sampled: reached via `CRASH` groups' `minidumps`, across Linux, macOS (x86-64 and arm64) and Windows |
+| minidump-stackwalk | — | 8 | **sampled** — reached via `CRASH` groups' `minidumps`; 4 macOS, 3 Windows, 1 Linux, 5–59 threads each |
 
 That is a **complete sweep of every file the index publishes**, not a sample —
-230 files and 4.4 GB — with the single exception of the minidump-stackwalk
+238 files and 4.4 GB — with the single exception of the minidump-stackwalk
 artifacts, which are per-task and effectively unbounded in number, so those
-were sampled.
+are sampled (`STACKWALK_SAMPLE`, default 8).
 
 To reproduce:
 
