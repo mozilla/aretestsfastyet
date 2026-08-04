@@ -94,8 +94,16 @@ const COMMANDS: CommandSpec[] = [
     },
 ];
 
-/** Commands `CLI.md` specifies that step 5 will add. */
-const PLANNED_COMMANDS: Record<string, string> = {
+/**
+ * Commands `CLI.md` specifies that step 5 will add.
+ *
+ * Exported so a test can assert the *behaviour* — a documented but unlanded
+ * command says so rather than "unknown command" — without naming a specific
+ * one. A test pinned to a name fails the day someone implements it, which is
+ * the wrong signal entirely; this list shrank twice while step 4 was being
+ * reviewed.
+ */
+export const PLANNED_COMMANDS: Record<string, string> = {
     issues: 'what is failing right now, across the tree',
     failures: 'failing runs grouped by message',
     crashes: 'crashes grouped by signature',

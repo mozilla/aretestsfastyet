@@ -215,17 +215,34 @@ test('an unknown command exits 1 and lists what exists', async () => {
 });
 
 test('a command CLI.md specifies but has not landed says so, rather than "unknown"', async () => {
-    // `manifests` rather than `errors`: the errors command landed while this
-    // suite was being written, and a test pinned to a specific unimplemented
-    // command fails the day someone implements it — which is the wrong signal
-    // entirely. Any name still in PLANNED_COMMANDS would do.
-    const { code, stderr } = await invoke(['manifests']);
+    // Driven off PLANNED_COMMANDS rather than naming a command: `errors` and
+    // then `manifests` both landed while this suite was being reviewed, and a
+    // test pinned to a specific unimplemented command fails the day someone
+    // implements it — the wrong signal entirely. What is being asserted is the
+    // behaviour, which outlives any particular name.
+    const { PLANNED_COMMANDS } = await import('../cli/main.ts');
+    const planned = Object.entries(PLANNED_COMMANDS);
+    assert.ok(planned.length > 0, 'CLI.md still documents unimplemented commands');
+
+    for (const [name, description] of planned) {
+        const { code, stderr } = await invoke([name]);
+        assert.equal(code, ExitCode.Usage, name);
+        assert.match(stderr, /not implemented yet/, name);
+        // The description is echoed, so the user learns what it will do.
+        assert.ok(stderr.includes(description), `${name} should echo its description`);
+        // And the distinction that matters: not "unknown command", which would
+        // send someone who read the spec correctly looking for a typo.
+        assert.doesNotMatch(stderr, /unknown command/, name);
+    }
+});
+
+test('a genuinely unknown command is reported as unknown', async () => {
+    // The other side of the same branch, so a mutation collapsing the two
+    // messages into one cannot survive.
+    const { code, stderr } = await invoke(['tsetstuff']);
     assert.equal(code, ExitCode.Usage);
-    assert.match(stderr, /not implemented yet/);
-    assert.match(stderr, /time budget/);
-    // And the distinction that matters: this is not "unknown command", which
-    // would send someone who read the spec correctly looking for a typo.
-    assert.doesNotMatch(stderr, /unknown command/);
+    assert.match(stderr, /unknown command "tsetstuff"/);
+    assert.doesNotMatch(stderr, /not implemented yet/);
 });
 
 test('--help exits 0 and writes to stdout', async () => {
@@ -1206,6 +1223,31 @@ test('markdown also states what a truncated list left out', async () => {
     assert.ok(line !== null);
     assert.match(line, /47 more/);
     assert.match(line, /--limit 0/);
+});
+
+test('serializing a Map or Set throws rather than emitting {}', async () => {
+    // A safety net with no live trigger today: every command already converts
+    // its Maps before emitting, so a mutation disabling this guard survives
+    // the end-to-end tests. It is tested directly because the thing it
+    // prevents is silent — JSON.stringify turns both into {}, so the output
+    // parses, validates as an object, and is empty. That is the failure mode
+    // this project keeps finding, and the guard is what makes it a crash at
+    // development time instead.
+    const { toJson, mapToObject } = await import('../cli/format/json.ts');
+    assert.throws(
+        () => toJson({ counts: new Map([['a', 1]]) }),
+        /refusing to serialize a Map at "counts"/
+    );
+    assert.throws(
+        () => toJson({ seen: new Set(['a']) }),
+        /refusing to serialize a Set at "seen"/
+    );
+    // An empty Map is the worst case: `{}` is indistinguishable from a field
+    // that legitimately has no entries, so it must throw too.
+    assert.throws(() => toJson({ counts: new Map() }), /refusing to serialize a Map/);
+
+    // And the conversion helper it points at works.
+    assert.equal(toJson({ counts: mapToObject(new Map([['a', 1]])) }), '{\n  "counts": {\n    "a": 1\n  }\n}');
 });
 
 test('markdown escaping is exercised directly, since no fixture message has a pipe', async () => {
