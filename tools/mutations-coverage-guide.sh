@@ -106,12 +106,21 @@ mutate lib/query/coverage.ts \
     '        if (true) {' \
     'a job name that does not parse becomes a platform called "unknown"'
 
-# The rollup is sorted, so the platform with the most configs leads. An
-# unsorted map is insertion order, which is whatever the file happened to hold.
+# The rollup leads with the platform most of the test is scheduled on. Two
+# mutations, because they fail differently: dropping the count term leaves an
+# alphabetical list, and dropping the tiebreak leaves visit order wherever the
+# counts are equal — and the Windows-only fixture test ties on every platform.
 mutate lib/query/coverage.ts \
-    '            b.ranCount + b.skippedCount - (a.ranCount + a.skippedCount) ||' \
-    '            0 ||' \
-    'the rollup sort order is dropped'
+    '            b.ranCount + b.skippedCount - (a.ranCount + a.skippedCount) ||
+            a.platform.localeCompare(b.platform)' \
+    '            a.platform.localeCompare(b.platform)' \
+    'the rollup is ordered by name instead of by size'
+
+mutate lib/query/coverage.ts \
+    '            b.ranCount + b.skippedCount - (a.ranCount + a.skippedCount) ||
+            a.platform.localeCompare(b.platform)' \
+    '            b.ranCount + b.skippedCount - (a.ranCount + a.skippedCount)' \
+    'the rollup tiebreak is dropped, leaving visit order on equal counts'
 
 # `skipped` outranks `not-applicable` on a config carrying both annotations: a
 # reportable skip is work someone owes, and a run-if must not mask it.

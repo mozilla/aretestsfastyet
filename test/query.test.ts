@@ -771,19 +771,31 @@ test('coveragePlatforms separates ran from scheduled-but-skipped', () => {
         'android scheduled it and skipped it, which is not the same as not scheduling it'
     );
 
-    // Sorted by how much of the test is scheduled there, biggest first, ties
-    // broken by name. The rollup is often the last thing on screen and a
-    // reader takes the top row as the main story, so insertion order — which
-    // is whatever the file happened to hold — would put an arbitrary platform
-    // there.
-    //
-    // Pinned as an exact list rather than as "is sorted", because this fixture
-    // ties at 11 configs each and a self-consistency check cannot see a
-    // comparator that returns 0. Insertion order here is windows-then-android;
-    // the tiebreak makes it android-then-windows.
+    // The tiebreak: both platforms have 11 configs here, so only the name
+    // decides, and it must be the name rather than whatever order the configs
+    // happened to be visited in — which is windows-then-android.
     assert.deepEqual(
         platforms.map((entry) => `${entry.platform}:${entry.ranCount + entry.skippedCount}`),
         ['android:11', 'windows:11']
+    );
+});
+
+test('the coverage rollup leads with the platform most of the test is on', () => {
+    // A separate test with a separate fixture, because the Windows-only test
+    // above ties on every platform and so can only exercise the tiebreak. This
+    // one is scheduled on four platforms with four different counts.
+    //
+    // The rollup is the last thing on screen and a reader takes the top row as
+    // the main story, so the order has to be the size of the answer and not the
+    // order the configs were visited in. Here those differ: linux has the most
+    // configs, `android` sorts first by name, and neither is the visit order.
+    const identity = mochitestBucket.findTest(
+        'dom/canvas/test/webgl-mochitest/test_webgl_constant_vendor_fpp.html'
+    )!;
+    const platforms = coveragePlatforms(coverageOf(mochitestBucket, identity.testId));
+    assert.deepEqual(
+        platforms.map((entry) => `${entry.platform}:${entry.ranCount + entry.skippedCount}`),
+        ['linux:14', 'windows:7', 'mac:6', 'android:2']
     );
 });
 
