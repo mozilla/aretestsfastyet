@@ -362,8 +362,10 @@ why absence is the answer rather than something to enumerate.
 ### `fx-tests try <revision>` — triage a Try push
 
 The command most useful to an agent that just pushed to Try. Aggregates the
-push's test failures and, crucially, separates failures **caused by the patch**
-from failures that were **already failing on central**.
+push's test failures, leads with the ones that failed **every run of some
+configuration**, and says for each what central shows on that same
+configuration — which is what separates a regression from a pre-existing
+breakage you happened to run into.
 
 ```
 $ fx-tests try 4f2c1a9e8b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a
@@ -371,8 +373,8 @@ $ fx-tests try 4f2c1a9e8b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a
 Try push 4f2c1a9e (try) — 1284 jobs, 37 failed
 Compared against 21 days of mozilla-central history.
 
-PERMA-FAILS (2) — fail in every run on the affected config, and were
-                  not failing on central. These are almost certainly yours.
+PERMA-FAILS (3) — failed in every run of at least one configuration here.
+                  Each row says what central shows on that same configuration.
 
   dom/base/test/test_selection.html
     fails on test-linux1804-64/debug-mochitest-plain (3/3 runs)
@@ -384,6 +386,14 @@ PERMA-FAILS (2) — fail in every run on the affected config, and were
     Never failed on central in 21 days (0/1608 runs)
     uncaught exception: TypeError: tab is null
 
+  browser/base/content/test/sync/browser_sync.js
+    fails on test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks-2 (4/4 runs)
+    4.7% on central (259/5493), 4.6% with the same message (250)
+    Pre-existing: central already fails the same way on
+      test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks-2
+      (145 times in 21 days) — probably not yours.
+    handleEvent() was unable to perform a11y checks on hidden node: …
+
 KNOWN INTERMITTENTS (14) — also fail on central; likely not yours.
   test_frecency.js                   8.1% on central (same message)
   browser_download_panel.js          3.2% on central (same message)
@@ -392,6 +402,32 @@ KNOWN INTERMITTENTS (14) — also fail on central; likely not yours.
 NEW INTERMITTENTS (1) — failed once here, never on central. Worth a look.
   toolkit/xre/test/test_startup.js   1/3 runs, no central failures
 ```
+
+**Perma-fail is a fact about the push, not a verdict.** A test is in the first
+section when it failed in every run of at least one configuration and the
+harness's in-job rerun never turned it green there — nothing else. Central
+history annotates the row; it does not filter the section.
+
+That is deliberate, and it is a change: the section used to require "and was
+not failing on central", which meant a push with three tests that failed every
+single run reported *zero* perma-fails, because all three already failed the
+same way on the very configs they broke on. Whether central fails there too is
+context that changes how a row reads, not grounds for hiding it. The
+`Pre-existing:` line carries that context, and the section header deliberately
+does not claim the rows are "almost certainly yours".
+
+The comparison is **per configuration**. A test can be intermittent on one
+config and permanently broken on another, and the second is the one worth
+acting on; asking the question of the test as a whole hides it. So a test that
+failed 7 of 13 runs overall still leads the section if one of its configs
+failed 4 of 4. The row names that configuration, because it is the one to
+reproduce on.
+
+This matches what `try.html` puts in its "Permanent failures" table. Measured
+against it: 3, 51 and 241 perma-fails on try push `7d16bff8`, autoland push
+`7c06165a` and try push `717fc67f` — the same counts the dashboard reports.
+Large counts are usually one bug: 240 of the 241 are a single shutdown-hang
+crash signature taking out every test in the affected jobs.
 
 Options: `--project <try|autoland|…>` (default `try`), `--perma-only` (just
 the first section — the highest-signal output for an agent), `--all-jobs`
@@ -410,13 +446,23 @@ Failures are also labelled when they occur only in parallel execution, which
 points at a race with concurrently-running tests rather than a defect in the test
 itself.
 
-The same-message distinction matters and is preserved from the dashboard: a
-test that already fails on central 8% of the time, but with a *different*
-message than the one in your push, is not exonerated. Sections report
-same-message rates alongside overall rates.
+The same-message distinction matters and is what the `Pre-existing:` line rests
+on: a test that already fails on central 8% of the time, but with a *different*
+message than the one in your push, is not pre-existing in any useful sense.
+Sections report same-message rates alongside overall rates.
+
+A push failure's message comes from the `TestStatus` markers logged inside the
+test's execution, not from the `Test` marker, which carries no `message` field
+at all for a plain assertion failure (`try.html:936`). Reading only the latter
+leaves most `FAIL`s message-less, and a failure with no message cannot be
+compared against central at all — the output says so rather than printing a
+`0.0%` that reads as "a different failure".
 
 `--json` shape: `{ revision, pushId, jobCount, failedJobCount,
-permaFails[], knownIntermittents[], newIntermittents[] }`.
+permaFails[], knownIntermittents[], newIntermittents[] }`. Each failure carries
+`permaFailingConfigs[]` — the configurations it failed every run of — and
+`central.sameMessageFailCountOnPermaConfigs`, the same-message count restricted
+to those, which is `null` when central attributed no runs to them.
 
 ### `fx-tests issues` — what is failing right now, across the tree
 

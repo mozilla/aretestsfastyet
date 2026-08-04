@@ -344,8 +344,9 @@ const WORKFLOWS: readonly Workflow[] = [
         title: 'A test failed on my Try push',
         steps: [
             'fx-tests try <revision> --perma-only',
-            '    Fails every run on a config *and* was not failing on central: almost certainly',
-            '    yours. Everything else needs the next step before you believe it.',
+            '    Tests that failed every run of some configuration. Read the Pre-existing line',
+            '    on each: without it the row is probably yours, with it central already fails',
+            '    the same way on that same config and it probably is not.',
             '',
             'fx-tests test <path>',
             '    Whether it already fails on central, and how. Two things change the reading:',

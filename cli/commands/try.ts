@@ -21,9 +21,12 @@
  *
  * `CLI.md`'s split, in decreasing order of "this is probably yours":
  *
- * - **PERMA-FAILS** — failed in every run on the affected config *and* never
- *   failed on central. Almost certainly caused by the patch.
- * - **KNOWN INTERMITTENTS** — also fail on central. Likely not yours.
+ * - **PERMA-FAILS** — failed in **every** run of at least one configuration.
+ *   A fact about the push alone; each row is annotated with what central says
+ *   about that same config, which is context for reading the row rather than
+ *   grounds for hiding it. See `isPermaFail()`.
+ * - **KNOWN INTERMITTENTS** — did not fail every run anywhere, and also fail
+ *   on central. Likely not yours.
  * - **NEW INTERMITTENTS** — failed here, not seen failing on central, but not
  *   in every run. Worth a look.
  *
@@ -89,6 +92,19 @@ const SUPPORTED_HARNESSES = ['mochitest', 'xpcshell'];
 
 /** Default rows per section. */
 const DEFAULT_LIMIT = 10;
+
+/**
+ * What the perma-fail section promises, in both text and Markdown.
+ *
+ * Deliberately does not say "almost certainly yours". The section is no longer
+ * filtered by central history, so it contains rows that are annotated on the
+ * very next line as already failing the same way on central — claiming those
+ * are the reader's doing would be false. What every row *does* have in common
+ * is the push fact, so that is what the header states.
+ */
+const PERMA_FAIL_DESCRIPTION =
+    'failed in every run of at least one configuration here. ' +
+    'Each row says what central shows on that same configuration.';
 
 /** How many artifacts to fetch at once. */
 const DEFAULT_CONCURRENCY = 8;
@@ -312,63 +328,35 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
 /**
  * Whether a failure is a perma-fail candidate.
  *
- * Two independent halves. The first — every run of some configuration failed —
- * is what `try.html` shows in its "Permanent failures" table, and is computed
- * from the push alone. The second is the CLI's addition, which `CLI.md` states
- * as "and were not failing on central": a long-standing central intermittent
- * that happened to fail in all three runs here is not the patch's doing.
+ * **A fact about the push, and only about the push**: the test failed in every
+ * run of at least one configuration, and the harness's in-job rerun never
+ * turned it green there. That is what `try.html` puts in its "Permanent
+ * failures" table, and this command now agrees with it.
  *
- * The central half is asked **of the configurations that perma-failed**, not
- * of the test as a whole. Asking it globally is what made this command report
- * 0 perma-fails on try push 7d16bff8 where the dashboard reports 3: all three
- * of that push's permanent failures do fail on central with the same message
- * *on some other configuration*, which says nothing about the config where the
- * push failed every run.
+ * Central history is deliberately *not* consulted here. It used to be — the
+ * section was "and were not failing on central" — and that filter is what made
+ * this command report 0 perma-fails on try push 7d16bff8 where the dashboard
+ * reports 3. All three of that push's permanent failures do already fail the
+ * same way on central, on the very configs they perma-failed on here
+ * (`browser_sync.js` 146/345 = 42.3% on `swr-a11y-checks`,
+ * `browser_smartwindow_run_search.js` 339/370 = 91.6% on `standalone`,
+ * `browser_ml_heuristics.js` 115/449 = 25.6% on `msix`), so the filter was
+ * working exactly as written — and still produced an empty section for a push
+ * with three tests that failed every single run.
+ *
+ * "Failed every run on a config" is what someone triaging a push wants
+ * surfaced. Whether central fails there too is context that changes how the
+ * row is read, not grounds for hiding it, so it is now an annotation on the
+ * row (`centralLine()`) rather than a filter on the section. The section
+ * header no longer claims these are "almost certainly yours", because for a
+ * row simultaneously annotated as pre-existing that would be false.
  */
 function isPermaFail(failure: TryFailure): boolean {
     // `everyRunFailed` already excludes any config the harness's rerun turned
     // green, so the test-level `passedOnRerun` must not be re-tested here: a
     // test that is intermittent on one config and permanent on another has it
     // set, and rejecting on it discards the permanent config.
-    if (!failure.everyRunFailed) {
-        return false;
-    }
-    const central = failure.central;
-    if (central === null) {
-        // No central data for this test at all — nothing exonerates it.
-        return true;
-    }
-    if (central.failCount === 0) {
-        // Never failed on central. The clean perma-fail case.
-        return true;
-    }
-    // Central *has* seen this test fail somewhere. Whether that exonerates the
-    // push depends on it being the *same* failure on the *same* configuration,
-    // and answering the first half needs a message on both sides.
-    //
-    // Measured on autoland push 7c06165ae50f70: 20 of 21 candidate perma-fails
-    // recorded no message the command could read, and `sameMessageFailCount`
-    // was 0 not because the failures differed but because there was nothing to
-    // compare. Treating that as "not failing on central" reported a test that
-    // fails 24.9% of the time on central as almost certainly caused by the
-    // patch. Most of those messages are now read — they were on the
-    // `TestStatus` markers this command did not look at — but a failure with
-    // genuinely no message still cannot be compared, so the guard stays.
-    if (!failure.messageComparable) {
-        return false;
-    }
-    // Restricted to the configs that perma-failed here — see `isPermaFail`'s
-    // header for why the question is asked per config.
-    //
-    // `null` means central attributed no runs at all to those configs, so
-    // there is no config-scoped answer. Falling through to the whole-test
-    // count is the conservative reading: it keeps a test that central already
-    // fails the same way out of "almost certainly yours" when the finer
-    // comparison is unavailable, which is the direction the 15 false
-    // perma-fails on autoland push 7c06165ae50f70 came from.
-    const onPermaConfigs =
-        central.sameMessageFailCountOnPermaConfigs ?? central.sameMessageFailCount;
-    return onPermaConfigs === 0;
+    return failure.everyRunFailed;
 }
 
 /** Whether central has seen this test fail the same way. */
@@ -1105,11 +1093,40 @@ function centralLine(failure: TryFailure): string {
         return `${overall}; this push recorded no failure message, so it cannot be compared`;
     }
     // Both rates: the overall one says "this test is flaky", the same-message
-    // one says "it is flaky *this way*", and only the second exonerates.
+    // one says "it is flaky *this way*".
     return (
         `${overall}, ` +
         `${percent(central.sameMessageFailRate)} with the same message ` +
         `(${central.sameMessageFailCount})`
+    );
+}
+
+/**
+ * Whether central already fails this way on the config the push broke.
+ *
+ * The single most useful sentence on a perma-fail row, and the one that
+ * replaced the filter this section used to have. A perma-fail is now reported
+ * on push evidence alone, so without this a reader has no way to tell
+ * `browser_smartwindow_run_search.js` — which fails 91.6% of the time on
+ * central on the very config it perma-failed on here — from a test the patch
+ * genuinely broke. Returns `null` when there is nothing to say.
+ */
+function preExistingLine(failure: TryFailure): string | null {
+    const central = failure.central;
+    if (central === null || !failure.messageComparable) {
+        return null;
+    }
+    const onPermaConfigs = central.sameMessageFailCountOnPermaConfigs;
+    if (onPermaConfigs === null || onPermaConfigs === 0) {
+        return null;
+    }
+    const configs =
+        failure.permaFailingConfigs.length === 1
+            ? failure.permaFailingConfigs[0]
+            : `the ${failure.permaFailingConfigs.length} configs it failed every run on`;
+    return (
+        `Pre-existing: central already fails the same way on ${configs} ` +
+        `(${onPermaConfigs} times in 21 days) — probably not yours.`
     );
 }
 
@@ -1127,6 +1144,24 @@ function sameMessageCell(failure: TryFailure): string {
         return '?';
     }
     return percent(failure.central.sameMessageFailRate);
+}
+
+/**
+ * The same verdict as `preExistingLine()`, as a table cell.
+ *
+ * `—` rather than "no" when the question could not be asked: no central data,
+ * or no message to compare. Saying "no" there would answer a question that was
+ * never put.
+ */
+function preExistingCell(failure: TryFailure): string {
+    if (failure.central === null || !failure.messageComparable) {
+        return '—';
+    }
+    const onPermaConfigs = failure.central.sameMessageFailCountOnPermaConfigs;
+    if (onPermaConfigs === null) {
+        return '—';
+    }
+    return onPermaConfigs > 0 ? `yes (${onPermaConfigs})` : 'no';
 }
 
 /** Plain text, as `CLI.md` lays it out. */
@@ -1170,8 +1205,7 @@ function renderText(
     lines.push(...section(
         'PERMA-FAILS',
         result.permaFails,
-        'fail in every run on the affected config, and were not failing on central. ' +
-            'These are almost certainly yours.',
+        PERMA_FAIL_DESCRIPTION,
         limit
     ));
 
@@ -1253,7 +1287,27 @@ function section(
                 lines.push(`      … ${failure.jobNames.length - 4} more configs`);
             }
         }
+        // Which configs failed *every* run, when that is not all of them. The
+        // section is entered on this fact, so a row that failed on six configs
+        // and perma-failed on one has to say which one — that is the config to
+        // reproduce on.
+        if (
+            failure.permaFailingConfigs.length > 0 &&
+            failure.permaFailingConfigs.length < failure.jobNames.length
+        ) {
+            const every = failure.permaFailingConfigs;
+            lines.push(
+                every.length === 1
+                    ? `    Failed every run on ${every[0]}`
+                    : `    Failed every run on ${every.length} of them: ${every.slice(0, 3).join(', ')}` +
+                          (every.length > 3 ? `, +${every.length - 3} more` : '')
+            );
+        }
         lines.push(`    ${centralLine(failure)}`);
+        const preExisting = preExistingLine(failure);
+        if (preExisting !== null) {
+            lines.push(`    ${preExisting}`);
+        }
         if (failure.passedOnRerun) {
             lines.push('    Passed when the harness reran it in the same job — intermittent.');
         }
@@ -1322,23 +1376,9 @@ function compactSection(
         if (failure.passedOnRerun) {
             lines.push(`    ${basename(failure.path)}: passed on harness rerun`);
         }
-        // A test that failed *every* run of a config and is still in this
-        // section was put here by central history alone. `try.html` shows the
-        // same test under "Permanent failures", because that page classifies
-        // from the push and never consults central — so saying which of the
-        // two facts applies is what lets a reader reconcile them instead of
-        // assuming one of the tools is broken.
-        if (failure.everyRunFailed && failure.central !== null) {
-            const configs =
-                failure.permaFailingConfigs.length === 1
-                    ? failure.permaFailingConfigs[0]
-                    : `${failure.permaFailingConfigs.length} configs`;
-            lines.push(
-                `    ${basename(failure.path)}: failed every run on ${configs}, ` +
-                    `but central already fails the same way there ` +
-                    `(${failure.central.sameMessageFailCountOnPermaConfigs ?? failure.central.sameMessageFailCount} times)`
-            );
-        }
+        // No "failed every run on a config" note is needed here any more:
+        // every such failure is now in the perma-fail section, which states it
+        // per row along with what central shows on that config.
     }
     // The table shortens deep paths from the left, so the basename always
     // survives and every row can be told apart and grepped for. The full path
@@ -1385,9 +1425,9 @@ function renderMarkdown(
     lines.push(`[View on Treeherder](${result.treeherderUrl})`);
 
     const sections: [string, readonly TryFailure[], string][] = permaOnly
-        ? [['Perma-fails', result.permaFails, 'Fail in every run on the affected config, and were not failing on central.']]
+        ? [['Perma-fails', result.permaFails, PERMA_FAIL_DESCRIPTION]]
         : [
-              ['Perma-fails', result.permaFails, 'Fail in every run on the affected config, and were not failing on central.'],
+              ['Perma-fails', result.permaFails, PERMA_FAIL_DESCRIPTION],
               ['Known intermittents', result.knownIntermittents, 'Also fail on central; likely not yours.'],
               ['New intermittents', result.newIntermittents, 'Failed here, never on central.'],
           ];
@@ -1411,6 +1451,12 @@ function renderMarkdown(
                     { header: 'Here', align: 'right' },
                     { header: 'Central', align: 'right' },
                     { header: 'Same message', align: 'right' },
+                    // The text renderer says this in a sentence per row. A
+                    // Markdown table pasted into a bug needs it just as much —
+                    // without it the perma-fail table reads as a list of
+                    // regressions, and on autoland push 7c06165ae50f70 that
+                    // would be 48 of 51 rows misread.
+                    { header: 'Pre-existing?' },
                     { header: 'Message' },
                 ],
                 shown.map((failure) => [
@@ -1419,6 +1465,7 @@ function renderMarkdown(
                     `${failure.failedRuns}/${failure.totalRuns}`,
                     failure.central === null ? 'n/a' : percent(failure.central.failRate),
                     sameMessageCell(failure),
+                    preExistingCell(failure),
                     truncate(failure.messages[0] ?? '', 120),
                 ])
             )

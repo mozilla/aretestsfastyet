@@ -2060,7 +2060,7 @@ test('try drops a crash recorded against a manifest rather than a test', async (
     );
 });
 
-test('try does not report a no-message failure as a perma-fail when central fails too', async () => {
+test('try reports a no-message failure that failed every run as a perma-fail', async () => {
     const streams = captureStreams();
     await run({
         argv: ['try', 'abcdef123456', '--json'],
@@ -2069,21 +2069,47 @@ test('try does not report a no-message failure as a perma-fail when central fail
         cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
         treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
         fetchUrl: profileFetcher({
-            // No `message`, which is what 20 of 21 candidate perma-fails
-            // looked like on autoland push 7c06165ae50f70.
+            // No `message` anywhere — not on the Test marker and not on a
+            // TestStatus one. A real shape, and the one that used to be
+            // excluded because the same-message comparison had nothing to
+            // work with.
             TASK1: profileWith([
                 { type: 'Test', test: TEST_PATH, status: 'FAIL', start: 1, end: 2 },
             ]),
         }),
     });
     const result = json(streams.stdout);
-    const perma = result['permaFails'] as unknown[];
-    const known = result['knownIntermittents'] as { messageComparable: boolean }[];
-    // The fixture test fails on central, so with nothing to compare this must
-    // not be called "almost certainly yours".
-    assert.equal(perma.length, 0);
-    assert.equal(known.length, 1);
-    assert.equal(known[0]!.messageComparable, false);
+    const perma = result['permaFails'] as { messageComparable: boolean }[];
+    // Classification is on push evidence alone now: it failed the only run of
+    // the only config, so it is a perma-fail whatever central says and whether
+    // or not there is a message to compare.
+    assert.equal(perma.length, 1);
+    assert.equal(perma[0]!.messageComparable, false);
+    assert.equal((result['knownIntermittents'] as unknown[]).length, 0);
+});
+
+test('try states that an uncomparable failure cannot be compared, rather than "0%"', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', start: 1, end: 2 },
+            ]),
+        }),
+    });
+    // The `messageComparable` guard no longer decides the section, but it
+    // still decides what may be *printed*. The fixture test does fail on
+    // central; with no message from the push, "0.0% with the same message"
+    // would be a measurement of nothing presented as a measurement.
+    assert.match(streams.stdout, /recorded no failure message, so it cannot be compared/);
+    assert.doesNotMatch(streams.stdout, /0\.0% with the same message/);
+    // And with nothing to compare, no pre-existing claim is made either.
+    assert.doesNotMatch(streams.stdout, /Pre-existing/);
 });
 
 /**
@@ -2097,7 +2123,18 @@ const CENTRAL_FAILURE_MESSAGE =
     'NS_ERROR_FILE_CORRUPTED: Component returned failure code: 0x8052000b ' +
     '(NS_ERROR_FILE_CORRUPTED) [nsIPrefService.readUserPrefsFromFile]';
 
-test('try does NOT call it a perma-fail when central fails with the same message', async () => {
+/**
+ * Central history annotates a perma-fail; it no longer hides one.
+ *
+ * This test used to assert the opposite, and the filter it asserted is what
+ * made the command report 0 perma-fails on try push 7d16bff8 where `try.html`
+ * reports 3 — the filter was working exactly as written and still produced an
+ * empty section for a push with three tests that failed every single run.
+ *
+ * The fact the reader needs is not lost, it moved: the row is reported, and it
+ * is labelled `Pre-existing:` with the count on the config it broke.
+ */
+test('try reports a same-message central failure, and labels it pre-existing', async () => {
     const streams = captureStreams();
     await run({
         argv: ['try', 'abcdef123456', '--json'],
@@ -2107,8 +2144,7 @@ test('try does NOT call it a perma-fail when central fails with the same message
         treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
         fetchUrl: profileFetcher({
             // Fails in the only run, never passed on rerun, and reports the
-            // message central already fails with. Everything about it looks
-            // like a perma-fail except the one thing that decides it.
+            // message central already fails with.
             TASK1: profileWith([
                 {
                     type: 'Test',
@@ -2122,37 +2158,32 @@ test('try does NOT call it a perma-fail when central fails with the same message
         }),
     });
     const result = json(streams.stdout);
-    const perma = result['permaFails'] as { path: string }[];
-    const known = result['knownIntermittents'] as {
+    const perma = result['permaFails'] as {
         messageComparable: boolean;
         central: { sameMessageFailCount: number };
     }[];
-
-    // The assertion the whole same-message rule exists for, and the direction
-    // that was unguarded: `messageComparable` protected against calling an
-    // *uncomparable* failure a perma-fail, but nothing protected against
-    // calling a *matched* one a perma-fail. Removing
-    // `sameMessageFailCount === 0` produced 15 false "almost certainly yours"
-    // verdicts on autoland push 7c06165ae50f70 with the suite fully green —
-    // one of them against a test failing 922 of 8,386 runs on central with
-    // the identical message.
-    assert.deepEqual(perma, [], 'a same-message central failure is not the patch’s fault');
-    assert.equal(known.length, 1);
-    assert.equal(known[0]!.messageComparable, true);
+    assert.equal(perma.length, 1, 'it failed every run of its config, so it is reported');
+    assert.equal(perma[0]!.messageComparable, true);
     assert.ok(
-        known[0]!.central.sameMessageFailCount > 0,
-        'and the same-message count is what exonerated it'
+        perma[0]!.central.sameMessageFailCount > 0,
+        'and the same-message count is what the annotation is built from'
     );
+    assert.equal((result['knownIntermittents'] as unknown[]).length, 0);
 });
 
-test('try text output states the same-message rate that exonerated a failure', async () => {
+test('try labels a pre-existing perma-fail in the text output', async () => {
     const streams = captureStreams();
     await run({
         argv: ['try', 'abcdef123456'],
         streams,
         source: fixtureSource(),
         cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
-        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        // A config the fixture's central history actually attributes runs to,
+        // and one it fails on with this very message (4 of them). Pushing on a
+        // config central has never run leaves nothing to annotate with.
+        treeherder: fakeTreeherder([
+            job('test-windows11-64-25h2-shippable/opt-xpcshell', 'TASK1', 'testfailed'),
+        ]),
         fetchUrl: profileFetcher({
             TASK1: profileWith([
                 {
@@ -2163,6 +2194,44 @@ test('try text output states the same-message rate that exonerated a failure', a
                     start: 1,
                     end: 2,
                 },
+            ]),
+        }),
+    });
+    assert.match(streams.stdout, /PERMA-FAILS \(1\)/);
+    // The sentence that stops someone chasing a pre-existing breakage. Without
+    // it the section is a wall of rows with no way to tell them apart.
+    assert.match(streams.stdout, /Pre-existing: central already fails the same way on/);
+    assert.match(streams.stdout, /probably not yours/);
+    // And the header must not simultaneously claim the row is the reader's.
+    assert.doesNotMatch(streams.stdout, /almost certainly yours/);
+});
+
+test('try text output states both central rates for an intermittent', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        // Two runs of the config with one failure, so it does not fail every
+        // run and lands in the compact table rather than the perma section.
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell', 'TASK1', 'testfailed'),
+            job('test-linux/opt-xpcshell', 'TASK2', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                {
+                    type: 'Test',
+                    test: TEST_PATH,
+                    status: 'FAIL',
+                    message: CENTRAL_FAILURE_MESSAGE,
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+            TASK2: profileWith([
+                { type: 'Test', test: TEST_PATH, status: 'PASS', start: 1, end: 2 },
             ]),
         }),
     });
@@ -2806,12 +2875,41 @@ test('try scopes the central same-message check to the perma-failing config', as
         0,
         'but not on the configuration this push broke'
     );
+
+    // And the row must carry no pre-existing label, since nothing about it is
+    // pre-existing on the config that broke. Asserting the label's *absence*
+    // is what makes the scoping observable now that it no longer filters:
+    // unscoped, this row would be labelled off the failures on other configs.
+    const text = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams: text,
+        source: permaFailSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-linux2404-64/debug-xpcshell', 'TASK1', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                {
+                    type: 'Test',
+                    test: PERMAFAIL_BUCKET_TEST,
+                    status: 'FAIL',
+                    message: PERMAFAIL_BUCKET_MESSAGE,
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    assert.match(text.stdout, /PERMA-FAILS \(1\)/);
+    assert.doesNotMatch(text.stdout, /Pre-existing/);
 });
 
-test('try is still exonerated when central fails the same way on that very config', async () => {
+test('try labels a perma-fail pre-existing when central fails that very config', async () => {
     const streams = captureStreams();
     await run({
-        argv: ['try', 'abcdef123456', '--json'],
+        argv: ['try', 'abcdef123456'],
         streams,
         source: permaFailSource(),
         cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
@@ -2833,19 +2931,12 @@ test('try is still exonerated when central fails the same way on that very confi
             ]),
         }),
     });
-    const result = json(streams.stdout);
-    // The direction the scoping must not break: this failure is pre-existing
-    // on the config it happened on, so it is not the push's.
-    assert.equal((result['permaFails'] as unknown[]).length, 0);
-    const known = result['knownIntermittents'] as {
-        everyRunFailed: boolean;
-        central: { sameMessageFailCountOnPermaConfigs: number | null };
-    }[];
-    assert.equal(known.length, 1);
-    assert.equal(known[0]!.everyRunFailed, true, 'it did fail every run of the push');
-    assert.ok(
-        (known[0]!.central.sameMessageFailCountOnPermaConfigs ?? 0) > 0,
-        'and central already fails the same way on that config'
+    // Reported — it failed every run — and named as pre-existing on the
+    // configuration it failed on, which is the whole point of the scoping.
+    assert.match(streams.stdout, /PERMA-FAILS \(1\)/);
+    assert.match(
+        streams.stdout,
+        /Pre-existing: central already fails the same way on test-windows11-64\/opt-xpcshell/
     );
 });
 
@@ -2895,11 +2986,14 @@ test('try matches perma-failing configs to central with the chunk suffix strippe
     ];
     assert.equal(all.length, 1);
     // Not `null`: the chunked push name resolved to the unchunked history one.
+    // Left unstripped it finds nothing, the count is `null`, and the row loses
+    // its pre-existing label — which is most rows, since most job names are
+    // chunked.
     assert.ok(
         (all[0]!.central.sameMessageFailCountOnPermaConfigs ?? 0) > 0,
         'the chunked job name must still find its configuration in central'
     );
-    assert.equal((result['permaFails'] as unknown[]).length, 0);
+    assert.equal((result['permaFails'] as unknown[]).length, 1);
 });
 
 /**
