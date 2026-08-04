@@ -354,16 +354,17 @@ number:
 xpcshell 2,166,688 in the aggregates against 5,998,615 in the daily files.
 
 This is a real difference in the data, not a counting artefact of the kind
-above — checked per test on a single day, the daily file records more skips
-than the aggregate does for the same test on the same date (for one test, 702
-against 113). So the two sources genuinely do not agree about how many times a
-test was skipped, and any command that reports a skip count will produce a
-different number depending on which file it read.
+above, and the cause is known: **the aggregates drop `run-if` skips and the
+daily files keep them** — see "The 21-day aggregates drop `run-if` skips"
+above, which measures it at 253,252 of 398,212 skipped runs (63.6%) on one
+full daily file, and confirms `run-if` never appears in any aggregate's
+`tables.messages`.
 
-Step 1 should not paper over this: `query/` needs to say which source a skip
-count came from, and the `skips`-related commands in `CLI.md` are specified
-against `-issues.json`, which is the lower of the two. Worth understanding
-before `fx-tests skips` quotes a number.
+So the totals above are not two counts of the same population: the aggregate
+column counts skips that mean "disabled", the daily column counts those plus
+skips that mean "not applicable on this platform". Neither is wrong; they
+answer different questions, and a command must not compare one against the
+other.
 
 This is what `PLAN.md` §2 gates the deletion on, so to be explicit about what
 it does and does not license: **the generator did not emit `UNKNOWN` on any of
