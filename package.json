@@ -1,0 +1,25 @@
+{
+    "name": "fx-tests",
+    "version": "0.0.0",
+    "private": true,
+    "description": "Command-line access to the Firefox test-health data behind https://tests.firefox.dev/",
+    "license": "MPL-2.0",
+    "type": "module",
+    "bin": {
+        "fx-tests": "./bin/fx-tests.js"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "build": "node --experimental-strip-types tools/build-cli.ts",
+        "typecheck": "tsc --noEmit",
+        "fixtures": "node --experimental-strip-types tools/make-fixtures.ts",
+        "test": "node --experimental-strip-types --test 'test/**/*.test.ts'"
+    },
+    "devDependencies": {
+        "@types/node": "^22.20.1",
+        "esbuild": "^0.25.0",
+        "typescript": "^5.7.0"
+    }
+}

@@ -1,0 +1,27 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "lib": ["ES2022"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["node"],
+
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "exactOptionalPropertyTypes": true,
+        "noImplicitOverride": true,
+        "noFallthroughCasesInSwitch": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
+        // Sources import each other with the .ts extension the file actually
+        // has; esbuild resolves it and nothing is emitted from tsc.
+        "allowImportingTsExtensions": true,
+
+        "noEmit": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": ["lib/**/*.ts", "cli/**/*.ts", "tools/**/*.ts", "test/**/*.ts"]
+}

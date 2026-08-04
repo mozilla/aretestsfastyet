@@ -307,15 +307,13 @@
             });
             D.testBlob = D.testFull.map(s => s.toLowerCase());
 
-            // Dense integer group id per marker, for each view, plus a label table
-            // (id -> display string). Grouping the hot loop by integer instead of
-            // by the message-text string avoids hashing long strings 10M+ times.
-            // The lookup-table id is already dense per distinct value; a missing
-            // text/component folds into one trailing sentinel group.
-            D.msgGroupLabel = t.messageTexts.concat(['(no message)']);
-            const msgSentinel = t.messageTexts.length;
-            D.msgGroupId = m.textIds.map(id => id == null ? msgSentinel : id);
-
+            // Dense integer group id per marker, plus a label table (id -> display
+            // string), for the views that group by a string: keying the hot loop on
+            // an integer avoids hashing component/test-path strings 10M+ times. The
+            // lookup-table id is already dense per distinct value; a missing
+            // component folds into one trailing sentinel group. The message view
+            // needs neither: it groups by messageId, so the group id *is* the
+            // messageId (see getCSR).
             D.compGroupLabel = t.components.concat(['Unknown']);
             const compSentinel = t.components.length;
             D.compGroupId = m.componentIds.map(id => id == null ? compSentinel : id);
@@ -363,20 +361,25 @@
             const mk = D.markers, n = mk.testIds.length;
             const mids = mk.messageIds, tids = mk.testIds;
             const byTest = view === 'test';
-            const idOf = view === 'message' ? D.msgGroupId : view === 'component' ? D.compGroupId : null;
+            // The message view groups by messageId, so a marker's group id is its
+            // messageId and there is no label table: a row's name is rendered from
+            // the diagnostic itself (see renderGroupRow and groupName).
+            const idOf = view === 'component' ? D.compGroupId : null;
             const tg = byTest ? D.testGroupId : null;
-            const labels = view === 'message' ? D.msgGroupLabel
-                : view === 'component' ? D.compGroupLabel : D.testGroupLabel;
-            const nGroups = labels.length;
+            const labels = view === 'component' ? D.compGroupLabel
+                : byTest ? D.testGroupLabel : null;
+            const nGroups = labels ? labels.length : D.msgKindId.length;
 
             const gStart = new Int32Array(nGroups + 1);
-            for (let i = 0; i < n; i++) gStart[(byTest ? tg[tids[i]] : idOf[mids[i]]) + 1]++;
+            for (let i = 0; i < n; i++) {
+                gStart[(byTest ? tg[tids[i]] : idOf ? idOf[mids[i]] : mids[i]) + 1]++;
+            }
             for (let g = 0; g < nGroups; g++) gStart[g + 1] += gStart[g];
 
             const order = new Int32Array(n);
             const pos = gStart.slice();
             for (let i = 0; i < n; i++) {
-                const g = byTest ? tg[tids[i]] : idOf[mids[i]];
+                const g = byTest ? tg[tids[i]] : idOf ? idOf[mids[i]] : mids[i];
                 order[pos[g]++] = i;
             }
             return D.csr[view] = { gStart, order, nGroups, labels };
@@ -405,11 +408,11 @@
         // bitmask of marker kinds it contains so the message view can later
         // show/hide whole rows by kind without rebuilding.
         //
-        // The message view groups by message text, and a text is effectively a
-        // single kind, so it is built once over *all* kinds and the checkboxes
-        // just filter visibility (see applyFilter). The test/component views mix
-        // kinds per row, so there `applyKind` bakes the current checkbox state
-        // into the counts and a kind change rebuilds + re-sorts.
+        // The message view groups by messageId, so a row is a single kind, and it
+        // is built once over *all* kinds with the checkboxes just filtering
+        // visibility (see applyFilter). The test/component views mix kinds per
+        // row, so there `applyKind` bakes the current checkbox state into the
+        // counts and a kind change rebuilds + re-sorts.
         function buildGroups(view) {
             const D = currentData, mk = D.markers;
             const groupTotal = D.groupTotal, mids = mk.messageIds, tids = mk.testIds;
@@ -457,10 +460,13 @@
             for (let g = 0; g < nGroups; g++) {
                 if (gCount[g] <= 0) continue;
                 arr.push({
-                    gid: g, key: labels[g], count: gCount[g], kindMask: gMask[g],
+                    // The message view has no label table: gid is the messageId
+                    // the row renders from, and its name is built by groupName.
+                    gid: g, key: labels ? labels[g] : null,
+                    count: gCount[g], kindMask: gMask[g],
                     testCount: needTests ? gTest[g] : 0,
                     msgCount: needMsgs ? gMsg[g] : 0,
-                    repMid: -1, hay: null, detail: null
+                    hay: null, detail: null
                 });
             }
             sortGroups(arr);
@@ -476,24 +482,18 @@
             });
         }
 
-        // The message-view top row shows one representative diagnostic (the
-        // messageId with the most occurrences among visible kinds). Only needed
-        // for rendered rows, so computed lazily per row and cached.
-        function groupRepMid(g) {
-            if (g.repMid >= 0) return g.repMid;
-            const D = currentData, mk = D.markers;
-            const mids = mk.messageIds, groupTotal = D.groupTotal, msgKindId = D.msgKindId, kindOn = D.kindOn;
-            const { gStart, order } = getCSR(D, 'message');
-            const mc = new Map();
-            let best = -1, bestCount = 0;
-            for (let j = gStart[g.gid], e = gStart[g.gid + 1]; j < e; j++) {
-                const i = order[j], mid = mids[i];
-                if (!kindOn[msgKindId[mid]]) continue;
-                const s = (mc.get(mid) || 0) + groupTotal[i];
-                mc.set(mid, s);
-                if (s > bestCount) { bestCount = s; best = mid; }
+        // A group's name for the name column: the label table's entry, or, in the
+        // message view, the diagnostic's text and location. Built on demand (only
+        // sorting by name needs it) and cached, so grouping doesn't have to
+        // materialize a string per diagnostic.
+        function groupName(g) {
+            if (g.key === null) {
+                const D = currentData, mid = g.gid;
+                const file = D.msgFile[mid], line = D.msgLine[mid];
+                g.key = D.msgText[mid] +
+                    (file ? ` ${file}${line != null ? ':' + line : ''}` : '');
             }
-            return g.repMid = best;
+            return g.key;
         }
 
         // Build a group's sub-rows, per-task instances and day-counts on demand.
@@ -590,7 +590,7 @@
             if (key === 'count') return g.count;
             if (key === 'tests') return g.testCount;
             if (key === 'messages') return g.msgCount;
-            if (key === 'name') return g.key;
+            if (key === 'name') return groupName(g);
             return 0;
         }
 
@@ -801,7 +801,7 @@
             const cols = VIEW_COLS[view];
             let main;
             if (view === 'message') {
-                main = diagnosticMain(currentData, groupRepMid(g));
+                main = diagnosticMain(currentData, g.gid);
             } else {
                 const label = g.key || (view === 'test' ? '(no test)' : '(none)');
                 main = `<div class="marker-main"><span class="marker-message" title="${escapeAttr(g.key)}">${escapeHtml(label)}</span></div>`;

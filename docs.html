@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docs</title>
+    <link rel="stylesheet" href="shared.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <style>
+        .container { max-width: 900px; }
+
+        /* The document list shown when no ?doc= is given. */
+        .doc-index { line-height: 2; }
+
+        .doc-nav {
+            margin-bottom: 20px;
+            color: #666;
+        }
+        .doc-nav a { color: #0060df; text-decoration: none; }
+        .doc-nav a:hover { text-decoration: underline; }
+
+        .markdown-body {
+            background: white;
+            padding: 32px 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            line-height: 1.6;
+            color: #333;
+            overflow-wrap: break-word;
+        }
+
+        /* h1 carries the page title; shared.css already styles h1/h2. */
+        .markdown-body > :first-child { margin-top: 0; }
+        .markdown-body h2 { cursor: auto; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+        .markdown-body h2::before { content: none; }
+        .markdown-body h3 { color: #555; margin-top: 24px; }
+
+        .markdown-body code {
+            background: #f2f2f2;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        .markdown-body pre {
+            background: #f6f8fa;
+            border: 1px solid #e5e5e5;
+            border-radius: 6px;
+            padding: 12px 14px;
+            overflow-x: auto;
+        }
+        .markdown-body pre code {
+            background: none;
+            padding: 0;
+            font-size: 0.85em;
+            line-height: 1.45;
+        }
+
+        .markdown-body table {
+            border-collapse: collapse;
+            margin: 16px 0;
+            font-size: 0.95em;
+        }
+        .markdown-body th, .markdown-body td {
+            border: 1px solid #ddd;
+            padding: 6px 12px;
+            text-align: left;
+        }
+        .markdown-body th { background: #f5f5f5; }
+        .markdown-body tbody tr:nth-child(even) { background: #fafafa; }
+
+        .markdown-body blockquote {
+            margin: 16px 0;
+            padding: 8px 16px;
+            border-left: 4px solid #ddd;
+            color: #666;
+        }
+        .markdown-body blockquote > :first-child { margin-top: 0; }
+        .markdown-body blockquote > :last-child { margin-bottom: 0; }
+
+        .markdown-body hr { border: none; border-top: 1px solid #e5e5e5; margin: 28px 0; }
+        .markdown-body a { color: #0060df; }
+
+        /* Anchor links on headings, matching the site's h2 hover affordance. */
+        .markdown-body h2, .markdown-body h3 { position: relative; }
+        .markdown-body .anchor {
+            position: absolute;
+            left: -0.85em;
+            text-decoration: none;
+            color: #bbb;
+            visibility: hidden;
+        }
+        .markdown-body h2:hover .anchor,
+        .markdown-body h3:hover .anchor { visibility: visible; }
+
+        .error { color: #b00; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="nav" class="doc-nav"></div>
+        <div id="content" class="markdown-body">Loading…</div>
+    </div>
+
+    <script>
+        // Documents available to this viewer. Only these names can be loaded, so
+        // that ?doc= can't be pointed at an arbitrary path.
+        const DOCS = [
+            { file: 'docs/PLAN.md', title: 'CLI implementation plan' },
+            { file: 'docs/CLI.md', title: 'fx-tests CLI reference' },
+        ];
+
+        const content = document.getElementById('content');
+        const nav = document.getElementById('nav');
+
+        function slugify(text) {
+            return text.toLowerCase().trim()
+                .replace(/[^\w\s-]/g, '')
+                .replace(/\s+/g, '-');
+        }
+
+        // Rewrite links between documents so they stay inside the viewer:
+        // "PLAN.md" and "docs/PLAN.md" both become "?doc=docs/PLAN.md".
+        function rewriteDocLinks(container, currentFile) {
+            const dir = currentFile.includes('/')
+                ? currentFile.slice(0, currentFile.lastIndexOf('/') + 1) : '';
+            for (const a of container.querySelectorAll('a[href]')) {
+                const href = a.getAttribute('href');
+                if (!href.endsWith('.md')) continue;
+                const resolved = href.includes('/') ? href : dir + href;
+                if (DOCS.some(d => d.file === resolved)) {
+                    a.setAttribute('href', `?doc=${encodeURIComponent(resolved)}`);
+                }
+            }
+        }
+
+        // Give headings ids and a hover anchor, so sections can be linked to.
+        function addHeadingAnchors(container) {
+            for (const h of container.querySelectorAll('h2, h3')) {
+                const id = slugify(h.textContent);
+                if (!id) continue;
+                h.id = id;
+                const anchor = document.createElement('a');
+                anchor.className = 'anchor';
+                anchor.href = '#' + id;
+                anchor.textContent = '#';
+                h.prepend(anchor);
+            }
+        }
+
+        function renderIndex() {
+            document.title = 'Docs';
+            nav.innerHTML = '';
+            const items = DOCS.map(d =>
+                `<li><a href="?doc=${encodeURIComponent(d.file)}">${d.title}</a> ` +
+                `<code>${d.file}</code></li>`).join('');
+            content.innerHTML = `<h1>Docs</h1>
+                <p>Design documents for this repository.</p>
+                <ul class="doc-index">${items}</ul>`;
+        }
+
+        async function renderDoc(entry) {
+            nav.innerHTML = '<a href="?">← All docs</a>';
+            try {
+                const response = await fetch(entry.file);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const markdown = await response.text();
+                content.innerHTML = marked.parse(markdown, { gfm: true });
+                addHeadingAnchors(content);
+                rewriteDocLinks(content, entry.file);
+
+                // The document's own h1 is the best page title.
+                const h1 = content.querySelector('h1');
+                document.title = h1 ? h1.textContent : entry.title;
+
+                // Now that the content exists, honour any #section in the URL.
+                if (location.hash) {
+                    document.getElementById(location.hash.slice(1))?.scrollIntoView();
+                }
+            } catch (error) {
+                document.title = 'Docs';
+                content.innerHTML =
+                    `<h1>Docs</h1><p class="error">Could not load <code>${entry.file}</code>: ` +
+                    `${error.message}</p>` +
+                    `<p>These files are read over HTTP, so this page needs to be served ` +
+                    `(for example <code>python3 -m http.server</code>) rather than opened ` +
+                    `as a <code>file://</code> URL.</p>` +
+                    `<p><a href="?">← All docs</a></p>`;
+            }
+        }
+
+        const requested = new URLSearchParams(location.search).get('doc');
+        const entry = DOCS.find(d => d.file === requested);
+        if (!requested) {
+            renderIndex();
+        } else if (entry) {
+            renderDoc(entry);
+        } else {
+            nav.innerHTML = '<a href="?">← All docs</a>';
+            content.innerHTML = `<h1>Docs</h1><p class="error">Unknown document ` +
+                `<code>${requested.replace(/[<&]/g, c => c === '<' ? '&lt;' : '&amp;')}</code>.</p>`;
+        }
+    </script>
+</body>
+</html>
