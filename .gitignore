@@ -15,6 +15,14 @@ artifacts/
 # which is source.
 node_modules/
 /bin/
+# ...except the bundle, which is committed on purpose. Node refuses to strip
+# types under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING), so an
+# installed package cannot run from .ts, and `prepare` cannot build it either:
+# npm runs prepare in a bare cache clone before devDependencies exist. Shipping
+# the artefact is what makes `npm i -g github:...` work at all. Rebuild with
+# `npm run build`; a stale bundle is caught by tools/check-bundle-fresh.
+!/bin/fx-tests.js
+!/bin/fx-tests.js.map
 
 # V8 profiling logs
 isolate-*.log
