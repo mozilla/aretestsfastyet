@@ -40,6 +40,32 @@
  *
  * The bytes are stored verbatim rather than re-serialized: the cache is a
  * `DataSource` decorator and the contract is bytes in, the same bytes out.
+ *
+ * ## The second kind of entry: a completed task's own artifact
+ *
+ * Everything above describes the nightly aggregates. Per-task artifacts —
+ * `fx-tests try`'s one resource-usage profile per failed job, and
+ * `fx-tests crash`'s minidump — are a different shape, and the reasoning that
+ * kept them out of the cache entirely was over-applied. Distinct *error
+ * handling* (a 404 is exit 4, permanently gone; a 5xx is exit 3, try again) is
+ * a good reason not to reuse the aggregates' semantics. It is not a reason to
+ * skip caching, and skipping it made `fx-tests try <rev>` re-download 828 MB
+ * on every single run — measured on try push 7d16bff8: 46 profiles, 4.7 MB to
+ * 34 MB each, median 14.2 MB.
+ *
+ * A completed task's artifact is **immutable**. `<taskId>/runs/<retryId>/…`
+ * fully determines the content; there is no `latest` that moves and no
+ * `generatedAt` to compare. So these entries:
+ *
+ * - are keyed by the **artifact URL**, which is what the caller has;
+ * - carry **no TTL**. Revalidating an immutable object is a round trip to
+ *   learn something the key already told you. `TASK_ARTIFACT_KIND` marks them
+ *   so `get()` knows not to expire them;
+ * - are **bounded by total size** rather than by age, because unbounded is not
+ *   acceptable at 828 MB per push. `pruneTaskArtifacts()` evicts the
+ *   least-recently-fetched until the budget is met.
+ *
+ * Nothing negative is ever cached — see `cachedArtifactFetcher`.
  */
 
 import { createHash } from 'node:crypto';
@@ -60,23 +86,49 @@ import {
     dataFileKey,
 } from '../lib/sources/source.ts';
 
+/**
+ * What kind of thing an entry holds, which decides how it expires.
+ *
+ * `aggregate` is a published index file: it has a newer generation every
+ * night, so it expires on a TTL. `task-artifact` is one completed task run's
+ * own artifact, which never changes, so it does not expire at all and is
+ * evicted by size instead.
+ *
+ * An entry with no `kind` recorded is an `aggregate`, which is what every
+ * entry written before this field existed is.
+ */
+export const AGGREGATE_KIND = 'aggregate';
+/** See `AGGREGATE_KIND`. */
+export const TASK_ARTIFACT_KIND = 'task-artifact';
+
 /** What is recorded alongside a cached file. */
 export interface CacheEntryMeta {
     /** The `index/filename` this entry holds, for `fx-tests cache`'s listing. */
     key: string;
+    /**
+     * Which expiry rule applies. Absent means `aggregate`, for entries written
+     * before the field existed.
+     */
+    kind?: string;
     /** The URL it came from, when the source knew one. */
     url?: string;
     /**
      * The file's own `metadata.generatedAt`, when it had one.
      *
-     * Not every cached file does — `index.json` has no metadata block — so
-     * this is optional, and its absence means "this file does not say".
+     * Not every cached file does — `index.json` has no metadata block, and a
+     * task artifact has none either — so this is optional, and its absence
+     * means "this file does not say".
      */
     generatedAt?: string;
     /** When this entry was written, as an ISO timestamp. */
     fetchedAt: string;
     /** Size of the cached bytes. */
     bytes: number;
+}
+
+/** Whether an entry's kind means it never goes stale. See `AGGREGATE_KIND`. */
+export function isImmutableKind(kind: string | undefined): boolean {
+    return kind === TASK_ARTIFACT_KIND;
 }
 
 /** One entry, as `fx-tests cache` reports it. */
@@ -98,6 +150,15 @@ export interface DiskCacheOptions {
      * serve yesterday's data for a whole extra day.
      */
     ttlMs?: number | undefined;
+    /**
+     * How many bytes of **task artifacts** the cache may hold.
+     *
+     * Only task artifacts, because only they are unbounded: the aggregates are
+     * a fixed set of files that a TTL re-fetches in place, while a new Try push
+     * adds 46 more profiles that nothing ever supersedes. Default
+     * `DEFAULT_ARTIFACT_BUDGET_BYTES`.
+     */
+    artifactBudgetBytes?: number | undefined;
     /** Injected clock, for tests. */
     now?: (() => number) | undefined;
 }
@@ -114,9 +175,38 @@ export function defaultCacheDir(): string {
 /** Twelve hours. See `DiskCacheOptions.ttlMs`. */
 export const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
 
+/**
+ * How many bytes of cached task artifacts to keep. See
+ * `DiskCacheOptions.artifactBudgetBytes`.
+ *
+ * Four gigabytes, chosen against the measured cost rather than a round number
+ * that felt safe: one `fx-tests try` on push 7d16bff8 caches 828 MB of
+ * profiles, so this holds roughly the last five pushes' worth. Fewer than that
+ * and the common case — re-running `try` on the push you just pushed, having
+ * looked at one other in between — starts missing, which is the case the cache
+ * exists for.
+ */
+export const DEFAULT_ARTIFACT_BUDGET_BYTES = 4 * 1024 * 1024 * 1024;
+
 /** The filename an entry is stored under. */
 export function cacheHash(name: DataFileName): string {
     return createHash('sha256').update(dataFileKey(name)).digest('hex').slice(0, 32);
+}
+
+/**
+ * The filename a task artifact is stored under, keyed by its URL.
+ *
+ * A separate function from `cacheHash` and not merely a different argument to
+ * it: the two key spaces must not collide, and a URL is not an
+ * `index/filename` pair. The prefix is what keeps them apart — without it a
+ * caller could construct a `DataFileName` whose key is a URL and read another
+ * kind of entry.
+ *
+ * The URL is the whole key because it already contains the task ID, the retry
+ * and the artifact path, which is exactly what determines the content.
+ */
+export function urlCacheHash(url: string): string {
+    return createHash('sha256').update(`url:${url}`).digest('hex').slice(0, 32);
 }
 
 /** The cache itself, usable on its own by `fx-tests cache`. */
@@ -126,6 +216,22 @@ export interface DiskCache {
     get(name: DataFileName): Promise<Uint8Array | null>;
     /** Stores bytes, recording `generatedAt` if the payload carries one. */
     put(name: DataFileName, bytes: Uint8Array, url?: string): Promise<void>;
+    /**
+     * Cached bytes of an immutable task artifact, or `null` when absent.
+     *
+     * No TTL: the URL names one run of one completed task, whose artifact
+     * never changes. An entry that is there is correct however old it is.
+     */
+    getArtifact(url: string): Promise<Uint8Array | null>;
+    /** Stores an immutable task artifact under its URL. */
+    putArtifact(url: string, bytes: Uint8Array): Promise<void>;
+    /**
+     * Evicts the oldest task artifacts until they fit the budget.
+     *
+     * Returns how many were removed. Aggregates are never touched: they are a
+     * bounded set that the TTL refreshes in place.
+     */
+    pruneTaskArtifacts(): Promise<number>;
     /** Every entry, for the `cache` command. */
     list(): Promise<CacheEntryInfo[]>;
     /** Deletes everything. Returns how many entries were removed. */
@@ -136,6 +242,8 @@ export interface DiskCache {
 export function diskCache(options: DiskCacheOptions = {}): DiskCache {
     const directory = options.directory ?? defaultCacheDir();
     const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    const artifactBudgetBytes =
+        options.artifactBudgetBytes ?? DEFAULT_ARTIFACT_BUDGET_BYTES;
     const now = options.now ?? Date.now;
 
     const dataPath = (hash: string): string => join(directory, `${hash}.json`);
@@ -153,7 +261,26 @@ export function diskCache(options: DiskCacheOptions = {}): DiskCache {
         }
     }
 
-    return {
+    async function readBytes(hash: string): Promise<Uint8Array | null> {
+        try {
+            return new Uint8Array(await readFile(dataPath(hash)));
+        } catch {
+            return null;
+        }
+    }
+
+    /** Writes both files of one entry, data first. See `put()`. */
+    async function writeEntry(hash: string, bytes: Uint8Array, meta: CacheEntryMeta): Promise<void> {
+        await mkdir(directory, { recursive: true });
+        // Data first, then metadata: the metadata file is what `get()` keys
+        // on, so writing it last means a crash between the two leaves an
+        // orphaned data file rather than metadata pointing at bytes that are
+        // not there.
+        await writeFile(dataPath(hash), bytes);
+        await writeFile(metaPath(hash), JSON.stringify(meta, null, 2));
+    }
+
+    const self: DiskCache = {
         directory,
 
         async get(name: DataFileName): Promise<Uint8Array | null> {
@@ -166,19 +293,13 @@ export function diskCache(options: DiskCacheOptions = {}): DiskCache {
             if (!Number.isFinite(age) || age < 0 || age > ttlMs) {
                 return null;
             }
-            try {
-                const buffer = await readFile(dataPath(hash));
-                return new Uint8Array(buffer);
-            } catch {
-                return null;
-            }
+            return readBytes(hash);
         },
 
         async put(name: DataFileName, bytes: Uint8Array, url?: string): Promise<void> {
-            const hash = cacheHash(name);
-            await mkdir(directory, { recursive: true });
             const meta: CacheEntryMeta = {
                 key: dataFileKey(name),
+                kind: AGGREGATE_KIND,
                 fetchedAt: new Date(now()).toISOString(),
                 bytes: bytes.byteLength,
             };
@@ -189,12 +310,57 @@ export function diskCache(options: DiskCacheOptions = {}): DiskCache {
             if (generatedAt !== null) {
                 meta.generatedAt = generatedAt;
             }
-            // Data first, then metadata: the metadata file is what `get()`
-            // keys on, so writing it last means a crash between the two leaves
-            // an orphaned data file rather than metadata pointing at bytes
-            // that are not there.
-            await writeFile(dataPath(hash), bytes);
-            await writeFile(metaPath(hash), JSON.stringify(meta, null, 2));
+            await writeEntry(cacheHash(name), bytes, meta);
+        },
+
+        async getArtifact(url: string): Promise<Uint8Array | null> {
+            const hash = urlCacheHash(url);
+            const meta = await readMeta(hash);
+            // No age check, and that is the point: the URL names one run of
+            // one completed task. The kind is still checked, so an entry
+            // written under some other rule cannot be served as immutable.
+            if (meta === null || !isImmutableKind(meta.kind)) {
+                return null;
+            }
+            return readBytes(hash);
+        },
+
+        async putArtifact(url: string, bytes: Uint8Array): Promise<void> {
+            await writeEntry(urlCacheHash(url), bytes, {
+                // The URL is the key, so it is also what `fx-tests cache`
+                // lists: there is no shorter name that identifies the entry.
+                key: url,
+                kind: TASK_ARTIFACT_KIND,
+                url,
+                fetchedAt: new Date(now()).toISOString(),
+                bytes: bytes.byteLength,
+            });
+        },
+
+        async pruneTaskArtifacts(): Promise<number> {
+            const artifacts = (await self.list()).filter((entry) =>
+                isImmutableKind(entry.kind)
+            );
+            let total = artifacts.reduce((sum, entry) => sum + entry.bytes, 0);
+            if (total <= artifactBudgetBytes) {
+                return 0;
+            }
+            // Oldest first. Least-recently-*fetched* rather than
+            // least-recently-used: reading an entry does not rewrite its
+            // metadata, so there is no use timestamp to order by, and adding
+            // one would mean a write on every cache hit.
+            artifacts.sort((a, b) => Date.parse(a.fetchedAt) - Date.parse(b.fetchedAt));
+            let removed = 0;
+            for (const entry of artifacts) {
+                if (total <= artifactBudgetBytes) {
+                    break;
+                }
+                await rm(dataPath(entry.hash), { force: true });
+                await rm(metaPath(entry.hash), { force: true });
+                total -= entry.bytes;
+                removed++;
+            }
+            return removed;
         },
 
         async list(): Promise<CacheEntryInfo[]> {
@@ -236,6 +402,7 @@ export function diskCache(options: DiskCacheOptions = {}): DiskCache {
             return removed;
         },
     };
+    return self;
 }
 
 /**
@@ -289,6 +456,101 @@ export function cachedSource(
             const bytes = await inner.fetch(name);
             try {
                 await cache.put(name, bytes);
+            } catch (error) {
+                hooks.onWarning?.(describeCacheWriteFailure(cache.directory, error));
+            }
+            return bytes;
+        },
+    };
+}
+
+/**
+ * Wraps a per-URL artifact fetcher so its results are cached on disk.
+ *
+ * This is what `fx-tests try` reaches for: one resource-usage profile per
+ * failed job, fetched by URL rather than by `DataFileName`. Before this
+ * existed, two consecutive runs on try push 7d16bff8 each downloaded all 46 —
+ * measured at 828 MB and 19 s cold, 7 s warm and still 46 requests.
+ *
+ * ## Nothing negative is cached, deliberately
+ *
+ * The fetcher's contract is `Uint8Array | null`, where `null` is "no artifact"
+ * — and a `null` that came from a 404 means something permanently different
+ * from a `null` that came from a 503. The caller cannot tell them apart from
+ * the return value, so caching `null` would preserve a transient outage as if
+ * it were an expired artifact, and a run made during a Taskcluster hiccup
+ * would keep reporting missing profiles long after they were reachable again.
+ *
+ * The asymmetry is what settles it: caching a success can only ever be right,
+ * because the content is immutable; caching a failure can be wrong, and the
+ * wrong version is sticky. So a miss re-fetches, which costs one request on a
+ * genuinely expired artifact and correctness on every transient one.
+ */
+export function cachedArtifactFetcher(
+    inner: (url: string) => Promise<Uint8Array | null>,
+    cache: DiskCache,
+    hooks: {
+        onHit?: ((url: string) => void) | undefined;
+        onMiss?: ((url: string) => void) | undefined;
+        onWarning?: ((message: string) => void) | undefined;
+    } = {}
+): (url: string) => Promise<Uint8Array | null> {
+    return async (url: string): Promise<Uint8Array | null> => {
+        const cached = await cache.getArtifact(url);
+        if (cached !== null) {
+            hooks.onHit?.(url);
+            return cached;
+        }
+        hooks.onMiss?.(url);
+        const bytes = await inner(url);
+        if (bytes === null) {
+            return null;
+        }
+        try {
+            await cache.putArtifact(url, bytes);
+        } catch (error) {
+            hooks.onWarning?.(describeCacheWriteFailure(cache.directory, error));
+        }
+        return bytes;
+    };
+}
+
+/**
+ * Wraps a task-artifact `DataSource` so its fetches are cached on disk.
+ *
+ * The `DataSource` half of the same idea, for `fx-tests crash`. Keyed by the
+ * same URL space, so the key is rebuilt from the name rather than taken from
+ * the source — `taskArtifactSource` does not report the URL it used.
+ *
+ * **The error types pass straight through**, which is the requirement that
+ * kept these out of the cache in the first place. A `DataFileNotFoundError`
+ * still reaches `fx-tests crash` and still becomes exit 4; a `DataFetchError`
+ * still becomes exit 3. Nothing is cached on either path — see
+ * `cachedArtifactFetcher` for why a failure must not be sticky — so the cache
+ * cannot turn one into the other.
+ */
+export function cachedTaskArtifactSource(
+    inner: DataSource,
+    cache: DiskCache,
+    keyOf: (name: DataFileName) => string,
+    hooks: {
+        onWarning?: ((message: string) => void) | undefined;
+    } = {}
+): DataSource {
+    return {
+        name: inner.name,
+        async fetch(name: DataFileName): Promise<Uint8Array> {
+            const key = keyOf(name);
+            const cached = await cache.getArtifact(key);
+            if (cached !== null) {
+                return cached;
+            }
+            // Not in a try/catch: a 404 must stay a `DataFileNotFoundError`
+            // and a 5xx a `DataFetchError`, because the two are exit 4 and
+            // exit 3 and the whole point of this source is that they differ.
+            const bytes = await inner.fetch(name);
+            try {
+                await cache.putArtifact(key, bytes);
             } catch (error) {
                 hooks.onWarning?.(describeCacheWriteFailure(cache.directory, error));
             }

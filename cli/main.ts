@@ -11,7 +11,14 @@
 
 import { GLOBAL_OPTION_SPECS, readGlobalOptions } from './options.ts';
 import { type OptionSpecs, parseArgs, boolOption } from './args.ts';
-import { type DiskCache, cachedSource, defaultCacheDir, diskCache } from './cache.ts';
+import {
+    type DiskCache,
+    cachedArtifactFetcher,
+    cachedSource,
+    cachedTaskArtifactSource,
+    defaultCacheDir,
+    diskCache,
+} from './cache.ts';
 import type { CommandContext, OutputStreams } from './context.ts';
 import { CliError, ExitCode, type ExitCodeValue, usageError } from './errors.ts';
 import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
@@ -38,7 +45,7 @@ import {
     DataFileNotFoundError,
     type DataSource,
 } from '../lib/sources/source.ts';
-import { httpSource, taskArtifactSource } from '../lib/sources/http.ts';
+import { httpSource, taskArtifactSource, taskArtifactUrl } from '../lib/sources/http.ts';
 import { PushNotFoundError, TreeherderError, treeherderClient } from '../lib/sources/treeherder.ts';
 
 /** One command's registration. */
@@ -172,8 +179,25 @@ export interface RunOptions {
     cache?: DiskCache | undefined;
     /** Overrides Treeherder, for `fx-tests try` tests. */
     treeherder?: CommandContext['treeherder'];
-    /** Overrides per-URL artifact fetching, for `fx-tests try` tests. */
+    /**
+     * Replaces per-URL artifact fetching outright, cache and all.
+     *
+     * What most `fx-tests try` tests want: they are asserting on
+     * classification, not on caching, and a fetcher handed in here is the one
+     * the command calls.
+     */
     fetchUrl?: CommandContext['fetchUrl'];
+    /**
+     * Replaces only the **HTTP** half of artifact fetching, leaving the disk
+     * cache in place above it.
+     *
+     * The seam that makes the caching itself testable. `fetchUrl` above cannot
+     * do it: overriding the whole thing removes the cache, so a test using it
+     * proves nothing about whether a warm run re-downloads — which is the
+     * regression this exists to pin. Production leaves it unset and gets
+     * Node's `fetch`.
+     */
+    httpFetchUrl?: ((url: string) => Promise<Uint8Array | null>) | undefined;
     /** Overrides the per-task artifact source, for `fx-tests crash` tests. */
     taskArtifacts?: CommandContext['taskArtifacts'];
     /**
@@ -308,16 +332,30 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         ...(options.treeherder === undefined
             ? { treeherder: treeherderClient({ fetch: nodeFetch }) }
             : { treeherder: options.treeherder }),
+        // Per-task artifacts keep their own **error handling** — an expired
+        // artifact is exit 4 while a missing index file is exit 2, which is
+        // `PLAN.md` §4's new dependency shape — but they are cached, on their
+        // own terms. `cli/cache.ts` has the reasoning; the short form is that a
+        // completed task's artifact is immutable, so it is a better caching
+        // candidate than the nightly aggregates rather than a worse one, and
+        // not caching it made `try` re-download 828 MB on every run.
+        //
+        // Both wrappers are skipped under `--no-cache`, and both take whatever
+        // `--cache-dir` resolved to, because `cache` is the one object built
+        // from those two globals.
         ...(options.fetchUrl === undefined
-            ? { fetchUrl: nodeFetchBytes }
+            ? {
+                  fetchUrl: buildArtifactFetcher(
+                      globals,
+                      cache,
+                      streams,
+                      options.httpFetchUrl ?? nodeFetchBytes
+                  ),
+              }
             : { fetchUrl: options.fetchUrl }),
-        // Per-task artifacts are their own source, deliberately not the disk
-        // cache's: `PLAN.md` §4 calls this a new dependency shape, and its
-        // failure modes differ — an expired artifact is exit 4 while a missing
-        // index file is exit 2. Injected so `fx-tests crash` is testable
-        // without a network.
+        // Injected so `fx-tests crash` is testable without a network.
         ...(options.taskArtifacts === undefined
-            ? { taskArtifacts: taskArtifactSource({ fetch: nodeFetch }) }
+            ? { taskArtifacts: buildTaskArtifacts(globals, cache, streams) }
             : { taskArtifacts: options.taskArtifacts }),
         ...(options.loadTimingFile === undefined
             ? {}
@@ -330,7 +368,58 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
     }
 
     await command.run(context, args);
+
+    // Task artifacts are the only entries nothing supersedes — a new push adds
+    // 46 more profiles rather than replacing any — so the budget is enforced
+    // here, after the answer has been printed. Deliberately after: eviction is
+    // housekeeping, and a full or read-only cache directory must not turn a
+    // successful command into a failure.
+    if (!globals.noCache) {
+        try {
+            await cache.pruneTaskArtifacts();
+        } catch {
+            // Same reasoning as a failed cache write: slower, not broken.
+        }
+    }
     return ExitCode.Success;
+}
+
+/**
+ * The per-URL artifact fetcher `fx-tests try` uses, cached unless
+ * `--no-cache`.
+ *
+ * The progress line names the task rather than the URL: 46 of these scroll
+ * past and the 90-character queue prefix is the same on every one.
+ */
+function buildArtifactFetcher(
+    globals: ReturnType<typeof readGlobalOptions>,
+    cache: DiskCache,
+    streams: OutputStreams,
+    http: (url: string) => Promise<Uint8Array | null>
+): (url: string) => Promise<Uint8Array | null> {
+    if (globals.noCache) {
+        return http;
+    }
+    return cachedArtifactFetcher(http, cache, {
+        onWarning: (message) => streams.err(`warning: ${message}\n`),
+    });
+}
+
+/** The `fx-tests crash` artifact source, cached unless `--no-cache`. */
+function buildTaskArtifacts(
+    globals: ReturnType<typeof readGlobalOptions>,
+    cache: DiskCache,
+    streams: OutputStreams
+): DataSource {
+    const source = taskArtifactSource({ fetch: nodeFetch });
+    if (globals.noCache) {
+        return source;
+    }
+    // Keyed on the URL the source would have fetched, built by the source's
+    // own function so the two cannot drift apart.
+    return cachedTaskArtifactSource(source, cache, (name) => taskArtifactUrl(name), {
+        onWarning: (message) => streams.err(`warning: ${message}\n`),
+    });
 }
 
 /** The real data source: HTTP, wrapped in the disk cache unless `--no-cache`. */
