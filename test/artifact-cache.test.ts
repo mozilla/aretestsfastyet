@@ -47,11 +47,14 @@ import {
 import { taskArtifactName, taskArtifactUrl } from '../lib/sources/http.ts';
 import {
     DEFAULT_ARTIFACT_BUDGET_BYTES,
+    SETTLED_PUSH_TTL_MS,
     TASK_ARTIFACT_KIND,
     cachedArtifactFetcher,
     cachedTaskArtifactSource,
+    cachedTreeherderJobs,
     diskCache,
     isImmutableKind,
+    isSettledPush,
     urlCacheHash,
 } from '../cli/cache.ts';
 
@@ -481,6 +484,135 @@ test('cache --clear removes artifacts and says how many', async () => {
         assert.match(streams.stdout, /Cleared 2 entries/);
         assert.match(streams.stdout, /of which 1 task artifact/);
         assert.deepEqual(await cache.list(), [], 'both kinds are gone');
+    });
+});
+
+// --- Treeherder: a settled push, and only a settled push ------------------
+
+/** A Treeherder client over a fixed job list, counting `jobsOfPush` calls. */
+function countingTreeherder(jobs: { state: string; taskId: string }[]): {
+    jobsOfPush(pushId: number): Promise<{ state: string; taskId: string }[]>;
+    calls: number[];
+} {
+    const calls: number[] = [];
+    return {
+        calls,
+        jobsOfPush(pushId: number) {
+            calls.push(pushId);
+            return Promise.resolve(jobs);
+        },
+    };
+}
+
+test('a settled push’s job list is served from cache', async () => {
+    await withCacheDir(async (directory) => {
+        const cache = diskCache({ directory });
+        const inner = countingTreeherder([
+            { state: 'completed', taskId: 'A' },
+            { state: 'completed', taskId: 'B' },
+        ]);
+        const client = cachedTreeherderJobs(inner, cache);
+        const first = await client.jobsOfPush(1988598);
+        // 561 KB and 0.3 s for a 1,731-job push, measured on try push
+        // 7d16bff8. Worth not asking for twice.
+        const second = await client.jobsOfPush(1988598);
+        assert.equal(inner.calls.length, 1, 'the second lookup must make no request');
+        assert.deepEqual(second, first);
+    });
+});
+
+test('a push still running is never cached', async () => {
+    await withCacheDir(async (directory) => {
+        const cache = diskCache({ directory });
+        // Measured on live autoland push 1991559: 1,906 unscheduled, 65
+        // running, 28 completed, 1 pending. `try` reads only completed jobs,
+        // so a snapshot of this cached and re-served would report whatever had
+        // failed by then and call the rest of the push clean — a confident
+        // wrong answer to "did my patch break anything".
+        const inner = countingTreeherder([
+            { state: 'completed', taskId: 'A' },
+            { state: 'running', taskId: 'B' },
+        ]);
+        const client = cachedTreeherderJobs(inner, cache);
+        await client.jobsOfPush(7);
+        await client.jobsOfPush(7);
+        assert.equal(inner.calls.length, 2, 'an unfinished push must be re-read every time');
+        assert.deepEqual(await cache.list(), [], 'and nothing written');
+    });
+});
+
+test('every non-terminal state keeps a push out of the cache', () => {
+    // Each of Treeherder's three non-terminal states on its own, because a
+    // rule written as `state !== 'running'` catches the common case and lets a
+    // push that is entirely `pending` through.
+    for (const state of ['unscheduled', 'pending', 'running']) {
+        assert.equal(
+            isSettledPush([{ state: 'completed' }, { state }]),
+            false,
+            `a ${state} job must keep the push unsettled`
+        );
+    }
+    assert.equal(isSettledPush([{ state: 'completed' }, { state: 'completed' }]), true);
+});
+
+test('a push with no jobs at all is not settled', () => {
+    // An empty list is what a push answers before anything is scheduled, and
+    // caching it would pin "this push has no jobs" for a day.
+    assert.equal(isSettledPush([]), false);
+});
+
+test('a settled push is re-read after a day, so a retrigger is picked up', async () => {
+    await withCacheDir(async (directory) => {
+        let now = Date.parse('2026-01-01T00:00:00Z');
+        const cache = diskCache({ directory, now: () => now });
+        const inner = countingTreeherder([{ state: 'completed', taskId: 'A' }]);
+        const client = cachedTreeherderJobs(inner, cache);
+        await client.jobsOfPush(7);
+        now += SETTLED_PUSH_TTL_MS - 1000;
+        await client.jobsOfPush(7);
+        assert.equal(inner.calls.length, 1, 'within the day it is still served');
+        // The entry is not permanent, because a settled push can still gain a
+        // run when someone retriggers a job on it and nothing in the cached
+        // list would say so.
+        now += 2000;
+        await client.jobsOfPush(7);
+        assert.equal(inner.calls.length, 2, 'past the day it is re-read');
+    });
+});
+
+test('two pushes do not share a job-list entry', async () => {
+    await withCacheDir(async (directory) => {
+        const cache = diskCache({ directory });
+        const first = countingTreeherder([{ state: 'completed', taskId: 'A' }]);
+        const second = countingTreeherder([{ state: 'completed', taskId: 'B' }]);
+        await cachedTreeherderJobs(first, cache).jobsOfPush(1);
+        const jobs = await cachedTreeherderJobs(second, cache).jobsOfPush(2);
+        // A shared key would serve push 1's jobs for push 2 — a whole push's
+        // triage attributed to the wrong revision.
+        assert.deepEqual(jobs, [{ state: 'completed', taskId: 'B' }]);
+        assert.equal(second.calls.length, 1);
+    });
+});
+
+test('the push lookup is deliberately left uncached', async () => {
+    await withCacheDir(async (directory) => {
+        const cache = diskCache({ directory });
+        let lookups = 0;
+        const inner = {
+            findPush: (): Promise<{ pushId: number }> => {
+                lookups++;
+                return Promise.resolve({ pushId: 1 });
+            },
+            jobsOfPush: (): Promise<{ state: string }[]> =>
+                Promise.resolve([{ state: 'completed' }]),
+        };
+        const client = cachedTreeherderJobs(inner, cache);
+        await client.findPush();
+        await client.findPush();
+        // 3.5 KB and 0.25 s, so there is little to win, and this is the
+        // request that resolves a revision — including a 12-character prefix,
+        // which can match a different push later. See `cachedTreeherderJobs`.
+        assert.equal(lookups, 2, 'the push lookup stays live');
     });
 });
 

@@ -16,6 +16,7 @@ import {
     cachedArtifactFetcher,
     cachedSource,
     cachedTaskArtifactSource,
+    cachedTreeherderJobs,
     defaultCacheDir,
     diskCache,
 } from './cache.ts';
@@ -330,7 +331,7 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         streams,
         source: options.source ?? buildSource(globals, cache, streams),
         ...(options.treeherder === undefined
-            ? { treeherder: treeherderClient({ fetch: nodeFetch }) }
+            ? { treeherder: buildTreeherder(globals, cache, streams) }
             : { treeherder: options.treeherder }),
         // Per-task artifacts keep their own **error handling** — an expired
         // artifact is exit 4 while a missing index file is exit 2, which is
@@ -401,6 +402,27 @@ function buildArtifactFetcher(
         return http;
     }
     return cachedArtifactFetcher(http, cache, {
+        onWarning: (message) => streams.err(`warning: ${message}\n`),
+    });
+}
+
+/**
+ * Treeherder, with a **settled** push's job list cached unless `--no-cache`.
+ *
+ * Only the job list, and only once every job of the push has finished. See
+ * `cachedTreeherderJobs` for why the push lookup is left uncached and why the
+ * condition is settledness rather than a TTL.
+ */
+function buildTreeherder(
+    globals: ReturnType<typeof readGlobalOptions>,
+    cache: DiskCache,
+    streams: OutputStreams
+): NonNullable<CommandContext['treeherder']> {
+    const client = treeherderClient({ fetch: nodeFetch });
+    if (globals.noCache) {
+        return client;
+    }
+    return cachedTreeherderJobs(client, cache, {
         onWarning: (message) => streams.err(`warning: ${message}\n`),
     });
 }

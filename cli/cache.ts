@@ -126,6 +126,15 @@ export interface CacheEntryMeta {
     bytes: number;
 }
 
+/**
+ * A settled Treeherder push's job list. See `isSettledPush`.
+ *
+ * Its own kind rather than an aggregate, because its expiry rule is neither
+ * the aggregates' 12 hours nor the artifacts' never: see
+ * `SETTLED_PUSH_TTL_MS`.
+ */
+export const PUSH_JOBS_KIND = 'push-jobs';
+
 /** Whether an entry's kind means it never goes stale. See `AGGREGATE_KIND`. */
 export function isImmutableKind(kind: string | undefined): boolean {
     return kind === TASK_ARTIFACT_KIND;
@@ -225,6 +234,13 @@ export interface DiskCache {
     getArtifact(url: string): Promise<Uint8Array | null>;
     /** Stores an immutable task artifact under its URL. */
     putArtifact(url: string, bytes: Uint8Array): Promise<void>;
+    /**
+     * A settled push's cached job list, or `null` when absent or past
+     * `SETTLED_PUSH_TTL_MS`.
+     */
+    getPushJobs(key: string): Promise<Uint8Array | null>;
+    /** Stores a settled push's job list. Only call it for a settled push. */
+    putPushJobs(key: string, bytes: Uint8Array): Promise<void>;
     /**
      * Evicts the oldest task artifacts until they fit the budget.
      *
@@ -332,6 +348,32 @@ export function diskCache(options: DiskCacheOptions = {}): DiskCache {
                 key: url,
                 kind: TASK_ARTIFACT_KIND,
                 url,
+                fetchedAt: new Date(now()).toISOString(),
+                bytes: bytes.byteLength,
+            });
+        },
+
+        async getPushJobs(key: string): Promise<Uint8Array | null> {
+            const hash = urlCacheHash(key);
+            const meta = await readMeta(hash);
+            if (meta === null || meta.kind !== PUSH_JOBS_KIND) {
+                return null;
+            }
+            // Its own TTL, neither the aggregates' 12 hours nor the artifacts'
+            // never. See `SETTLED_PUSH_TTL_MS`: the entry was only written
+            // because every job had finished, so the only thing that can
+            // invalidate it is a retrigger.
+            const age = now() - Date.parse(meta.fetchedAt);
+            if (!Number.isFinite(age) || age < 0 || age > SETTLED_PUSH_TTL_MS) {
+                return null;
+            }
+            return readBytes(hash);
+        },
+
+        async putPushJobs(key: string, bytes: Uint8Array): Promise<void> {
+            await writeEntry(urlCacheHash(key), bytes, {
+                key,
+                kind: PUSH_JOBS_KIND,
                 fetchedAt: new Date(now()).toISOString(),
                 bytes: bytes.byteLength,
             });
@@ -558,6 +600,106 @@ export function cachedTaskArtifactSource(
         },
     };
 }
+
+/**
+ * Wraps a Treeherder client so a **settled** push's job list is cached.
+ *
+ * The judgement call this makes, stated plainly: the job list is cached and
+ * the push lookup is not.
+ *
+ * **The job list is worth caching and can be cached safely.** It is 561 KB and
+ * 0.3 s for a 1,731-job push (measured on try push 7d16bff8), and once every
+ * job has finished it cannot change except by a retrigger — see
+ * `isSettledPush` for why that is the condition rather than a TTL, and
+ * `SETTLED_PUSH_TTL_MS` for why the entry still expires.
+ *
+ * **The push lookup is not.** It is 3.5 KB and 0.25 s, so there is little to
+ * win, and it is the request that *resolves* a revision — including a
+ * 12-character prefix, which can in principle match a different push later.
+ * Caching the cheap half of a pair to save a quarter of a second, at the price
+ * of resolving a revision from memory, is the wrong trade. It also keeps the
+ * failure mode simple: `PushNotFoundError` for a push that does not exist yet
+ * stays a live answer rather than a remembered one.
+ */
+export function cachedTreeherderJobs<
+    J extends { state: string },
+    C extends { jobsOfPush(pushId: number): Promise<J[]> },
+>(inner: C, cache: DiskCache, hooks: { onWarning?: ((message: string) => void) | undefined } = {}): C {
+    return {
+        ...inner,
+        async jobsOfPush(pushId: number): Promise<J[]> {
+            const key = `treeherder:jobs:${pushId}`;
+            const cached = await cache.getPushJobs(key);
+            if (cached !== null) {
+                try {
+                    return JSON.parse(new TextDecoder().decode(cached)) as J[];
+                } catch {
+                    // A corrupt entry means "no usable entry", as everywhere
+                    // else in this file: re-fetch rather than throw.
+                }
+            }
+            const jobs = await inner.jobsOfPush(pushId);
+            if (!isSettledPush(jobs)) {
+                // A push still running must not be cached at all. The stale
+                // read would report the failures that had landed so far and
+                // call the rest of the push clean — see `isSettledPush`.
+                return jobs;
+            }
+            try {
+                await cache.putPushJobs(key, new TextEncoder().encode(JSON.stringify(jobs)));
+            } catch (error) {
+                hooks.onWarning?.(describeCacheWriteFailure(cache.directory, error));
+            }
+            return jobs;
+        },
+    };
+}
+
+/**
+ * Job states that mean the job is not going to change again.
+ *
+ * Treeherder's states are `unscheduled`, `pending`, `running` and `completed`,
+ * and only the last is terminal. Measured on live autoland push 1991559:
+ * 1,906 unscheduled, 65 running, 28 completed, 1 pending — a push under way is
+ * overwhelmingly *not* completed.
+ */
+const TERMINAL_JOB_STATES: ReadonlySet<string> = new Set(['completed']);
+
+/**
+ * Whether a push's job list can be cached: every job has finished.
+ *
+ * This is the whole Treeherder staleness rule, and it is deliberately not a
+ * TTL. A TTL on a *finished* push wastes a request on data that will never
+ * change again; a TTL on a *running* one serves a snapshot that was already
+ * wrong when it was taken — and the way it is wrong is the dangerous
+ * direction. `fx-tests try` only looks at completed jobs, so a half-finished
+ * push cached mid-run reports the failures that had landed by then and calls
+ * the rest of the push clean. That is a *confident wrong answer* to "did my
+ * patch break anything", which is worse than the 0.6 s it costs to ask again.
+ *
+ * A settled push, by contrast, is as immutable as a task artifact: no state
+ * can leave `completed`.
+ *
+ * The one thing this does not cover is a **retrigger** — someone adding a run
+ * to a push that had settled. That adds a job the cached list does not have,
+ * and it is why `SETTLED_PUSH_TTL_MS` exists rather than the entry being
+ * permanent: a retriggered push is re-read within the day.
+ */
+export function isSettledPush(jobs: readonly { state: string }[]): boolean {
+    return jobs.length > 0 && jobs.every((job) => TERMINAL_JOB_STATES.has(job.state));
+}
+
+/**
+ * How long a settled push's job list is served from cache.
+ *
+ * Not `Infinity`, and the reason is retriggers: a push whose jobs have all
+ * finished can still gain another run when someone re-runs a job on it, and
+ * nothing in the cached list says so. A day is the compromise — long enough
+ * that the triage loop this command exists for (push, look, fix, look again)
+ * never re-downloads, short enough that a retrigger from yesterday is picked
+ * up without anyone reaching for `--no-cache`.
+ */
+export const SETTLED_PUSH_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Turns a cache-write failure into something the reader can act on.
