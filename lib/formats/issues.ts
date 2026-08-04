@@ -90,5 +90,6 @@ export function decodeIssuesWithTaskIds(file: IssuesWithTaskIdsFile): DecodedTim
         tables: file.tables,
         testInfo: file.testInfo,
         testRuns: file.testRuns,
+        taskJobNameIds: file.taskInfo.jobNameIds,
     });
 }

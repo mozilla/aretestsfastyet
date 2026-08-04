@@ -107,24 +107,59 @@ export function decodeResourceJobs(
     dayStartTime = 0
 ): DecodedResourceJob[] {
     const { jobs } = file;
+    const count = jobs.taskIds.length;
+
+    // `jobs` is a set of parallel arrays, so a short one is a corrupt file
+    // rather than a job with a missing field. Substituting 0 for a missing
+    // `maxMemories` entry would report a job that used no memory, which is a
+    // plausible-looking wrong answer of exactly the kind the status-group
+    // decoder throws on — so this checks up front and throws too.
+    const lengths: Record<string, number> = {
+        taskIds: count,
+        jobNameIds: jobs.jobNameIds.length,
+        chunks: jobs.chunks.length,
+        repositoryIds: jobs.repositoryIds.length,
+        startTimes: jobs.startTimes.length,
+        machineInfoIds: jobs.machineInfoIds.length,
+        maxMemories: jobs.maxMemories.length,
+        idleTimes: jobs.idleTimes.length,
+        singleCoreTimes: jobs.singleCoreTimes.length,
+        cpuBuckets: jobs.cpuBuckets.length,
+    };
+    const misaligned = Object.entries(lengths).filter(([, length]) => length !== count);
+    if (misaligned.length > 0) {
+        throw new Error(
+            `resources jobs arrays are misaligned: ${count} task IDs but ` +
+                misaligned.map(([key, length]) => `${key}=${length}`).join(', ')
+        );
+    }
+
     const out: DecodedResourceJob[] = [];
     let startTime = dayStartTime;
-    for (let i = 0; i < jobs.taskIds.length; i++) {
-        startTime += jobs.startTimes[i] ?? 0;
+    for (let i = 0; i < count; i++) {
+        startTime += jobs.startTimes[i]!;
         const rawTaskId = jobs.taskIds[i]!;
+        const cpuBuckets = jobs.cpuBuckets[i]!;
+        if (cpuBuckets.length !== CPU_BUCKET_COUNT) {
+            throw new Error(
+                `job ${i} has ${cpuBuckets.length} CPU buckets, expected ${CPU_BUCKET_COUNT}`
+            );
+        }
         out.push({
             index: i,
             jobName: lookup(file.jobNames, jobs.jobNameIds[i]!, 'jobNames'),
-            chunk: jobs.chunks[i] ?? null,
+            // A null chunk is a real value — an unchunked job — so it reads
+            // through, unlike the missing slots above.
+            chunk: jobs.chunks[i]!,
             taskId: normalizeTaskId(rawTaskId),
             rawTaskId,
             repository: lookup(file.repositories, jobs.repositoryIds[i]!, 'repositories'),
             startTime,
             machine: machineInfoAt(file, jobs.machineInfoIds[i]!),
-            maxMemory: jobs.maxMemories[i] ?? 0,
-            idleTime: jobs.idleTimes[i] ?? 0,
-            singleCoreTime: jobs.singleCoreTimes[i] ?? 0,
-            cpuBuckets: (jobs.cpuBuckets[i] ?? []).slice(),
+            maxMemory: jobs.maxMemories[i]!,
+            idleTime: jobs.idleTimes[i]!,
+            singleCoreTime: jobs.singleCoreTimes[i]!,
+            cpuBuckets: cpuBuckets.slice(),
         });
     }
     return out;

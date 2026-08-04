@@ -76,6 +76,7 @@ export function decodeBucket(file: BucketFile): DecodedTimingFile {
         tables: file.tables,
         testInfo: file.testInfo,
         testRuns: file.testRuns,
+        taskJobNameIds: file.taskInfo.jobNameIds,
     });
 }
 

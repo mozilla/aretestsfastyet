@@ -24,10 +24,12 @@ import {
 } from './status-entries.ts';
 import type { StatusGroup } from './status-group.ts';
 import {
+    TableIndexError,
     type TestIdentity,
     type TestInfoArrays,
     type TestInfoTables,
     indexTestsByPath,
+    lookup,
     readTest,
 } from './tables.ts';
 
@@ -71,6 +73,22 @@ export interface DecodedTimingFile {
      * attribution. Keyed by status string.
      */
     totalsByStatus(testId: number): Map<string, number>;
+    /**
+     * The job a task ran, from a `StatusEntry.taskIdIndexes` entry, or `null`
+     * when the file has no `taskInfo` to resolve it through.
+     *
+     * The `task-ids` shape attributes a failure to a task and not to a job, so
+     * every per-configuration query has to go from one to the other — that is
+     * what `computeConfigStats()` (`common-test-data.js:186`) does inline. The
+     * lookup needs `taskInfo.jobNameIds`, which is a per-family field, so
+     * without this a caller would have to reach past the decoded file to the
+     * raw one and scan `tables.taskIds` for the string it was just given.
+     *
+     * `null` rather than a throw because `{harness}-issues.json` genuinely has
+     * no `taskInfo`: it gave up attribution entirely, and asking it for a job
+     * is a reasonable question with the answer "this file cannot say".
+     */
+    jobNameOfTaskIndex(taskIdIndex: number): string | null;
 }
 
 /** Which family a decoded file came from. */
@@ -84,6 +102,11 @@ export interface TimingFileInput {
     tables: StatusGroupTables & TestInfoTables & { statuses: readonly string[] };
     testInfo: TestInfoArrays;
     testRuns: readonly (StatusGroup | null)[][];
+    /**
+     * `taskInfo.jobNameIds`, for resolving a task index to the job that ran
+     * it. Absent on `{harness}-issues.json`, which has no `taskInfo`.
+     */
+    taskJobNameIds?: readonly number[] | undefined;
     /** `metadata.startTime`, for the daily files' delta-encoded timestamps. */
     iterateOptions?: IterateOptions | undefined;
 }
@@ -138,6 +161,21 @@ export function decodeTimingFile(input: TimingFileInput): DecodedTimingFile {
                 );
             }
             return totals;
+        },
+
+        jobNameOfTaskIndex(taskIdIndex: number): string | null {
+            const jobNameIds = input.taskJobNameIds;
+            if (jobNameIds === undefined) {
+                return null;
+            }
+            const jobNameId = jobNameIds[taskIdIndex];
+            if (jobNameId === undefined) {
+                throw new TableIndexError('taskInfo.jobNameIds', taskIdIndex, jobNameIds.length);
+            }
+            if (tables.jobNames === undefined) {
+                throw new Error('tables.jobNames is needed to name a job but was not supplied');
+            }
+            return lookup(tables.jobNames as string[], jobNameId, 'tables.jobNames');
         },
     };
 }

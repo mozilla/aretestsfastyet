@@ -72,25 +72,45 @@ export interface StatsRow {
  * consumer wants rows. Doing the transpose once here is cheaper than every
  * caller indexing six arrays by the same `i` and getting one of them wrong.
  *
- * A missing entry in any series is read as 0 rather than skipped: the series
- * are declared parallel and the validator checks it, so a short array is a
- * generator bug, and reporting a 0 keeps the date in the series where dropping
- * it would silently shorten a chart's x-axis.
+ * A series shorter than `dates` throws rather than being padded with zeros. An
+ * earlier version padded, on the grounds that `tools/validate/` checks the
+ * arrays are parallel — but that is a dev tool which never runs on library
+ * input, so the argument justified inventing a 0 with an enforcement that does
+ * not exist on this path. A padded 0 in a stats series is a day that reads as
+ * "nothing ran", which is indistinguishable from a real quiet day and would be
+ * charted as one.
  */
 export function statsRows(file: StatsFile): StatsRow[] {
+    const count = file.dates.length;
+    const series: Record<string, readonly number[]> = {
+        totalTestRuns: file.totalTestRuns,
+        failedTestRuns: file.failedTestRuns,
+        skippedTestRuns: file.skippedTestRuns,
+        processedJobCount: file.processedJobCount,
+        failedJobs: file.failedJobs,
+        ignoredJobs: file.ignoredJobs,
+        invalidJobs: file.invalidJobs,
+        ...file.markerCounts,
+    };
+    const misaligned = Object.entries(series).filter(([, values]) => values.length !== count);
+    if (misaligned.length > 0) {
+        throw new Error(
+            `stats series are misaligned: ${count} dates but ` +
+                misaligned.map(([key, values]) => `${key}=${values.length}`).join(', ')
+        );
+    }
+
     const kinds = Object.keys(file.markerCounts);
     return file.dates.map((date, i) => ({
         date,
-        totalTestRuns: file.totalTestRuns[i] ?? 0,
-        failedTestRuns: file.failedTestRuns[i] ?? 0,
-        skippedTestRuns: file.skippedTestRuns[i] ?? 0,
-        processedJobCount: file.processedJobCount[i] ?? 0,
-        failedJobs: file.failedJobs[i] ?? 0,
-        ignoredJobs: file.ignoredJobs[i] ?? 0,
-        invalidJobs: file.invalidJobs[i] ?? 0,
-        markerCounts: Object.fromEntries(
-            kinds.map((kind) => [kind, file.markerCounts[kind]?.[i] ?? 0])
-        ),
+        totalTestRuns: file.totalTestRuns[i]!,
+        failedTestRuns: file.failedTestRuns[i]!,
+        skippedTestRuns: file.skippedTestRuns[i]!,
+        processedJobCount: file.processedJobCount[i]!,
+        failedJobs: file.failedJobs[i]!,
+        ignoredJobs: file.ignoredJobs[i]!,
+        invalidJobs: file.invalidJobs[i]!,
+        markerCounts: Object.fromEntries(kinds.map((kind) => [kind, file.markerCounts[kind]![i]!])),
     }));
 }
 
