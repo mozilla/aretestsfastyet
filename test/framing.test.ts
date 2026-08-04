@@ -156,8 +156,8 @@ const FRAMING: FramingEntry[] = [
             grouping: 'component',
             sortKey: 'issueCount',
             sortDirection: 'desc',
-            // The divergence PARITY.md's brief calls out and forbids "fixing"
-            // silently. See the entry in `divergences`.
+            // Resolved in the CLI's favour: 21 days is the right default. See
+            // the entry in `divergences` — the page is the side to change.
             window: '21-day aggregate',
             filters: 'fail, timeout, crash, skip — all four issue types',
             harness: 'xpcshell',
@@ -166,15 +166,16 @@ const FRAMING: FramingEntry[] = [
             {
                 field: 'window',
                 reason:
-                    'UNRESOLVED, and recorded rather than fixed. `issues.html` loads the single ' +
-                    'most recent day by default (`:3707-3713`); `fx-tests issues` reads the ' +
-                    '21-day aggregate `{harness}-issues.json` and takes the whole window ' +
-                    '(`cli/commands/issues.ts:230`, `resolveDayWindow` with no --day/--since). ' +
-                    'The two answer measurably different questions — a component that had one ' +
-                    'bad night ranks first on the page and is diluted 21-fold in the CLI. ' +
-                    'Neither side is being changed here: this is flagged for the user to ' +
-                    'resolve, and the test asserts both values so whichever way it is resolved ' +
-                    'has to come through this table.',
+                    'RESOLVED: 21 days is right, and the CLI already does it. `issues.html` ' +
+                    'loads the single most recent day by default (`:3707-3713`); `fx-tests ' +
+                    'issues` reads the 21-day aggregate `{harness}-issues.json` and takes the ' +
+                    'whole window (`cli/commands/issues.ts:230`, `resolveDayWindow` with no ' +
+                    '--day/--since). The two answer measurably different questions — a ' +
+                    'component that had one bad night ranks first on the page and is diluted ' +
+                    '21-fold in the CLI — and the 21-day view is the one worth defaulting to. ' +
+                    'So this divergence closes when the page migrates, not when the CLI ' +
+                    'changes: the migrated issues.html must default to 21 days. Until then ' +
+                    'both values stay asserted, and this entry is the acceptance criterion.',
             },
         ],
     },
