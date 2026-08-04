@@ -66,6 +66,8 @@ import {
     platformsCovered,
     platformsInFile,
 } from '../lib/query/coverage.ts';
+import type { DecodedTimingFile } from '../lib/formats/decode.ts';
+import type { TestIdentity } from '../lib/formats/tables.ts';
 import { findIssues, findSkips, groupIssues } from '../lib/query/issues.ts';
 import { groupFailuresByMessage } from '../lib/query/failures.ts';
 import { groupCrashesBySignature } from '../lib/query/crashes.ts';
@@ -1169,6 +1171,145 @@ test('groupIssues aggregates rows without double-counting', () => {
         byDirectory.reduce((sum, group) => sum + group.testCount, 0),
         rows.length
     );
+});
+
+/**
+ * A minimal file with two tests in one component: one failing, one clean.
+ *
+ * The checked-in fixtures all have an issue on every test, so a group's
+ * denominator is the same whether or not clean tests are kept — which is
+ * precisely the distinction that needs testing, and precisely what the real
+ * data does exercise (a component with 396 tests of which 393 have issues).
+ */
+function fileWithCleanTest(): DecodedTimingFile {
+    const tests = [
+        { fullPath: 'dom/test_broken.js', runs: [['PASS', 90], ['FAIL', 10]] as const },
+        { fullPath: 'dom/test_clean.js', runs: [['PASS', 400]] as const },
+    ];
+    const identity = (testId: number): TestIdentity => {
+        const fullPath = tests[testId]!.fullPath;
+        const cut = fullPath.lastIndexOf('/');
+        return {
+            testId,
+            fullPath,
+            directory: fullPath.slice(0, cut),
+            name: fullPath.slice(cut + 1),
+            component: 'Core :: DOM',
+        };
+    };
+    return {
+        family: 'issues',
+        days: 21,
+        endDate: '2026-08-03',
+        statuses: ['PASS', 'FAIL'],
+        testCount: tests.length,
+        findTest: (fullPath: string) =>
+            tests.some((test) => test.fullPath === fullPath)
+                ? identity(tests.findIndex((test) => test.fullPath === fullPath))
+                : null,
+        testAt: identity,
+        *runsOfTest(testId: number) {
+            for (const [status, count] of tests[testId]!.runs) {
+                yield {
+                    status,
+                    statusId: status === 'PASS' ? 0 : 1,
+                    count,
+                    day: 0,
+                    message: undefined,
+                };
+            }
+        },
+        totalsByStatus: (testId: number) =>
+            new Map(tests[testId]!.runs.map(([status, count]) => [status, count])),
+        jobOfTask: () => null,
+    } as unknown as DecodedTimingFile;
+}
+
+test('keepClean gives a group the runs of its issue-free tests', () => {
+    // `issues.html:2010` accumulates a component's `runCount` over **every**
+    // test in it and only then (`:2016`) decides which to list, so a clean test
+    // is in the denominator but not in the list. Dropping it first inflates the
+    // rate — measured on the real file, WebExtensions :: General reported
+    // 6,087,719 runs instead of 6,131,520, turning 8.7% into 8.8%.
+    // Built rather than taken from a fixture: every checked-in file happens to
+    // have an issue on every test, so the case this guards would be untestable
+    // against them — and it is exactly the case the real data does have.
+    const file = fileWithCleanTest();
+    const withClean = findIssues(file, { keepClean: true });
+    const withoutClean = findIssues(file);
+    assert.ok(
+        withClean.length > withoutClean.length,
+        'the constructed file must contain at least one issue-free test'
+    );
+    assert.ok(
+        withClean.some((row) => row.issueCount === 0),
+        'keepClean must actually keep a row with no issue'
+    );
+    assert.ok(
+        withoutClean.every((row) => row.issueCount > 0),
+        'the default must still drop clean tests'
+    );
+
+    const grouped = groupIssues(withClean, 'component');
+    const narrow = groupIssues(withoutClean, 'component');
+
+    // The listed-test count is the same either way — a clean test is never
+    // listed — but the run totals differ, which is the whole point.
+    const byKey = new Map(narrow.map((group) => [group.key, group]));
+    let sawWider = false;
+    for (const group of grouped) {
+        const tight = byKey.get(group.key);
+        if (tight === undefined) {
+            continue;
+        }
+        assert.equal(
+            group.testCount,
+            tight.testCount,
+            `${group.key}: keepClean must not change how many tests have issues`
+        );
+        assert.ok(
+            group.runCount >= tight.runCount,
+            `${group.key}: keeping clean tests cannot lose runs`
+        );
+        if (group.runCount > tight.runCount) {
+            sawWider = true;
+            // A wider denominator over the same numerator is a lower rate.
+            assert.ok(
+                group.issueRate < tight.issueRate,
+                `${group.key}: the wider denominator must lower the rate ` +
+                    `(${group.issueRate} vs ${tight.issueRate})`
+            );
+        }
+        assert.ok(
+            group.totalTestCount > group.testCount ||
+                group.totalTestCount === group.testCount,
+            `${group.key}: totalTestCount counts every test in the group`
+        );
+    }
+    assert.ok(sawWider, 'a clean test must widen some group denominator, or this proves nothing');
+});
+
+test('groupIssues rates divide by the runs the numerator could come from', () => {
+    // `issues.html:1079` / `:2046-2048`: skips are added back to the
+    // denominator exactly when they are counted in the numerator.
+    const rows = findIssues(bucket, { keepClean: true });
+    for (const group of groupIssues(rows, 'component')) {
+        const expected =
+            (group.issueCount / (group.runCount + group.skipCount)) * 100;
+        assert.ok(
+            Math.abs(group.issueRate - expected) < 1e-9,
+            `${group.key}: ${group.issueRate} is not ${expected}`
+        );
+    }
+    // With skips out of the union they leave the denominator too.
+    const noSkips = findIssues(bucket, { keepClean: true, types: ['fail', 'timeout', 'crash'] });
+    for (const group of groupIssues(noSkips, 'component', ['fail', 'timeout', 'crash'])) {
+        const expected = group.runCount > 0 ? (group.issueCount / group.runCount) * 100 : 0;
+        assert.ok(
+            Math.abs(group.issueRate - expected) < 1e-9,
+            `${group.key}: with skips off the denominator is runCount alone`
+        );
+    }
 });
 
 test('findSkips excludes run-if by default and includes it on request', () => {

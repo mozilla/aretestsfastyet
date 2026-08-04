@@ -1460,3 +1460,140 @@ test('an empty result says what was searched, not just "no match"', async () => 
     // And it does not offer to narrow a set that is already empty.
     assert.doesNotMatch(stdout, /Drill in with/);
 });
+
+/**
+ * The issue rate's denominator, which four mutation survivors showed unpinned.
+ *
+ * `issues.html:1079` adds skipped runs back to the denominator only when skips
+ * are one of the enabled types, because `runCount` excludes them (`:1061`). Get
+ * this wrong and the numerator counts a skip the denominator does not, which
+ * inflates every rate — measured on the real file, 8.74% became 9.53%. Nothing
+ * asserted the rate at all, so both the row-level and group-level denominators
+ * could be silently narrowed.
+ */
+test('the issue rate divides by the runs its numerator could come from', async () => {
+    const { stdout } = await invoke(['issues', '--json', '--limit', '0']);
+    const rows = json(stdout)['rows'] as {
+        key: string;
+        issueCount: number;
+        runCount: number;
+        skipCount: number;
+        issueRate: number;
+    }[];
+    assert.ok(rows.length > 0);
+
+    let sawSkips = false;
+    for (const row of rows) {
+        // Skips are in the default union, so they belong in the denominator.
+        const expected = (row.issueCount / (row.runCount + row.skipCount)) * 100;
+        assert.ok(
+            Math.abs(row.issueRate - expected) < 1e-9,
+            `${row.key}: rate ${row.issueRate} is not ${expected} ` +
+                `(${row.issueCount} / (${row.runCount} + ${row.skipCount}))`
+        );
+        if (row.skipCount > 0) {
+            sawSkips = true;
+            // And the wrong denominator is a *different* number here, so the
+            // assertion above is discriminating rather than trivially true.
+            const narrowed = (row.issueCount / row.runCount) * 100;
+            assert.ok(
+                Math.abs(narrowed - row.issueRate) > 1e-9,
+                `${row.key}: omitting skips must change the rate for this to be a real check`
+            );
+        }
+        // A rate is a proportion of runs that happened.
+        assert.ok(row.issueRate <= 100.000001, `${row.key}: rate above 100%`);
+    }
+    assert.ok(sawSkips, 'the fixture must have a group with skips');
+});
+
+test('--type skip removes skips from the denominator as well as the count', async () => {
+    // The other half of `:1079`: with skips disabled they leave the numerator,
+    // so they must leave the denominator too.
+    const { stdout } = await invoke([
+        'issues', '--json', '--limit', '0', '--type', 'fail,timeout,crash',
+    ]);
+    const rows = json(stdout)['rows'] as {
+        key: string;
+        issueCount: number;
+        runCount: number;
+        skipCount: number;
+        issueRate: number;
+    }[];
+    assert.ok(rows.length > 0);
+    for (const row of rows) {
+        const expected = row.runCount > 0 ? (row.issueCount / row.runCount) * 100 : 0;
+        assert.ok(
+            Math.abs(row.issueRate - expected) < 1e-9,
+            `${row.key}: with skips off the denominator is runCount alone`
+        );
+    }
+});
+
+test('the grouped views ask for the clean tests the denominator needs', async () => {
+    // `issues.html:2010` accumulates a component's runs over every test in it,
+    // and only then (`:2016`) decides which tests to list. The CLI gets those
+    // clean tests by passing `keepClean` for the grouped views only, so the
+    // per-test list still shows only tests worth listing. Both halves are
+    // asserted here; the arithmetic itself is in query.test.ts, on a fixture
+    // that can be built with an issue-free test in it.
+    const grouped = await invoke(['issues', '--json', '--limit', '0']);
+    const perTest = await invoke(['issues', '--json', '--limit', '0', '--group-by', 'test']);
+    const groups = json(grouped.stdout)['rows'] as {
+        key: string;
+        runCount: number;
+        testCount: number;
+        totalTestCount: number;
+    }[];
+    const tests = json(perTest.stdout)['rows'] as {
+        component: string | null;
+        runCount: number;
+        issueCount: number;
+    }[];
+    assert.ok(groups.length > 0 && tests.length > 0);
+
+    // Every listed test has an issue: the per-test view does not keep clean ones.
+    assert.ok(
+        tests.every((row) => row.issueCount > 0),
+        '--group-by test must not list issue-free tests'
+    );
+    for (const group of groups) {
+        const listed = tests.filter((t) => (t.component ?? '(no component)') === group.key);
+        assert.equal(
+            listed.length,
+            group.testCount,
+            `${group.key}: testCount is the number of tests the per-test view lists`
+        );
+        assert.ok(
+            group.runCount >= listed.reduce((sum, t) => sum + t.runCount, 0),
+            `${group.key}: the group total must cover at least the listed tests' runs`
+        );
+        assert.ok(
+            group.totalTestCount >= group.testCount,
+            `${group.key}: the "out of" total includes the affected tests`
+        );
+    }
+});
+
+test('tableSection prints the table, the more-line and the recovery block', async () => {
+    // The three parts travel together by construction — a caller cannot take
+    // the truncation without the recovery. A mutation dropping the recovery
+    // block from `tableSection` survived, because every real command now
+    // auto-sizes and so never reaches it.
+    const { tableSection, PATH_COLUMN_CAP } = await import('../cli/format/text.ts');
+    const long = `dom/${'deeply/'.repeat(30)}test_the_actual_name.js`;
+    assert.ok(long.length > PATH_COLUMN_CAP);
+    const lines = tableSection(
+        [{ header: 'Test', path: true }, { header: 'n', align: 'right' }],
+        [[long, '1']],
+        { total: 5, shown: 1 }
+    );
+    const text = lines.join('\n');
+    assert.match(text, /… 4 more \(--limit 0 for all\)/, 'the more-line is present');
+    assert.match(text, /full paths \(1 shortened above\):/, 'the recovery block is present');
+    assert.ok(lines.some((line) => line.includes(long)), 'the whole path is recoverable');
+    // Order matters for reading: table, then what was hidden, then what was cut.
+    const moreAt = lines.findIndex((line) => line.includes('more (--limit 0'));
+    const fullAt = lines.findIndex((line) => line.includes('full paths ('));
+    assert.ok(moreAt > 0 && fullAt > moreAt, `unexpected order: ${text}`);
+});
