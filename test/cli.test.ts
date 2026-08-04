@@ -3446,6 +3446,82 @@ test('try counts a failed test job whose profile yielded nothing as unblamed', a
     assert.equal(result['unblamedJobCount'], 1);
 });
 
+/**
+ * A job killed for exceeding `maxRunTime` leaves a *streamed* profile, and
+ * saying it "could not be read" points the reader at the wrong problem.
+ *
+ * The artifact is newline-delimited JSON — one `{"type":"meta",…}` document,
+ * then one per thread and per chunk — because the profiler never got to write
+ * the single object a finished job uploads. Reading that format is out of
+ * scope; what is in scope is saying which of the two things happened, since
+ * "could not be read" sends someone looking for a broken download while the
+ * real answer is the job's duration. Measured on try push 717fc67feaa071: 66
+ * of 160 profiles, 34 to 50 MB each. Task `DVdj7ZQdTCijqjU02ol-Dw` is the
+ * worked example — `maxRunTime` 5400 s, ran 5443 s, resolved `failed`.
+ */
+test('try blames a streamed profile on the job being killed, not on a read failure', async () => {
+    const streams = captureStreams();
+    const finished = profileWith([
+        { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'boom', start: 1, end: 2 },
+    ]);
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell-killed', 'TASK1', 'testfailed'),
+            job('test-linux/opt-xpcshell-truncated', 'TASK2', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            // Two complete documents, newline-separated: the streamed shape.
+            TASK1: `${JSON.stringify({ type: 'meta', interval: 1 })}\n${finished}\n`,
+            // Genuinely unparseable, and nothing to do with streaming.
+            TASK2: '{"threads": [',
+        }),
+    });
+    assert.match(
+        streams.stderr,
+        /1 of 2 jobs were killed for exceeding their maximum duration/,
+        'the killed job must be reported as killed'
+    );
+    assert.match(
+        streams.stderr,
+        /does not read that format/,
+        'and the format must be named as out of scope, not as a failure'
+    );
+    // The two counts stay distinct: one killed, one genuinely unreadable.
+    assert.match(
+        streams.stderr,
+        /1 of 2 job profiles could not be read/,
+        'the truncated profile is still a read failure'
+    );
+    assert.doesNotMatch(
+        streams.stderr,
+        /2 of 2 job profiles could not be read/,
+        'the killed job must not be counted as unreadable too'
+    );
+});
+
+/**
+ * The detector keys on the shape, so it cannot mistake an ordinary profile for
+ * a streamed one — including the trailing-newline case, which is one document
+ * and must stay readable.
+ */
+test('a profile with a trailing newline is not mistaken for a streamed one', async () => {
+    const { isStreamedProfile } = await import('../cli/commands/try.ts');
+    const finished = profileWith([
+        { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'boom', start: 1, end: 2 },
+    ]);
+    assert.equal(isStreamedProfile(new TextEncoder().encode(finished)), false);
+    assert.equal(isStreamedProfile(new TextEncoder().encode(`${finished}\n`)), false);
+    // A truncated document followed by more is not the streamed shape either:
+    // the first line has to parse on its own.
+    assert.equal(isStreamedProfile(new TextEncoder().encode('{"threads": [\n{}')), false);
+    // Two complete documents is.
+    assert.equal(isStreamedProfile(new TextEncoder().encode(`{"type":"meta"}\n${finished}`)), true);
+});
+
 test('try --perma-only omits the other sections from the text output', async () => {
     const streams = captureStreams();
     await run({

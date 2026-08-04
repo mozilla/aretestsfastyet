@@ -431,6 +431,54 @@ function isTestJob(jobName: string): boolean {
     return SUPPORTED_HARNESSES.some((harness) => jobName.includes(harness));
 }
 
+/**
+ * Whether these bytes are a *streamed* profile rather than a finished one.
+ *
+ * A job killed for exceeding its `maxRunTime` never gets to write a profile,
+ * so what its artifact holds is whatever the profiler had streamed out so far:
+ * newline-delimited JSON — a `{"type":"meta",…}` header followed by one
+ * document per thread and per chunk — rather than the single object a finished
+ * job uploads. `JSON.parse` on the whole thing fails at the first newline,
+ * which is why these used to be counted as unreadable.
+ *
+ * They are neither a read failure nor a data-generation bug, and this tool
+ * does not read the format. Telling the two apart is the point: "could not be
+ * read" sends a reader looking for a broken download, while "the job was
+ * killed" sends them to the job's duration, which is the actual problem.
+ *
+ * Detected on the shape rather than the parse error, so the check says what it
+ * means: a complete JSON document, then more input. Measured on try push
+ * 717fc67feaa071, where 57 of 124 fetched profiles are this — 34 to 50 MB
+ * each, every one of them a `{"type":"meta"}` first line. Task
+ * `DVdj7ZQdTCijqjU02ol-Dw` is the worked example: `maxRunTime` 5400 s, ran
+ * 5443 s, resolved `failed`.
+ */
+export function isStreamedProfile(bytes: Uint8Array): boolean {
+    // Only the first line is decoded: these artifacts run to 50 MB and the
+    // answer is in the first few hundred bytes.
+    const head = new TextDecoder().decode(bytes.subarray(0, 64 * 1024));
+    const newline = head.indexOf('\n');
+    if (newline < 0) {
+        // Either one document (finished, or truncated mid-write) or a first
+        // line longer than the window. Not the streamed shape as far as we can
+        // tell, so it stays with the genuine read failures.
+        return false;
+    }
+    const rest = head.slice(newline + 1).trim();
+    if (rest === '') {
+        // A single document with a trailing newline — an ordinary profile.
+        return false;
+    }
+    try {
+        JSON.parse(head.slice(0, newline));
+    } catch {
+        // The first line is not a document on its own, so whatever is wrong
+        // here is not "several documents concatenated".
+        return false;
+    }
+    return rest.startsWith('{');
+}
+
 /** Fetches and parses each job's profile, with bounded concurrency. */
 async function collectTimings(
     context: CommandContext,
@@ -442,6 +490,7 @@ async function collectTimings(
     const queue = [...jobs];
     let done = 0;
     let missing = 0;
+    let streamed = 0;
 
     const worker = async (): Promise<void> => {
         for (;;) {
@@ -463,6 +512,8 @@ async function collectTimings(
             done++;
             if (bytes === null) {
                 missing++;
+            } else if (isStreamedProfile(bytes)) {
+                streamed++;
             } else {
                 try {
                     const profile = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
@@ -481,6 +532,15 @@ async function collectTimings(
         Array.from({ length: Math.max(1, Math.min(concurrency, jobs.length)) }, worker)
     );
 
+    // Two separate counts, because they are two different things to go and do.
+    if (streamed > 0) {
+        warn(
+            context,
+            `${streamed} of ${jobs.length} jobs were killed for exceeding their maximum ` +
+                `duration, so only a streamed profile exists for them and this tool does ` +
+                `not read that format; failures in those jobs are not in this report`
+        );
+    }
     if (missing > 0) {
         warn(
             context,

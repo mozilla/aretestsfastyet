@@ -492,6 +492,24 @@ leaves most `FAIL`s message-less, and a failure with no message cannot be
 compared against central at all — the output says so rather than printing a
 `0.0%` that reads as "a different failure".
 
+**Jobs killed for running too long are reported as such.** A job that exceeds
+its `maxRunTime` is killed before the profiler writes its profile, so what its
+artifact holds is whatever had been *streamed* out so far — newline-delimited
+JSON, one document per thread and per chunk, rather than the single object a
+finished job uploads. Reading that format is out of scope; the command detects
+it by shape and says what happened:
+
+```
+warning: 66 of 160 jobs were killed for exceeding their maximum duration, so
+only a streamed profile exists for them and this tool does not read that
+format; failures in those jobs are not in this report
+```
+
+Kept separate from the count of profiles that genuinely could not be read,
+because they are two different things to go and do about: one sends you to the
+job's duration, the other to a broken download. Neither is a data-generation
+bug.
+
 `--json` shape: `{ revision, pushId, jobCount, failedJobCount,
 permaFails[], knownIntermittents[], newIntermittents[] }`. Each failure carries
 `failureCount` — the failing executions the sections are ordered by —

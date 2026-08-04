@@ -6,6 +6,8 @@
 #      with a deterministic path tiebreak the page cannot have
 #   2. the rerun sentence scoped to the configurations it applies to, so a
 #      perma-fail row does not appear to contradict itself
+#   3. the streamed-profile diagnostic — a job killed for exceeding its
+#      maximum duration told apart from a genuine read failure
 #
 # Same rules as tools/mutations-trybugs.sh, and the same reason for being
 # checked in: a mutation score nobody can reproduce is not a number. Each entry
@@ -106,6 +108,46 @@ mutate cli/commands/try.ts \
     '                failure.passedOnRerunConfigs.length > 0)' \
     '                false)' \
     'the permanent config is unnamed when the rerun rescued another'
+
+# --- 3: the streamed-profile diagnostic ---------------------------------
+
+# The detection, removed: a killed job is an unreadable profile again.
+mutate cli/commands/try.ts \
+    '            } else if (isStreamedProfile(bytes)) {' \
+    '            } else if (false) {' \
+    'a streamed profile is reported as a read failure'
+
+# The two counts stay distinct. Merging them loses the distinction the whole
+# change exists to make.
+mutate cli/commands/try.ts \
+    '                streamed++;' \
+    '                missing++;' \
+    'the streamed count is folded into the missing one'
+
+# A single document is not streamed, whatever else is true of it.
+mutate cli/commands/try.ts \
+    '    if (rest === '"''"') {' \
+    '    if (false) {' \
+    'a profile with a trailing newline counts as streamed'
+
+# The first line has to be a complete document; a truncated one is a genuine
+# read failure and must stay in the other bucket.
+mutate cli/commands/try.ts \
+    '        JSON.parse(head.slice(0, newline));' \
+    '        JSON.parse("null");' \
+    'a truncated first line still counts as streamed'
+
+# What follows has to be another document.
+mutate cli/commands/try.ts \
+    "    return rest.startsWith('{');" \
+    '    return true;' \
+    'any trailing content counts as a second document'
+
+# No newline at all is not the streamed shape.
+mutate cli/commands/try.ts \
+    '    if (newline < 0) {' \
+    '    if (false) {' \
+    'a single-line profile is examined as though it were streamed'
 
 summary
 exit $((SURVIVED > 0 ? 1 : 0))
