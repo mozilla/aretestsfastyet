@@ -1643,6 +1643,11 @@ test('the grouped views ask for the clean tests the denominator needs', async ()
         totalTestCount: number;
     }[];
     assert.ok(crashGroups.length > 0, '--type crash must still produce components');
+    assert.ok(
+        crashGroups.some((group) => group.totalTestCount > group.testCount),
+        'a component must report more tests than the crashing ones it lists — ' +
+            'without keepClean the two are always equal'
+    );
     for (const group of crashGroups) {
         assert.ok(
             group.testCount > 0,
@@ -1653,6 +1658,12 @@ test('the grouped views ask for the clean tests the denominator needs', async ()
             `${group.key}: the "out of" total cannot be smaller than the affected count`
         );
     }
+
+    // The default view too, where the clean test is clean under every type.
+    assert.ok(
+        groups.some((group) => group.totalTestCount > group.testCount),
+        'the default view must also count a component\'s issue-free tests'
+    );
 });
 
 test('tableSection prints the table, the more-line and the recovery block', async () => {

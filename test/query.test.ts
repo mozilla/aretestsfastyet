@@ -291,7 +291,7 @@ test('a query never sums across file families', () => {
         assert.equal(a.family, 'issues');
         assert.equal(b.family, 'issues-with-taskids');
     }
-    assert.equal(compared, 9, 'the two issues fixtures should share every test');
+    assert.equal(compared, 10, 'the two issues fixtures should share every test');
 });
 
 // --- config-stats --------------------------------------------------------

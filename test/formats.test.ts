@@ -132,7 +132,11 @@ test('xpcshell issues totals match the hand-checked values', () => {
         FAIL: 8,
         'FAIL-PARALLEL': 1539,
         'FAIL-SEQUENTIAL': 10,
-        PASS: 1480,
+        // 1,480 from the truncated real data, plus the 500 of the synthetic
+        // `test_ext_always_green.js` — a test that only ever passed. The real
+        // file is full of those and the truncation kept none, which left the
+        // "a component's rate covers its clean tests too" path untestable.
+        PASS: 1980,
         'PASS-PARALLEL': 101163,
         'PASS-SEQUENTIAL': 10340,
         SKIP: 17787,
