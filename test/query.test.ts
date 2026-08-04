@@ -45,7 +45,7 @@ import {
 } from '../lib/formats/issues.ts';
 import type { StatsFile } from '../lib/formats/stats.ts';
 import { classifyStatus } from '../lib/model/status.ts';
-import { stripChunkSuffix } from '../lib/model/job-name.ts';
+import { parseJobName, stripChunkSuffix } from '../lib/model/job-name.ts';
 import {
     computeTestStats,
     configFilter,
@@ -58,7 +58,12 @@ import {
     canAttributeConfigs,
     computeConfigStats,
 } from '../lib/query/config-stats.ts';
-import { configUniverse, coverageOf, platformsCovered } from '../lib/query/coverage.ts';
+import {
+    configUniverse,
+    coverageGaps,
+    coverageOf,
+    platformsCovered,
+} from '../lib/query/coverage.ts';
 import { findIssues, findSkips, groupIssues } from '../lib/query/issues.ts';
 import { groupFailuresByMessage } from '../lib/query/failures.ts';
 import { groupCrashesBySignature } from '../lib/query/crashes.ts';
@@ -676,7 +681,6 @@ test('coverage separates ran-and-passed, ran-and-skipped and never-scheduled', (
 
     const coverage = coverageOf(bucket, identity.testId, { universe });
     assert.equal(coverage.attributedPasses, true);
-    assert.equal(coverage.configs.length, 51);
 
     const byState = new Map<string, number>();
     for (const config of coverage.configs) {
@@ -686,11 +690,11 @@ test('coverage separates ran-and-passed, ran-and-skipped and never-scheduled', (
     // one test: a Windows-only crash-reporter test.
     assert.deepEqual(Object.fromEntries([...byState].sort()), {
         intermittent: 5,
-        'never-scheduled': 29,
+        'never-scheduled': 20,
         ok: 4,
         skipped: 13,
     });
-    assert.equal(coverage.neverScheduled?.length, 29);
+    assert.equal(coverage.neverScheduled?.length, 20);
 
     // The skipped rows carry the reason, which is what makes them actionable.
     const android = coverage.configs.find((config) => config.jobName.includes('android'));
@@ -698,6 +702,92 @@ test('coverage separates ran-and-passed, ran-and-skipped and never-scheduled', (
     assert.equal(android.state, 'skipped');
     assert.equal(android.runCount, 0);
     assert.deepEqual([...android.skipMessages.keys()], ["os == 'android'"]);
+});
+
+test('the never-scheduled universe is scoped to the suites the test runs', () => {
+    // The fix for a review finding: with the universe drawn as "every config
+    // in the file", a `mochitest-browser-chrome` test was reported as never
+    // scheduled on 453 of 495 configs, led by `geckoview-mochitest-media`
+    // variants it could never have run under. 453 of 495 is not information.
+    //
+    // Checked structurally rather than by pinning a count, so it stays true as
+    // the fixture changes: every never-scheduled config must run a suite the
+    // test itself ran, and no config running any other suite may appear.
+    const identity = bucket.findTest(WINDOWS_TEST)!;
+    const coverage = coverageOf(bucket, identity.testId, {
+        universe: configUniverse(bucket),
+    });
+
+    const ownSuites = new Set(
+        coverage.configs
+            .filter((config) => config.state !== 'never-scheduled')
+            .map((config) => parseJobName(config.jobName).suite)
+    );
+    assert.ok(ownSuites.size > 1, 'the fixture test should span several suites');
+    for (const jobName of coverage.neverScheduled!) {
+        assert.ok(
+            ownSuites.has(parseJobName(jobName).suite),
+            `${jobName} runs a suite this test never ran, so it is not a place it could ` +
+                `have been scheduled`
+        );
+    }
+
+    // …and the scope is reported, not just applied. A never-scheduled count
+    // with no stated comparison set is the number a reader cannot check.
+    assert.deepEqual(coverage.universeSuites, [...ownSuites].sort());
+
+    // The narrowing is real and not vacuous: the unscoped universe would have
+    // produced strictly more rows.
+    const unscoped = [...configUniverse(bucket)].filter(
+        (jobName) => !coverage.configs.some((config) => config.jobName === jobName)
+    );
+    assert.ok(
+        coverage.neverScheduled!.length < unscoped.length + coverage.neverScheduled!.length,
+        'scoping must drop configs'
+    );
+    assert.ok(unscoped.length > 0, 'the fixture must contain out-of-suite configs to drop');
+});
+
+test('universeSuites is empty when no universe was supplied', () => {
+    // Symmetric with `neverScheduled: null`. Reporting suites for a comparison
+    // that was never made would name a scope for a number that does not exist.
+    const identity = bucket.findTest(WINDOWS_TEST)!;
+    assert.deepEqual(coverageOf(bucket, identity.testId).universeSuites, []);
+});
+
+test('coverageGaps separates ran, scheduled-but-skipped and never-scheduled', () => {
+    // The three cannot be folded together. A platform where every config was
+    // scheduled and skipped is not covered — but it is also not a platform CI
+    // declines to schedule, and only one of those is someone's `skip-if` to
+    // fix.
+    const identity = bucket.findTest(WINDOWS_TEST)!;
+    const coverage = coverageOf(bucket, identity.testId, {
+        universe: configUniverse(bucket),
+    });
+    const gaps = coverageGaps(coverage);
+
+    // Every config in the matrix lands in exactly one bucket of exactly one
+    // platform: the rollup may not lose or duplicate a row.
+    const total = gaps.reduce(
+        (sum, gap) => sum + gap.ranCount + gap.skippedCount + gap.neverCount,
+        0
+    );
+    assert.equal(total, coverage.configs.length);
+    assert.equal(
+        gaps.reduce((sum, gap) => sum + gap.neverConfigs.length, 0),
+        coverage.neverScheduled!.length
+    );
+
+    // A Windows-only test: windows is where it ran, and the android configs
+    // were scheduled and skipped rather than never scheduled.
+    const windows = gaps.find((gap) => gap.platform === 'windows')!;
+    assert.ok(windows.ranCount > 0, 'it runs on windows');
+    const android = gaps.find((gap) => gap.platform === 'android')!;
+    assert.equal(android.ranCount, 0, 'it never ran on android');
+    assert.ok(
+        android.skippedCount > 0,
+        'android scheduled it and skipped it, which is not the same as never scheduling it'
+    );
 });
 
 test('coverage row counts reconcile with the test totals', () => {

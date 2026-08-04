@@ -46,6 +46,7 @@ import {
 import {
     type TestCoverage,
     configUniverse,
+    coverageGaps,
     coverageOf,
     platformsCovered,
 } from '../../lib/query/coverage.ts';
@@ -192,6 +193,33 @@ interface CoverageJson {
     }[];
     platforms: { platform: string; configCount: number }[];
     neverScheduled: string[] | null;
+    /**
+     * The suites the never-scheduled comparison was made against.
+     *
+     * In `--json` because a consumer has to be able to tell what the count is
+     * a count *of*. An unscoped `neverScheduled: 453` is not a fact about the
+     * test, it is a fact about how wide the comparison was drawn.
+     */
+    universeSuites: string[];
+    /** Never-scheduled rolled up to the platform a reader thinks in. */
+    gaps: {
+        platform: string;
+        ranCount: number;
+        skippedCount: number;
+        neverCount: number;
+        neverConfigs: string[];
+    }[];
+    /**
+     * Platforms in the file that this test's suites do not run on at all.
+     *
+     * Repeated here from `reach` on purpose. Scoping the universe to the
+     * test's own suites is what makes the never-scheduled list usable, but it
+     * also means a platform the suite does not exist on drops out of `gaps`
+     * entirely — and "does this run on Android?" is the exact question
+     * `CLI.md` says `--coverage` exists to answer. A block that silently omits
+     * Android answers it wrongly by omission.
+     */
+    absentPlatforms: string[];
 }
 
 interface ExecutionsJson {
@@ -380,7 +408,10 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
     };
 
     if (wantsCoverage) {
-        result.coverage = buildCoverage(coverage);
+        // Reuses `reach`'s measured absences rather than recomputing them, so
+        // the coverage block and the "Runs on …" line cannot disagree about
+        // which platforms the test is missing from.
+        result.coverage = buildCoverage(coverage, result.reach?.absentPlatforms ?? []);
     }
     if (boolOption(args, 'executions')) {
         result.executions = buildExecutions(decoded, filteredEntries);
@@ -592,7 +623,7 @@ function rerunNoteOf(entries: readonly RunEntry[]): string | null {
 }
 
 /** The `--coverage` matrix. */
-function buildCoverage(coverage: TestCoverage): CoverageJson {
+function buildCoverage(coverage: TestCoverage, absentPlatforms: string[]): CoverageJson {
     const platforms = platformsCovered(coverage);
     return {
         attributedPasses: coverage.attributedPasses,
@@ -613,6 +644,9 @@ function buildCoverage(coverage: TestCoverage): CoverageJson {
             configCount,
         })),
         neverScheduled: coverage.neverScheduled,
+        universeSuites: coverage.universeSuites,
+        gaps: coverageGaps(coverage),
+        absentPlatforms,
     };
 }
 
@@ -1236,14 +1270,6 @@ function renderCoverageText(coverage: CoverageJson, limit: number): string[] {
                     .join(', ')
         );
     }
-    if (coverage.neverScheduled !== null && coverage.neverScheduled.length > 0) {
-        lines.push(
-            `Never scheduled on ${coverage.neverScheduled.length} configs that run this suite: ` +
-                coverage.neverScheduled.slice(0, 5).join(', ') +
-                (coverage.neverScheduled.length > 5 ? ', …' : '')
-        );
-    }
-
     // The three states CLI.md says this flag exists to distinguish, counted.
     // Without this a reader has to scan the status column and total it by
     // eye, and the skipped rows are the ones easiest to miss because they
@@ -1277,7 +1303,101 @@ function renderCoverageText(coverage: CoverageJson, limit: number): string[] {
                 `— see the skip column.`
         );
     }
+    lines.push(...renderCoverageScope(coverage, limit));
     return lines.filter((line): line is string => line !== null);
+}
+
+/**
+ * The per-platform coverage answer, and what it was compared against.
+ *
+ * Replaces a line that read "Never scheduled on 453 configs that run this
+ * suite:" followed by five Android media-variant names. 453 of 495 is not a
+ * finding, it is a badly-drawn comparison, and the five names it showed were
+ * all suites the test could never have run under. See `lib/query/coverage.ts`
+ * for how the universe is now scoped.
+ *
+ * Three things are printed, in the order a reader needs them:
+ *
+ *  1. **The scope**, always. A count of missing configs means nothing without
+ *     the set it was drawn from, and the previous version stated the count and
+ *     not the set.
+ *  2. **One row per platform**, ran vs never. `ran/total` is the shape that
+ *     separates "never runs on mac" (`0/12`) from "runs on nearly all of mac"
+ *     (`11/12`), which a bare never-count cannot.
+ *  3. **The names**, only under `--limit 0`. They are the detail behind the
+ *     rollup, not the answer.
+ */
+function renderCoverageScope(coverage: CoverageJson, limit: number): string[] {
+    if (coverage.neverScheduled === null) {
+        return [];
+    }
+    const lines: string[] = [''];
+    const suites = coverage.universeSuites;
+    lines.push(
+        `Scope: compared against every config running the ${suites.length} ` +
+            `${suites.length === 1 ? 'suite' : 'suites'} this test runs under ` +
+            `(${truncate(suites.join(', '), 100)}). Configs running other suites cannot ` +
+            `schedule this test and are not counted.`
+    );
+
+    const covered = new Set<string>();
+    for (const gap of coverage.gaps) {
+        covered.add(gap.platform);
+        const total = gap.ranCount + gap.skippedCount + gap.neverCount;
+        // The three ways a platform can be short of full coverage, named
+        // rather than left to be inferred from the ratio. `skippedCount` first
+        // because it is the one that is actionable: something disabled it.
+        const notes = [
+            gap.skippedCount > 0 ? `${gap.skippedCount} scheduled but skipped` : null,
+            gap.neverCount > 0 ? `${gap.neverCount} never scheduled` : null,
+        ].filter((note): note is string => note !== null);
+        const verdict =
+            gap.ranCount === 0 && gap.skippedCount === total
+                ? ' — scheduled here, but skipped on every config'
+                : notes.length === 0
+                  ? ''
+                  : ` — ${notes.join(', ')}`;
+        lines.push(`  ${gap.platform.padEnd(8)} ${gap.ranCount}/${total} ran${verdict}`);
+    }
+
+    // A platform the suite does not exist on has no row above, because it is
+    // not in the universe. Saying so is the difference between "checked, and
+    // it does not run there" and "not mentioned" — and the second is what a
+    // reader wrongly takes for the first.
+    //
+    // Filtered against the rows already printed: `absentPlatforms` comes from
+    // `platformsCovered()`, which counts a platform absent when the test never
+    // *ran* there, so a platform where it was scheduled and skipped on every
+    // config is in both lists. It has a row above saying exactly that, and a
+    // second row claiming the suite does not run there would contradict it.
+    for (const platform of coverage.absentPlatforms) {
+        if (!covered.has(platform)) {
+            lines.push(
+                `  ${platform.padEnd(8)} 0 configs — these suites do not run on ${platform}`
+            );
+        }
+    }
+
+    // The names, behind the same `--limit 0` the tables use, so a reader who
+    // wants them knows the flag already and one who does not is not buried.
+    const withGaps = coverage.gaps.filter((gap) => gap.neverCount > 0);
+    if (withGaps.length === 0) {
+        return lines;
+    }
+    if (limit === 0) {
+        for (const gap of withGaps) {
+            for (const jobName of gap.neverConfigs) {
+                lines.push(`      never scheduled: ${jobName}`);
+            }
+        }
+    } else {
+        const total = coverage.neverScheduled.length;
+        lines.push(
+            `  --limit 0 lists the ${total} never-scheduled ` +
+                `${total === 1 ? 'config' : 'configs'} by name.`
+        );
+    }
+    return lines;
 }
 
 /**
@@ -1506,6 +1626,40 @@ function renderMarkdown(result: TestJson, limit: number): string {
                 )
             );
             lines.push(md.moreLine(result.coverage.configs.length, shown.length));
+            // The same platform rollup the text view leads with. A bug comment
+            // pasting coverage is answering "does this run on Android", and a
+            // truncated config table does not answer it.
+            if (result.coverage.neverScheduled !== null) {
+                lines.push('');
+                lines.push(
+                    ...md.table(
+                        [
+                            { header: 'Platform' },
+                            { header: 'ran', align: 'right' },
+                            { header: 'skipped', align: 'right' },
+                            { header: 'never scheduled', align: 'right' },
+                        ],
+                        result.coverage.gaps.map((gap) => [
+                            gap.platform,
+                            String(gap.ranCount),
+                            String(gap.skippedCount),
+                            String(gap.neverCount),
+                        ])
+                    )
+                );
+                lines.push('');
+                const absent = result.coverage.absentPlatforms.filter(
+                    (platform) =>
+                        !result.coverage!.gaps.some((gap) => gap.platform === platform)
+                );
+                lines.push(
+                    `Scoped to the suites this test runs under: ` +
+                        `${result.coverage.universeSuites.join(', ')}.` +
+                        (absent.length === 0
+                            ? ''
+                            : ` These suites do not run on ${absent.join(', ')}.`)
+                );
+            }
         }
     }
 

@@ -24,10 +24,44 @@
  * a config that never scheduled it.
  *
  * So `neverScheduled` needs a **universe** to subtract from: the set of configs
- * that ran this suite at all, which comes from other tests in the same file.
- * `configUniverse()` computes it, and it is optional — a caller that does not
- * supply one gets `null` rather than an empty set, because "no configs are
- * missing" and "I did not check" must not look the same.
+ * that could plausibly have run this test, which comes from other tests in the
+ * same file. `configUniverse()` computes it, and it is optional — a caller that
+ * does not supply one gets `null` rather than an empty set, because "no configs
+ * are missing" and "I did not check" must not look the same.
+ *
+ * ## Why the universe is scoped to the test's own suites
+ *
+ * "Every config anywhere in the file" is the wrong universe, and it was the
+ * first thing tried. A bucket file holds tests from every mochitest *suite* —
+ * `mochitest-plain`, `mochitest-media`, `mochitest-browser-chrome`,
+ * `geckoview-mochitest-plain` — because buckets shard by a hash of the test
+ * path, not by suite. Measured on the real
+ * `browser/extensions/formautofill/.../browser_ml_heuristics.js`: 495 configs
+ * in the bucket, 42 of which ran the test, so 453 "never scheduled" rows led by
+ * `geckoview-mochitest-media-nogpu`. A browser-chrome test was never going to
+ * run under `mochitest-media`, so those rows are not an absence anyone can act
+ * on — they bury the two or three that are.
+ *
+ * The suite is the schedulable unit: a manifest is assigned to a suite, and a
+ * config either runs that suite or does not. So the universe is every config
+ * running any suite **this test itself ran under**. On the same test that is 45
+ * configs and 3 never-scheduled, all three real. Measured across four tests with
+ * different shapes, suite scoping takes never-scheduled from 431–494 down to
+ * 0–3.
+ *
+ * What this deliberately does *not* report is a platform the test's suites do
+ * not exist on at all. A browser-chrome test has no Android suite in its set, so
+ * Android drops out of the universe entirely rather than appearing as 51
+ * never-scheduled rows. That absence is real and still reported — by
+ * `platformsCovered()` and the caller's "not android" line — but as "this suite
+ * does not run there", which is what it is, rather than as a list of configs
+ * that were somehow missed.
+ *
+ * A test's directory would be a closer proxy still, but it is not reachable: the
+ * 64 bucket files shard by `hash(fullPath) % 64`, so a test's directory siblings
+ * are scattered across all of them and scoping by directory would mean fetching
+ * ~224 MB instead of ~3.5 MB. Measured on `browser_ml_heuristics.js`, its own
+ * directory contributes exactly one test — itself — to its bucket.
  *
  * ## Why this needs a bucket file
  *
@@ -45,7 +79,7 @@
  */
 
 import type { DecodedTimingFile } from '../formats/decode.ts';
-import { stripChunkSuffix } from '../model/job-name.ts';
+import { parseJobName, stripChunkSuffix } from '../model/job-name.ts';
 import { classifyStatus } from '../model/status.ts';
 import { displaySkipMessage, skipReason } from '../model/skips.ts';
 import { inDayRange, type TestStatsOptions } from './test-stats.ts';
@@ -115,11 +149,95 @@ export interface TestCoverage {
      */
     attributedPasses: boolean;
     /**
-     * Configs that run this suite but never scheduled this test, or `null`
-     * when no universe was supplied. `null` and `[]` mean different things:
-     * "not checked" and "none".
+     * Configs in the universe that never scheduled this test, or `null` when
+     * no universe was supplied. `null` and `[]` mean different things: "not
+     * checked" and "none".
      */
     neverScheduled: string[] | null;
+    /**
+     * The suites the universe was scoped to — the suites this test itself ran
+     * under. Empty when no universe was supplied.
+     *
+     * Reported so the caller can *say* what the comparison set is. A
+     * never-scheduled count with no scope attached is the number the reader
+     * cannot check, and the previous unscoped version of this was wrong by two
+     * orders of magnitude without anything in the output admitting it.
+     */
+    universeSuites: string[];
+}
+
+/**
+ * The never-scheduled configs rolled up to platform × build type.
+ *
+ * The level a reader thinks in. "Never runs on mac" is the answer to "is this
+ * test covered on mac"; twenty config strings that all begin `test-macosx` are
+ * the same answer, spelled out at a length nobody reads.
+ */
+export interface CoverageGap {
+    /** `linux`, `windows`, `mac`, `android`, or `unknown`. */
+    platform: string;
+    /** Configs on this platform that ran the test at least once. */
+    ranCount: number;
+    /**
+     * Configs on this platform that were scheduled but only ever skipped —
+     * a `skip-if`, or a `run-if` scoping the test elsewhere.
+     *
+     * Tracked separately from both other counts because it is the state a
+     * platform rollup gets wrong most easily. `dom/media/test/test_playback.html`
+     * is scheduled on 20 Android configs and skipped on every one of them:
+     * folded into `ranCount` that reads as full Android coverage, and folded
+     * into `neverCount` it reads as CI not scheduling it there. Neither is
+     * true, and the difference is whether someone owes a `skip-if` fix.
+     */
+    skippedCount: number;
+    /** Configs on this platform in the universe that never scheduled it. */
+    neverCount: number;
+    /** The never-scheduled config names, for `--limit 0`. */
+    neverConfigs: string[];
+}
+
+/**
+ * Rolls the matrix up to one row per platform.
+ *
+ * All three counts are needed: a bare `neverCount` cannot distinguish "never
+ * runs on mac" (0 ran) from "runs on most mac configs" (many ran, a few did
+ * not), and without `skippedCount` a platform where the test is scheduled and
+ * disabled everywhere is indistinguishable from one where it runs fine.
+ */
+export function coverageGaps(coverage: TestCoverage): CoverageGap[] {
+    const byPlatform = new Map<string, CoverageGap>();
+    const gap = (jobName: string): CoverageGap => {
+        const platform = operatingSystemOf(jobName);
+        let existing = byPlatform.get(platform);
+        if (existing === undefined) {
+            existing = {
+                platform,
+                ranCount: 0,
+                skippedCount: 0,
+                neverCount: 0,
+                neverConfigs: [],
+            };
+            byPlatform.set(platform, existing);
+        }
+        return existing;
+    };
+    for (const config of coverage.configs) {
+        const entry = gap(config.jobName);
+        if (config.state === 'never-scheduled') {
+            entry.neverCount++;
+            entry.neverConfigs.push(config.jobName);
+        } else if (config.runCount > 0) {
+            entry.ranCount++;
+        } else {
+            entry.skippedCount++;
+        }
+    }
+    return [...byPlatform.values()].sort(
+        (a, b) =>
+            b.ranCount + b.skippedCount + b.neverCount -
+                (a.ranCount + a.skippedCount + a.neverCount) ||
+            a.platform.localeCompare(b.platform)
+    );
 }
 
 /** Options for `coverageOf`. */
@@ -243,11 +361,20 @@ export function coverageOf(
     );
 
     let neverScheduled: string[] | null = null;
+    let universeSuites: string[] = [];
     if (options.universe !== undefined) {
         const seen = new Set(rows.keys());
+
+        // The scope: every suite this test itself ran under. A config running
+        // some other suite is not a place this test could have been scheduled,
+        // so subtracting it would manufacture an absence rather than find one.
+        const suites = suitesOf(seen);
+        universeSuites = [...suites].sort();
+
         neverScheduled = [...options.universe]
             .map(stripChunkSuffix)
             .filter((jobName) => !seen.has(jobName))
+            .filter((jobName) => inSuites(jobName, suites))
             .filter((jobName) => options.jobFilter?.(jobName) ?? true)
             .sort();
         // Dedupe: two chunks of one config strip to the same name.
@@ -263,7 +390,32 @@ export function coverageOf(
         configs,
         attributedPasses: file.family === 'bucket' || file.family === 'daily',
         neverScheduled,
+        universeSuites,
     };
+}
+
+/**
+ * The suites a set of config names runs.
+ *
+ * A config with no parseable suite contributes nothing rather than a `null`
+ * bucket: an unparseable name must not quietly widen the universe to every
+ * other unparseable name.
+ */
+function suitesOf(jobNames: Iterable<string>): Set<string> {
+    const suites = new Set<string>();
+    for (const jobName of jobNames) {
+        const { suite } = parseJobName(jobName);
+        if (suite !== null) {
+            suites.add(suite);
+        }
+    }
+    return suites;
+}
+
+/** Whether a config runs one of the suites the test does. */
+function inSuites(jobName: string, suites: ReadonlySet<string>): boolean {
+    const { suite } = parseJobName(jobName);
+    return suite !== null && suites.has(suite);
 }
 
 /**
@@ -294,8 +446,14 @@ function stateOf(r: ConfigCoverage): CoverageState {
 }
 
 /**
- * Every configuration that appears anywhere in a file — the universe to
- * subtract from for `never-scheduled`.
+ * Every configuration that appears anywhere in a file — the *candidate* pool
+ * `coverageOf()` narrows to the test's own suites before subtracting.
+ *
+ * Deliberately unfiltered here. The suite scope depends on the test being
+ * asked about, and this is computed once per file and reused across tests, so
+ * narrowing at this level would either be wrong for every test but one or
+ * force a rescan per test. `coverageOf()` applies the scope instead — see this
+ * file's header for why the scope is the suite.
  *
  * Scans every test, so it is O(file) and the expensive part of `--coverage`.
  * Worth it only when the question is "where does this *not* run", which is why

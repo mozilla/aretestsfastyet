@@ -251,14 +251,41 @@ Configuration                              runs   pass   fail  skip   status
                                                                       (skip-if: os == 'android')
 
 34 configs, 5 platforms: linux (14), windows (8), macos (6), android (4), linux-aarch64 (2)
-Never ran on: windows-aarch64
+States: 28 ran, 4 only ever skipped, 2 never scheduled
+
+Scope: compared against every config running the 6 suites this test runs under
+(mochitest-plain, mochitest-plain-nofis, …). Configs running other suites cannot
+schedule this test and are not counted.
+  linux    14/14 ran
+  windows  8/10 ran — 2 never scheduled
+  android  0/4 ran — scheduled here, but skipped on every config
+  macos    6/6 ran
+  --limit 0 lists the 2 never-scheduled configs by name.
 ```
 
 This is available because the 64-bucket per-test files attribute passing runs to
 a job name (`jobNameIds` on PASS status groups), and `test.html` already builds
-this matrix — it simply has no CLI equivalent today. `--coverage` also
+this matrix — it simply has no CLI equivalent today. `--coverage`
 distinguishes the three states that look alike in a failure-only view: ran and
 passed, ran and was skipped, never scheduled.
+
+**The comparison set is the test's own suites, and the output says so.** The
+"never scheduled" answer needs a universe to subtract from, and "every config in
+the bucket file" is the wrong one: a bucket holds tests from every mochitest
+suite, because buckets shard on a hash of the test path. Drawn that way, a
+`mochitest-browser-chrome` test reported 453 never-scheduled configs out of 495,
+led by `geckoview-mochitest-media` variants it could never have run under. The
+universe is therefore every config running a suite **this test itself ran**,
+which on the same test is 45 configs and 3 real gaps.
+
+**The rollup is the default; the config names are behind `--limit 0`.** "Never
+runs on mac" is the answer; twenty config strings all beginning `test-macosx`
+are the same answer at a length nobody reads. Each platform row carries ran,
+scheduled-but-skipped and never-scheduled separately, because folding
+skipped-everywhere into either of the others loses the only outcome that is
+someone's work to fix. A platform whose suites do not exist at all is named
+rather than omitted — an absent row reads as "fine here", which is exactly the
+wrong conclusion.
 
 #### `--executions`: a failure is not just a failure
 
