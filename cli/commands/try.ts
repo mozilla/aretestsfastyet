@@ -218,9 +218,6 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         (job) =>
             job.state === 'completed' && job.result === 'testfailed' && isTestJob(job.jobName)
     );
-    const successfulTestJobs = jobs.filter(
-        (job) => job.state === 'completed' && job.result === 'success' && isTestJob(job.jobName)
-    );
     const otherFailedJobs = jobs.filter(
         (job) =>
             job.state === 'completed' &&
@@ -251,7 +248,7 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         );
     }
 
-    const failures = aggregateFailures(timings, runsPerJobName, successfulTestJobs);
+    const failures = aggregateFailures(timings, runsPerJobName);
 
     // Central history, one bucket file per distinct bucket the failing tests
     // land in. Failing tests cluster, so this is usually one or two files, not
@@ -772,11 +769,16 @@ export function normalizeMessage(message: string | null): string | null {
         .replace(/Test ran for \d+s/g, 'Test ran for Xs');
 }
 
-/** Groups per-run outcomes into one entry per test. */
+/**
+ * Groups per-run outcomes into one entry per test.
+ *
+ * `runsPerJobName` counts every completed run of each config, successes
+ * included, which is what makes "every run of this config failed" answerable
+ * from the failures alone — see `permaFailingConfigs` below.
+ */
 function aggregateFailures(
     timings: readonly TestTiming[],
-    runsPerJobName: ReadonlyMap<string, number>,
-    successfulTestJobs: readonly TreeherderJob[]
+    runsPerJobName: ReadonlyMap<string, number>
 ): TryFailure[] {
     // A test that passed when the harness reran it inside the same job is
     // intermittent almost by definition (`try.html:1393`). Keyed by run, since
@@ -794,8 +796,6 @@ function aggregateFailures(
         }
         set.add(timing.path);
     }
-
-    const successfulJobNames = new Set(successfulTestJobs.map((job) => job.jobName));
 
     interface Accumulator {
         path: string;
@@ -869,10 +869,15 @@ function aggregateFailures(
         // question of the whole test answers "intermittent" and hides a
         // config on which the test never once passed. `try.html` lists it as
         // one of the push's three permanent failures.
+        //
+        // There is deliberately no separate "and no run of this config
+        // succeeded" clause. `runsPerJobName` counts every *completed* run of
+        // the job name, successes included, so a config with a successful run
+        // has a denominator the failures cannot reach and the run comparison
+        // below already excludes it. A `successfulJobNames.has(jobName)` guard
+        // here reads like it is doing that work and does none: removing it
+        // changes no output on any input, which a mutation confirmed.
         const permaFailingConfigs = jobNames.filter((jobName) => {
-            if (successfulJobNames.has(jobName)) {
-                return false;
-            }
             if (entry.passedOnRerunByJobName.get(jobName) === true) {
                 return false;
             }
