@@ -435,10 +435,12 @@ test('run-if is not a skip, skip-if is, and no message counts', () => {
 });
 
 test('skips are counted in runs, not in entries', () => {
-    // The structural divergence `PLAN.md` §1 identifies:
-    // `common-test-data.js:303` and `xpcshell-timings.html:666` add 1 per
-    // `messageIds` entry, while `perma-fails.html:504` and `test.html:2637`
-    // add `getCountAtIndex(...)`. They agree only when every count is 1.
+    // The structural divergence `PLAN.md` §1 identifies: the sites differ in
+    // which array they iterate, and diverge only when an entry's count is not
+    // 1. `xpcshell-timings.html:666` is the one site that adds 1 per
+    // `messageIds` entry; `common-test-data.js:303` iterates the same array
+    // but adds `getCountAtIndex(...)`, so it already counts runs, as do the
+    // three sites that iterate `jobNameIds`.
     //
     // An entry in a `counts` group is a *bucket* of runs, so counting it as
     // one answers "how many distinct (day, job, message) buckets" while
@@ -453,10 +455,15 @@ test('skips are counted in runs, not in entries', () => {
     // The per-entry rule would have said 2 here, against 150.
 });
 
-test('the two skip-counting rules differ by 94x on a real file', () => {
-    // Not a hypothetical. `xpcshell-issues.json` has 189 SKIP entries
-    // totalling 17,787 runs, so the per-entry rule undercounts by 94x. The
-    // bucket file is 1,538 entries against 11,444 runs.
+test('the two skip-counting rules differ by an order of magnitude or more', () => {
+    // Not a hypothetical, and the size of the gap depends on how much a file
+    // buckets rather than being one number. These are the *fixtures*, so the
+    // ratios are 94.1x and 7.4x; on the whole published files the same
+    // measurement gives 80.2x for `xpcshell-issues.json` (27,024 entries,
+    // 2,166,688 runs) and 7.4x for `xpcshell-00.json`. The bucket files split
+    // the same runs across 64 files, so their buckets are smaller and the
+    // ratio is an order of magnitude lower — which is why a test asserting a
+    // ratio has to name the file it measured.
     for (const [file, entries, runs] of [
         [decodeIssues(xpcshellIssues), 189, 17787],
         [decodeBucket(xpcshellBucket), 1538, 11444],

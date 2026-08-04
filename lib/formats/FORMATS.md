@@ -340,7 +340,7 @@ counted once. (An earlier revision of this document quoted 854,914,907 by
 summing all four families; that number was a counting artefact, not a
 measurement, and is wrong by about 4×.)
 
-### The daily files and the aggregates disagree, and only on `SKIP`
+### The daily files and the aggregates disagree, mostly but not only on `SKIP`
 
 Counting the same 21 days from the daily files instead gives a slightly larger
 number:
@@ -350,21 +350,45 @@ number:
 | xpcshell | 40,804,055 | 44,635,982 | +3,831,927 (+9.4%) |
 | mochitest | 171,557,585 | 173,194,005 | +1,636,420 (+1.0%) |
 
-**Every status except `SKIP` matches exactly.** The whole difference is skips:
-xpcshell 2,166,688 in the aggregates against 5,998,615 in the daily files.
+`SKIP` dominates the difference — xpcshell 2,166,688 in the aggregates against
+5,998,615 in the daily files — and its cause is known: **the aggregates drop
+`run-if` skips and the daily files keep them.** See "The 21-day aggregates drop
+`run-if` skips" above, which measures it at 253,252 of 398,212 skipped runs
+(63.6%) on one full daily file, and confirms `run-if` never appears in any
+aggregate's `tables.messages`.
 
-This is a real difference in the data, not a counting artefact of the kind
-above, and the cause is known: **the aggregates drop `run-if` skips and the
-daily files keep them** — see "The 21-day aggregates drop `run-if` skips"
-above, which measures it at 253,252 of 398,212 skipped runs (63.6%) on one
-full daily file, and confirms `run-if` never appears in any aggregate's
-`tables.messages`.
+**But `SKIP` is not the whole difference.** An earlier revision of this section
+said every other status matched exactly. It does not. Comparing
+`xpcshell-2026-07-30.json` against day 16 of `xpcshell-issues.json` over the
+4,835 tests both contain, 4,706 of them differ on something, and the net
+per-status differences (aggregate minus daily) are:
 
-So the totals above are not two counts of the same population: the aggregate
-column counts skips that mean "disabled", the daily column counts those plus
-skips that mean "not applicable on this platform". Neither is wrong; they
-answer different questions, and a command must not compare one against the
-other.
+| status | net | | status | net |
+| --- | --- | --- | --- | --- |
+| `SKIP` | −254,174 | | `FAIL-PARALLEL` | −32 |
+| `PASS-PARALLEL` | −22,502 | | `TIMEOUT-PARALLEL` | −21 |
+| `PASS-SEQUENTIAL` | −1,569 | | `FAIL-SEQUENTIAL` | −5 |
+| `CRASH` | −83 | | `TIMEOUT-SEQUENTIAL` | −2 |
+| `EXPECTED-FAIL` | −48 | | | |
+
+Every status is lower in the aggregate, which points at **job membership**
+rather than at counting: a job present in one file and not the other removes
+all of its runs at once, whatever their status. Spot-checking one test found 17
+non-pass task IDs in the daily file that the aggregate does not have, and 9 the
+other way. Not chased further, because it is upstream and does not change what
+a consumer should do.
+
+What a consumer should do is the point: the totals above are not two counts of
+the same population, and the difference is not confined to a status that can be
+filtered out. The aggregate column counts skips that mean "disabled", the daily
+column counts those plus skips that mean "not applicable on this platform" —
+and on top of that the two files do not agree on which jobs ran. Neither is
+wrong; they answer different questions, and **a command must not compare one
+against the other**.
+
+`test/formats.test.ts` asserts the character of this rather than its size: on
+the fixtures only `PASS-SEQUENTIAL` disagrees and always in the aggregate's
+favour, which is the invariant that survives a fixture refresh.
 
 This is what `PLAN.md` §2 gates the deletion on, so to be explicit about what
 it does and does not license: **the generator did not emit `UNKNOWN` on any of

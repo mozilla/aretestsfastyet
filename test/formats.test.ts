@@ -278,25 +278,32 @@ test('the daily file agrees with the last day of the 21-day aggregate', () => {
     assert.ok(compared >= 8, `only ${compared} tests appear in both fixtures`);
 });
 
-test('every daily/aggregate disagreement is +1 PASS-SEQUENTIAL in the aggregate', () => {
+test('daily/aggregate disagreements are PASS-SEQUENTIAL only, and one-sided', () => {
     // The companion to the per-status check above. A tolerance of ±1 applied
     // per (test, status) would hide a systematic one-off if it applied
-    // everywhere, so this pins down *which* pairs disagree and by how much.
+    // everywhere, so this pins down the *character* of the disagreement.
     //
-    // The answer is narrow and one-sided: three of the eight shared tests
-    // report exactly one more `PASS-SEQUENTIAL` run in the aggregate than in
-    // the daily file, and nothing else disagrees at all. Every other status on
-    // every shared test — including the `task-ids` and `durations` shapes,
-    // which are counted completely differently — matches exactly.
+    // On the fixtures it is three tests, each +1. On the whole published files
+    // the same measurement over 4,835 shared tests finds 180 tests
+    // disagreeing, net +228, maximum delta 2 — so "three of eight" is a
+    // property of the cut, not of the data, and asserting those exact values
+    // would break on the next `npm run fixtures`.
     //
-    // One-sided and confined to one status is what makes this an upstream
-    // property rather than a decoder bug: a counting error in this library
-    // would not know what `PASS-SEQUENTIAL` is, and would not be off by
-    // exactly one in only one direction.
+    // What does hold at both scales, and is what this asserts:
+    //
+    //   - only `PASS-SEQUENTIAL` ever disagrees;
+    //   - the aggregate is never *lower* than the daily file.
+    //
+    // Confined to one status and one-sided is what makes this upstream rather
+    // than a decoder bug: a counting error in this library would not know what
+    // `PASS-SEQUENTIAL` is, and would not err in only one direction. It is
+    // also visible in the raw JSON before any decoding, so it is not an
+    // off-by-one in the day filter either.
     const daily = decodeDaily(xpcshellDaily);
     const aggregate = decodeIssues(xpcshellIssues);
     const lastDay = aggregate.days! - 1;
     const disagreements: [string, string, number][] = [];
+    let shared = 0;
 
     for (let testId = 0; testId < daily.testCount; testId++) {
         const { fullPath } = daily.testAt(testId);
@@ -304,6 +311,7 @@ test('every daily/aggregate disagreement is +1 PASS-SEQUENTIAL in the aggregate'
         if (!inAggregate) {
             continue;
         }
+        shared += 1;
         for (const status of daily.statuses) {
             if (status === 'SKIP') {
                 // Filtered upstream; covered by its own test.
@@ -327,10 +335,24 @@ test('every daily/aggregate disagreement is +1 PASS-SEQUENTIAL in the aggregate'
         }
     }
 
-    assert.deepEqual(
-        disagreements.map(([, status, delta]) => `${status}${delta >= 0 ? '+' : ''}${delta}`),
-        ['PASS-SEQUENTIAL+1', 'PASS-SEQUENTIAL+1', 'PASS-SEQUENTIAL+1'],
-        `unexpected daily/aggregate disagreements: ${JSON.stringify(disagreements)}`
+    assert.ok(shared >= 8, `only ${shared} shared tests`);
+    for (const [fullPath, status, delta] of disagreements) {
+        assert.equal(
+            status,
+            'PASS-SEQUENTIAL',
+            `${fullPath}: ${status} disagrees by ${delta}, and only PASS-SEQUENTIAL should`
+        );
+        assert.ok(
+            delta > 0,
+            `${fullPath}: the aggregate is ${-delta} lower than the daily file`
+        );
+    }
+    // The disagreement is a minority of what is compared, at both scales: 3 of
+    // 8 tests on the fixtures, 180 of 4,835 on the full files. A decoder bug in
+    // a shape would not be a minority.
+    assert.ok(
+        disagreements.length < shared,
+        `every shared test disagrees (${disagreements.length}/${shared})`
     );
 });
 

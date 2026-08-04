@@ -23,27 +23,45 @@
  * ## The real divergence is structural
  *
  * An earlier draft of `PLAN.md` claimed the sites disagreed about no-message
- * skips. They do not. The genuine difference is **which array they iterate**:
+ * skips. They do not. The genuine difference is **which array they iterate**,
+ * and `PLAN.md` §1 states it precisely: one group iterates `messageIds`, the
+ * other iterates `jobNameIds` and adds `getCountAtIndex(...)`, and the two
+ * "diverge only when an entry's count is not 1".
  *
  * | site | iterates | adds per entry |
  * | --- | --- | --- |
- * | `common-test-data.js:303`, `xpcshell-timings.html:666` | `messageIds` | **1** |
- * | `perma-fails.html:504`, `test.html:2637`, `variant.html` | `jobNameIds` | `getCountAtIndex(...)` |
+ * | `xpcshell-timings.html:666` | `messageIds` | **1** (`skipCount++`) |
+ * | `common-test-data.js:303` | `messageIds` | `getCountAtIndex(...)` |
+ * | `perma-fails.html:504`, `test.html:2637`, `variant.html:575` | `jobNameIds` | `getCountAtIndex(...)` |
  *
- * They agree only when every entry's count is 1, and they are not close
- * otherwise. Measured on the checked-in fixtures: `xpcshell-issues.json` has
- * 189 SKIP entries totalling **17,787 runs**, so the per-entry rule
- * undercounts by 94×. On `xpcshell-00.json` it is 1,538 against 11,444.
+ * Note which site is where. `common-test-data.js:303` iterates `messageIds`
+ * like `xpcshell-timings.html` but adds `getCountAtIndex(statusGroup, i)`, so
+ * it already counts **runs** — it is evidence *for* the rule below, not
+ * against it. **`xpcshell-timings.html:666` is the only site that counts
+ * entries.** An earlier version of this comment put both in the per-entry row,
+ * which overstated the divergence as two sites when it is one.
  *
  * The per-entry rule is wrong, not merely different: an entry in a `counts` or
  * `skip-counts` group is a *bucket* of runs, and counting it as one run
  * answers "how many distinct (day, job, message) buckets were there" while
  * claiming to answer "how many runs were skipped". This module counts runs,
- * which is what every caller's label says.
+ * which is what every caller's label says, and what four of the five sites
+ * already do.
  *
- * That is a deliberate change from two of the eight sites, and it is the kind
- * `PLAN.md` §1 warns is invisible until data changes shape — except that here
- * it is visible today and always has been.
+ * The gap is large and depends on how much a file buckets, so no single
+ * multiplier describes it. Measured over whole published files, counting
+ * non-`run-if` skips:
+ *
+ * | file | entries | runs | ratio |
+ * | --- | --- | --- | --- |
+ * | `xpcshell-issues.json` | 27,024 | 2,166,688 | **80.2×** |
+ * | `mochitest-issues.json` | 118,709 | 8,893,259 | 74.9× |
+ * | `xpcshell-00.json` | 5,085 | 37,774 | 7.4× |
+ * | `mochitest-00.json` | 13,982 | 128,314 | 9.2× |
+ *
+ * The 64-bucket files split the same runs across 64 files, so each holds more,
+ * smaller buckets and the ratio is an order of magnitude lower. A test
+ * asserting a ratio therefore has to name the file it measured.
  */
 
 import type { StatusEntry } from '../formats/status-entries.ts';
