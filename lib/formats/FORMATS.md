@@ -100,27 +100,35 @@ the list a decoder has to handle; it is short, which is itself the finding.
 
 ### Every timing family
 
-| field | kind | notes |
-| --- | --- | --- |
-| `testInfo.componentIds[]` | `null` | Test with no known Bugzilla component. Rare — 2 of 4,838 tests in `xpcshell-issues.json`. |
-| `statusGroup.messageIds[]` | `null` | A failing run that recorded no message. Common on `FAIL-PARALLEL`. |
-| `statusGroup.crashSignatureIds[]` | `null` | A crash with no symbolized signature. |
-| `statusGroup.minidumps[]` | `null` | A crash whose minidump was not uploaded. `fx-tests crash` cannot be offered for these. |
-| `taskInfo.chunks[]` | `null` | Unchunked job. Bucket files only. |
-| `taskInfo.chunks` | **absent** | Whole field absent from the daily, issues-with-taskids and errors files; present only on the bucket files. |
+Occurrence counts are over the whole sweep, so the bucket rows aggregate all
+64 buckets and the daily rows all 21 dates.
 
-`TIMEOUT` groups carry **no `messageIds` at all** — the field is absent from
-the group, not null within it. A decoder that reads `messageIds` unconditionally
-gets `undefined` for every timeout.
+| field | kind | occurrences | notes |
+| --- | --- | --- | --- |
+| `taskInfo.chunks[]` | `null` | 74,699 xpcshell / 5,882 mochitest (buckets) | Unchunked job. Bucket files only. |
+| `taskInfo.chunks` | **absent** | every daily, issues-with-taskids and errors file | Present only on the bucket files. |
+| `statusGroup.messageIds[]` | `null` | 5,495 on xpcshell `FAIL-PARALLEL`; 408 on mochitest `FAIL` | A failing run that recorded no message. |
+| `testInfo.componentIds[]` | `null` | 2 of 4,838 tests (xpcshell issues), 138 (mochitest) | Test with no known Bugzilla component. |
+| `statusGroup.crashSignatureIds[]` | `null` | 58 (mochitest) | A crash with no symbolized signature. Never null on xpcshell. |
+| `statusGroup.minidumps[]` | `null` | 58 (mochitest) | A crash whose minidump was not uploaded — `fx-tests crash` has nothing to fetch. Always the same 58 entries as the null signatures. |
+| `tables.crashSignatures` | **empty** | 20 of 64 mochitest buckets | The whole table, not an entry: a third of mochitest buckets saw no crash at all. An empty table is not an error. |
+
+Two shape facts that are absences rather than nulls, and that a decoder will
+trip over:
+
+- **`TIMEOUT` groups carry no `messageIds` field at all** — absent from the
+  group, not null within it. Reading `messageIds` unconditionally yields
+  `undefined` for every timeout, not a list of nulls.
+- `crashSignatureIds` and `minidumps` appear **only** on `CRASH` groups.
 
 ### `{harness}-{date}-errors.json`
 
-| field | kind | notes |
-| --- | --- | --- |
-| `messages.fileIds[]` | `null` | Message with no source file. |
-| `messages.lines[]` | `null` | Message with no line number. Always null when `fileIds` is. |
-| `messages.componentIds[]` | `null` | Observed on mochitest only. |
-| `messages.textIds[]` | `null` | A message with no text — an empty log line. |
+| field | kind | occurrences | notes |
+| --- | --- | --- | --- |
+| `messages.fileIds[]` | `null` | 47,733 mochitest / 1,144 xpcshell | Message with no source file. Very common — roughly a third of mochitest messages. |
+| `messages.lines[]` | `null` | 35,021 mochitest / 1,077 xpcshell | Message with no line number. **Not** the same set as the null `fileIds`: on xpcshell 2026-07-30, 228 messages had neither, 22 had a *line but no file*, and none had a file without a line. So a null `fileIds` does not imply a null `lines`, and grouping by source location has to handle a line with nothing to attach it to. |
+| `messages.componentIds[]` | `null` | 5,207 mochitest | Never null on xpcshell. |
+| `messages.textIds[]` | `null` | 124 mochitest / 1 xpcshell | A message with no text at all. Rare, but it exists — grouping by text has to cope. |
 
 ### `{harness}-stats.json`
 
@@ -255,23 +263,24 @@ parsed object, in a default Node 22 heap with no flags.
 
 | file | on disk | heapUsed | rss | rss / bytes |
 | --- | --- | --- | --- | --- |
-| mochitest daily, 2026-07-28 | 155.2 MB | 625.8 MB | 742.1 MB | 4.8× |
+| **mochitest daily, 2026-07-28** (the largest) | 155.2 MB | 628.5 MB | 745.8 MB | 4.8× |
 | mochitest daily, 2026-07-30 | 146.7 MB | 599.1 MB | 712.8 MB | 4.9× |
-| mochitest errors, 2026-07-30 | 97.1 MB | 530.2 MB | 652.1 MB | 6.7× |
-| mochitest issues-with-taskids | 75.3 MB | — | — | — |
+| mochitest errors, 2026-07-30 | 97.1 MB | 531.9 MB | 656.8 MB | 6.8× |
+| mochitest bucket (typical) | 15.1 MB | — | 195 MB | 12.9× |
 | xpcshell daily, 2026-07-30 | 36.6 MB | — | 235 MB | 6.4× |
 
-**The largest single file needs about 740 MB of RSS.** `PLAN.md` §4 argues
-parsing is safe by construction because the generator held the same data; the
-measurement supports the conclusion but the constant is worth knowing — the
-expansion factor is roughly **5× on disk size**, and Node's default old-space
-limit on a 64-bit machine is around 4 GB, so one file is comfortable and there
-is no need for `--max-old-space-size`.
+**The largest single file peaks at 746 MB of RSS and 629 MB of heap.**
+`PLAN.md` §4 argues parsing is safe by construction because the generator held
+the same data; the measurement supports that conclusion, and the useful
+constant is the expansion factor: **roughly 5× the file size for the big
+files**, rising to 7–13× for the smaller ones, where a fixed interpreter
+overhead of ~35 MB dominates. Node's default old-space limit on a 64-bit
+machine is around 4 GB, so one file is comfortable and `--max-old-space-size`
+is not needed.
 
-What it also settles: the plan's decision to prefer the 64-bucket files for
-single-test queries is right for memory as well as bytes. A bucket file is
-3.5–15 MB against the daily file's 37–155 MB, so `fx-tests test` peaks around
-100 MB rather than 700 MB.
+What it also settles: preferring the 64-bucket files for single-test queries is
+right for memory as well as bytes. A bucket file peaks around 125–195 MB
+against a daily file's 235–746 MB.
 
 Aggregating across days remains out of reach, as `PLAN.md` §1 says: three
 mochitest daily files would exceed 2 GB of heap.
@@ -322,7 +331,7 @@ What was swept:
 | stats | both | 2 | the whole file, all 199 / 66 dates |
 | manifests | — | 1 | the whole file |
 | index | — | 1 | the whole file |
-| minidump-stackwalk | — | 6 | sampled from crash groups across bucket files |
+| minidump-stackwalk | — | 7 | sampled: reached via `CRASH` groups' `minidumps`, across Linux, macOS (x86-64 and arm64) and Windows |
 
 That is a **complete sweep of every file the index publishes**, not a sample —
 230 files and 4.4 GB — with the single exception of the minidump-stackwalk
@@ -336,3 +345,35 @@ tools/validate/sweep.sh --all      # writes artifacts/sweep-results.jsonl
 node --experimental-strip-types tools/validate/report.ts \
     artifacts/sweep-results.jsonl  # writes this document's numbers
 ```
+
+## The fixtures
+
+`test/fixtures/` holds truncated real files, regenerated by `npm run fixtures`
+and re-validated by `npm test` with the same checkers the sweep used.
+
+They are cut **from a weekday** and, crucially, **not from a prefix of the
+file**. Keeping the first N tests is circular — the first `FAIL` group in
+`xpcshell-00.json` is on test 76, so a 40-test prefix contains no failures at
+all and would validate a decoder against only the shapes that survived the cut.
+`selectTests()` instead keeps the first couple of tests carrying *each* status,
+which covers all twelve xpcshell statuses in about a dozen tests. A test
+asserts that every status in a fixture's `tables.statuses` has at least one
+test carrying it, so this property cannot quietly regress.
+
+Both harnesses' buckets and errors files are checked in, because their coverage
+genuinely differs: mochitest has no `-PARALLEL`/`-SEQUENTIAL` statuses, and
+xpcshell's errors file only contains failing tests' output.
+
+Two real minidump-stackwalk dumps are included:
+
+- `stackwalk-crash.json` — a Windows crash, 59 threads, 1,025 frames, all
+  symbolized.
+- `stackwalk-hang.json` — a macOS **hang**, not a crash: the main thread is
+  parked in `RunCurrentEventLoopInMode` and the process was killed from
+  outside, so the dump is taken by breakpad
+  (`ExceptionHandler::WriteMinidumpWithException` is on the stack) and
+  `crash_info.type` is `EXC_SOFTWARE / SIGABRT`. This is the shape
+  `fx-tests crash --all-threads` exists for, and it is worth noting that a
+  hang is *not* distinguishable by `crash_info.type` alone — a real `SIGABRT`
+  crash looks the same. The distinguishing evidence is breakpad frames at the
+  top of a thread that is otherwise waiting.
