@@ -144,6 +144,44 @@ test('a line with no file does not merge with another line-only message', () => 
     assert.equal(lined.length, 2);
 });
 
+test('an absent field does not collide with an empty one', () => {
+    // The sentinel's whole job. With `KEY_ABSENT` set to the empty string,
+    // a message from a file named "" and a message with no file at all build
+    // the same key and merge into one row — and the merged row's count belongs
+    // to neither. A mutation doing exactly that survived the first campaign.
+    const file = decodeErrors(
+        buildErrorsFile([
+            { kind: 'C++ warning', text: 'msg', file: null, line: 7, counts: [3] },
+            { kind: 'C++ warning', text: 'msg', file: '', line: 7, counts: [5] },
+        ])
+    );
+    const rows = rankErrors(file, { grouping: 'location' }).rows;
+    assert.equal(rows.length, 2, 'no-file and empty-file must not merge');
+    assert.deepEqual(
+        rows.map((row) => [row.file, row.count]).sort(),
+        [['', 5], [null, 3]].sort()
+    );
+});
+
+test('a printable separator would let two different messages collide', () => {
+    // The separator's job, driven by the collision it prevents. These two
+    // messages differ only in where the boundary between text and file falls,
+    // so any separator that can occur inside a field — `:` being the obvious
+    // choice — makes them one group. With a control character they stay two.
+    const file = decodeErrors(
+        buildErrorsFile([
+            { kind: 'C++ warning', text: 'a:b', file: 'c', line: 1, counts: [2] },
+            { kind: 'C++ warning', text: 'a', file: 'b:c', line: 1, counts: [4] },
+        ])
+    );
+    const rows = rankErrors(file, { grouping: 'location' }).rows;
+    assert.equal(rows.length, 2, 'the parts must not be able to run together');
+    assert.deepEqual(
+        rows.map((row) => row.count).sort((a, b) => a - b),
+        [2, 4]
+    );
+});
+
 test('the same text from two files is two groups', () => {
     const file = decodeErrors(
         buildErrorsFile([

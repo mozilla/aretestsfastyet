@@ -269,31 +269,56 @@ export function matchesTest(path: string, wanted: string): boolean {
 }
 
 /**
+ * The separator between the parts of a grouping key.
+ *
+ * A unit separator, written as an escape rather than as a literal control
+ * character in the source. It used to be literal, which made it invisible in a
+ * diff, unmatched by a textual search, and impossible to mutation-test — a
+ * mutation swapping it for a colon could not even be applied. Named and
+ * escaped, it is all three.
+ *
+ * It has to be a byte that cannot occur in the data. A message text can contain
+ * anything — colons, numbers, newlines — so a printable separator lets two
+ * different messages build the same key and silently merge into one row.
+ */
+const KEY_SEPARATOR = '\u001f';
+
+/**
+ * The stand-in for a field that is absent, as opposed to empty.
+ *
+ * A control character for the same reason, and load-bearing for the same
+ * measurement: a message with no file and a message from a file named `""` are
+ * different groups, and `FORMATS.md`'s messages carrying a line with **no
+ * file** — 22 on one xpcshell day, 2,539 on a live mochitest one — must not
+ * merge with each other merely because they share a line number.
+ *
+ * The empty string would not do: it makes an absent field indistinguishable
+ * from an empty one, which is exactly the collision this prevents.
+ */
+const KEY_ABSENT = '\u0001';
+
+/**
  * The key a message groups under.
  *
- * ` ` separates the parts rather than `:` because a message text can
- * contain anything, including a colon and a number, and a separator that can
- * appear inside a field lets two different messages collide. The ``
- * sentinel distinguishes an absent field from an empty one — a message with no
- * file and a message from a file named `""` are not the same group, and more
- * usefully, `FORMATS.md`'s 22 messages with a line and no file must not merge
- * with each other just because they share a line number.
+ * See `KEY_SEPARATOR` and `KEY_ABSENT` for why both are control characters and
+ * why neither may be a printable byte.
  */
 function groupKey(grouping: ErrorGrouping, message: DecodedMessage, path: string): string {
-    const absent = '';
     const part = (value: string | number | null): string =>
-        value === null ? absent : String(value);
+        value === null ? KEY_ABSENT : String(value);
     switch (grouping) {
         case 'message':
             // Text alone, which is what `errors.html` used to do. Kept as an
             // option because "how much of this text is there in total" is a
             // real question, but not the default — see the module comment.
-            return `${part(message.kind)} ${part(message.text)}`;
+            return [part(message.kind), part(message.text)].join(KEY_SEPARATOR);
         case 'location':
-            return (
-                `${part(message.kind)} ${part(message.text)} ` +
-                `${part(message.file)} ${part(message.line)}`
-            );
+            return [
+                part(message.kind),
+                part(message.text),
+                part(message.file),
+                part(message.line),
+            ].join(KEY_SEPARATOR);
         case 'test':
             return path;
         case 'component':

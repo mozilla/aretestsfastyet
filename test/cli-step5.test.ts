@@ -89,6 +89,20 @@ function fixtureSource(
     };
 }
 
+/**
+ * A source serving the bucket fixtures, for the commands that read one.
+ *
+ * Separate from `fixtureSource` because the tree-wide commands and `test` read
+ * different families, and a source serving both would let a command read the
+ * wrong one without a test noticing.
+ */
+function bucketSource(): DataSource & { requested: string[] } {
+    return fixtureSource({
+        'mochitest-timings/mochitest-00.json': 'mochitest-00.json',
+        'xpcshell-timings/xpcshell-00.json': 'xpcshell-00.json',
+    });
+}
+
 /** Serves the two stackwalk fixtures, plus the failure modes exit 3/4 need. */
 function artifactSource(): DataSource & { requested: string[] } {
     const requested: string[] = [];
@@ -626,11 +640,13 @@ test('crash marks blocked threads, and does not mark most of them', async () => 
     const { stdout } = await invoke(['crash', 'TASKCRASH', 'dump-crash', '--json', '--all-threads']);
     const threads = json(stdout)['threads'] as { blocked: boolean }[];
     const blocked = threads.filter((thread) => thread.blocked).length;
-    // Matching every OS wait primitive marked 53 of these 59 threads, which is
-    // accurate and useless: in an idle process nearly every thread is parked.
-    // The narrower lock-and-condvar list is what makes the marker a signal.
+    // Matching every OS wait primitive marked 57 of these 59 threads. The
+    // narrowed lock-and-condvar list marks 2. That gap is real on this dump —
+    // but it is not the general case: across seven dumps the narrowed rule
+    // marks between 2% and 77% of threads, so this pins a measurement rather
+    // than a claim that the marker is always selective.
     assert.equal(blocked, 2);
-    assert.ok(blocked < threads.length / 2, 'the marker must discriminate');
+    assert.ok(blocked > 0, 'the marker must fire on a dump that has lock waits');
 });
 
 test('crash resolves <taskId>.<retryId> with .0 implied', async () => {
@@ -679,6 +695,22 @@ test('crash exits 4 for a missing artifact and 3 for anything else', async () =>
 
     const serverError = await invoke(['crash', 'TASK500', 'dump-500']);
     assert.equal(serverError.code, ExitCode.Upstream);
+});
+
+test('a 403 gets the transposed-path hint and a 5xx does not', async () => {
+    // Both are exit 3, so the code alone cannot tell the branch apart and a
+    // mutation re-keying the hint to 404 survived. The hint is the actionable
+    // part: 403 is what the *wrong URL shape* answers, and someone seeing it
+    // should check the path rather than wait and retry.
+    const forbidden = await invoke(['crash', 'TASK403', 'dump-403']);
+    assert.match(forbidden.stderr, /malformed artifact path|auth problem/);
+    assert.match(forbidden.stderr, /which answers 404/);
+
+    const serverError = await invoke(['crash', 'TASK500', 'dump-500']);
+    assert.match(serverError.stderr, /looks transient/);
+    // …and must NOT claim a path problem, which would send someone checking a
+    // URL that is fine.
+    assert.doesNotMatch(serverError.stderr, /malformed artifact path/);
 });
 
 test('crash requires both arguments', async () => {
@@ -756,6 +788,82 @@ test('every tree-wide command reports that it cannot attribute configurations', 
             false,
             `${command} must report that issues.json cannot attribute configs`
         );
+    }
+});
+
+test('the no-job-names notice is printed, and says what it means', async () => {
+    // The prose half of the guard. Only the `--config` usage error was covered
+    // on the first pass, so the notice could be replaced with anything — or
+    // dropped entirely — with the suite green. It is the only thing a reader
+    // who did *not* pass `--config` ever sees, so it carries the whole claim.
+    for (const command of ['issues', 'failures', 'crashes', 'skips']) {
+        const { stdout } = await invoke([command, '--limit', '2']);
+        assert.match(
+            stdout,
+            /records no job names/,
+            `${command} must say the file records no job names`
+        );
+        assert.match(
+            stdout,
+            /broken down by configuration/,
+            `${command} must say what that costs the reader`
+        );
+    }
+});
+
+test('test --task-ids surfaces minidump IDs from the bucket file', async () => {
+    // The workflow the `crashes` hint points at, and which did not exist until
+    // this landed: `issues.json` records no dumps, so the hint sends a caller
+    // to `fx-tests test --task-ids` — which read the bucket file's `minidumps`
+    // array not at all. The golden is the ID in the checked-in fixture.
+    const { code, stdout } = await invoke([
+        'test',
+        'browser/components/sessionstore/test/browser_revive_crashed_bg_tabs.js',
+        '--harness', 'mochitest', '--task-ids', '--json',
+    ], { source: bucketSource() });
+    assert.equal(code, ExitCode.Success);
+    const rows = json(stdout)['taskIds'] as {
+        taskId: string;
+        retryId: number;
+        status: string;
+        minidumpId?: string;
+        crashCommand?: string;
+    }[];
+    const crashes = rows.filter((row) => row.status.startsWith('CRASH'));
+    assert.ok(crashes.length > 0, 'the fixture test must have crashed');
+    const withDump = crashes.find((row) => row.minidumpId !== undefined);
+    assert.ok(withDump !== undefined, 'a crash row must carry its minidump ID');
+    assert.equal(withDump.minidumpId, 'd2d42d50-47cc-4c58-a9ed-829a648c372e');
+    assert.equal(withDump.taskId, 'Y9Rrc0AOTHyR1g40ft10Ig');
+    // The pairing is what matters: a dump ID is unusable without its task, so
+    // the two are emitted together as the command that reads them.
+    assert.equal(
+        withDump.crashCommand,
+        'fx-tests crash Y9Rrc0AOTHyR1g40ft10Ig.0 d2d42d50-47cc-4c58-a9ed-829a648c372e'
+    );
+
+    // …and the text view shows it, since that is what a reader sees.
+    const text = await invoke([
+        'test',
+        'browser/components/sessionstore/test/browser_revive_crashed_bg_tabs.js',
+        '--harness', 'mochitest', '--task-ids',
+    ], { source: bucketSource() });
+    assert.match(text.stdout, /fx-tests crash Y9Rrc0AOTHyR1g40ft10Ig\.0 d2d42d50-/);
+});
+
+test('a non-crash row carries no minidump ID', async () => {
+    // Absent rather than null, and only on crashes: a fail row with a dump
+    // field would imply there is a dump to read.
+    const { stdout } = await invoke([
+        'test',
+        'browser/components/sessionstore/test/browser_revive_crashed_bg_tabs.js',
+        '--harness', 'mochitest', '--task-ids', '--json',
+    ], { source: bucketSource() });
+    const rows = json(stdout)['taskIds'] as { status: string; minidumpId?: string }[];
+    for (const row of rows) {
+        if (!row.status.startsWith('CRASH')) {
+            assert.equal(row.minidumpId, undefined, `${row.status} should carry no dump`);
+        }
     }
 });
 
@@ -962,6 +1070,28 @@ test('the tree-wide commands reject a stray positional with a useful hint', asyn
 test('the tree-wide commands say what they truncated', async () => {
     const { stdout } = await invoke(['issues', '--limit', '2']);
     assert.match(stdout, /… \d+ more \(--limit 0 for all\)/);
+});
+
+test('--markdown emits a real table from every command, not a fenced block', async () => {
+    // These four used to render text and wrap it in a fence, which made them
+    // the only commands whose `--markdown` was not Markdown: pasting `issues`
+    // and `manifests` into one bug gave a code block and a table.
+    for (const argv of [
+        ['issues', '--limit', '2'],
+        ['failures', '--limit', '2'],
+        ['crashes', '--limit', '2'],
+        ['skips', '--limit', '2'],
+        ['manifests', '--limit', '2'],
+        ['errors', '--limit', '2'],
+    ]) {
+        const { code, stdout } = await invoke([...argv, '--markdown']);
+        assert.equal(code, ExitCode.Success, argv[0]);
+        assert.match(stdout, /^# /m, `${argv[0]} should open with a heading`);
+        // A header row followed by the alignment row is what makes it a table.
+        assert.match(stdout, /^\|.*\|$/m, `${argv[0]} should emit a table row`);
+        assert.match(stdout, /^\| -+/m, `${argv[0]} should emit an alignment row`);
+        assert.doesNotMatch(stdout, /^```/m, `${argv[0]} should not fence its table`);
+    }
 });
 
 // =========================================================================

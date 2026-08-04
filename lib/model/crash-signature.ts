@@ -103,9 +103,26 @@ export const UNKNOWN_SIGNATURE = '@ Unknown';
  * The exact spelling — `${module} + ${module_offset}`, spaces included — is
  * upstream's, and it matters because it ends up in signature strings that a
  * caller may group on.
+ *
+ * ## Why `||` and not `??`
+ *
+ * `crash-viewer.html:513` writes `frame.function || …`, and this used to write
+ * `??`. The two differ on exactly one input — `function: ""` — where `??` keeps
+ * the empty string and `||` falls back to the module. Differential fuzzing of
+ * 200,000 synthetic dumps against a verbatim transcription of the original
+ * found 6,951 divergences and every one traced to this operator.
+ *
+ * No real frame has an empty function name: 0 occurrences across 4,899 frames
+ * from seven dumps. So this is latent rather than a live bug — and it is fixed
+ * anyway, because the whole justification for the parameter-stripping regex's
+ * strangeness two functions down is that the port is "preserved exactly, warts
+ * included". A port cannot claim that while quietly modernizing an operator;
+ * either the contract holds or it does not.
  */
 export function frameName(frame: Frame): string {
-    return frame.function ?? `${frame.module} + ${frame.module_offset}`;
+    // `||`, deliberately, matching upstream on an empty function name.
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    return frame.function || `${frame.module} + ${frame.module_offset}`;
 }
 
 /**
@@ -246,23 +263,29 @@ export const BREAKPAD_FRAME_FRAGMENTS: readonly string[] = [
  * Function fragments that mean a thread is parked on a **lock or condition
  * variable** — waiting for another thread, rather than merely idle.
  *
- * This list is narrower than it first was, and the narrowing came from
- * measuring rather than from taste. A first version also matched the OS-level
- * wait primitives (`ZwWaitFor*`, `NtWaitForSingleObject`, `epoll_wait`,
- * `kevent`, …) and marked **53 of the crash fixture's 59 threads** as blocked.
- * That was not wrong — those threads really were in a wait — it was useless: in
- * any idle process nearly every thread is parked in the scheduler, so a marker
- * on 90% of them distinguishes nothing.
+ * This list is narrower than it first was. A first version also matched the
+ * OS-level wait primitives (`ZwWaitFor*`, `NtWaitForSingleObject`,
+ * `epoll_wait`, `kevent`, …), and the distinction it drops is real: a thread in
+ * `epoll_wait` is waiting for the world, while a thread in `MutexImpl::lock` is
+ * waiting for a peer, and only the second can be part of a cycle.
  *
- * What a deadlock reader wants is the smaller set: threads waiting on a
- * *mutex or condition variable*, which is where a cycle can exist. A thread
- * blocked in `epoll_wait` is waiting for the world; a thread blocked in
- * `MutexImpl::lock` is waiting for a peer.
+ * ## What the narrowing actually buys, measured
  *
- * Even so this is a **heuristic**, and the command says so. A minidump records
- * no lock ownership, so this cannot prove a cycle — it can only point at the
- * threads worth reading. `blockedThreadCount` is reported next to the thread
- * total for exactly that reason: 5 of 26 is a lead and 53 of 59 is a shrug.
+ * Less than an earlier version of this comment claimed. It quoted the two
+ * fixtures — 2 of 59 against a broad 57, and 5 of 26 against 6 — and concluded
+ * "5 of 26 is a lead and 53 of 59 is a shrug". Across seven real dumps the
+ * narrowed rule marks **2%, 3%, 19%, 19%, 58%, 62% and 77%** of threads. On
+ * roughly half of them it is nearly as noisy as the rule it replaced.
+ *
+ * So the honest claim is narrower than the tidy one: the narrowing never makes
+ * the marker *worse*, it is decisive on some dumps, and on others a process
+ * genuinely has most of its threads waiting on Gecko locks and no
+ * frame-matching rule can change that. Read the count against the thread total
+ * before reading the markers — which is why the command always prints both.
+ *
+ * And it remains a **heuristic**. A minidump records no lock ownership, so this
+ * cannot prove a cycle; it points at threads worth reading. The command says so
+ * in as many words rather than leaving the marker to imply more than it knows.
  */
 export const BLOCKED_FRAME_FRAGMENTS: readonly string[] = [
     // Mozilla's own synchronization primitives — the highest-signal entries,

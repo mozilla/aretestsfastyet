@@ -272,6 +272,25 @@ test('frameName prefers the symbol and falls back to module + offset', () => {
     );
 });
 
+test('frameName falls back on an EMPTY function name, matching upstream’s ||', () => {
+    // The one input where `||` and `??` differ, and the only thing separating
+    // this port from the original: differential fuzzing of 200,000 synthetic
+    // dumps found 6,951 divergences, all from this operator.
+    //
+    // No real frame has an empty function name — 0 in 4,899 frames across seven
+    // dumps — so this is latent. It is pinned anyway because the port's stated
+    // contract is "preserved exactly, warts included", and an untested claim of
+    // exactness is the kind that quietly stops being true.
+    assert.equal(
+        frameName(frame({ function: '', module: 'xul.dll', module_offset: '0x99' })),
+        'xul.dll + 0x99'
+    );
+    // …and the signature that follows from it, which is what a caller groups
+    // on: `??` would yield `@ Unknown` here by way of an empty frame name.
+    const dump = dumpWith([frame({ function: '', module: 'xul.dll', module_offset: '0x99' })]);
+    assert.equal(crashSignature(dump), '@ xul.dll + 0x99');
+});
+
 // --- faulting address ----------------------------------------------------
 
 test('faultingAddress reports a null-pointer dereference as such', () => {
@@ -401,14 +420,14 @@ test('blocked detection looks only at the innermost frames', () => {
     assert.ok(!isBlockedThread(deep));
 });
 
-test('the fixtures give discriminating blocked counts', () => {
+test('the blocked counts on the fixtures are the measured ones', () => {
     const crash = fixture('stackwalk-crash.json');
     const hang = fixture('stackwalk-hang.json');
-    const crashBlocked = crash.threads.filter(isBlockedThread).length;
-    const hangBlocked = hang.threads.filter(isBlockedThread).length;
-    // 2 of 59 and 5 of 26. The point is that these are small: 53 of 59 is a
-    // shrug, and a marker on 90% of threads distinguishes nothing.
-    assert.equal(crashBlocked, 2);
-    assert.equal(hangBlocked, 5);
-    assert.ok(crashBlocked < crash.threads.length / 4);
+    // 2 of 59 and 5 of 26 — pinned as measurements, not as evidence that the
+    // rule is always this selective. Across seven real dumps it marks between
+    // 2% and 77% of threads, so a general claim would be false; see
+    // `BLOCKED_FRAME_FRAGMENTS`. What these pin is that the rule is stable on
+    // the inputs the suite has.
+    assert.equal(crash.threads.filter(isBlockedThread).length, 2);
+    assert.equal(hang.threads.filter(isBlockedThread).length, 5);
 });
