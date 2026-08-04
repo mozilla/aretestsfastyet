@@ -1357,6 +1357,78 @@ test('truncate() cuts to the width and marks the cut', async () => {
     assert.equal(truncate('unbounded', 0), 'unbounded');
 });
 
+test('truncatePath() drops leading directories, never the filename', async () => {
+    // The bug: `truncate()` on a path cuts the basename, which is the only part
+    // that identifies a test, so the output could not be pasted into
+    // `fx-tests test` or grepped for. Every assertion here is about the
+    // basename surviving.
+    const { truncatePath } = await import('../cli/format/text.ts');
+    const path = 'browser/extensions/formautofill/test/browser/browser_ml_heuristics.js';
+
+    assert.equal(truncatePath(path, 200), path, 'a path that fits is untouched');
+    assert.equal(truncatePath('a/b.js', 0), 'a/b.js', '0 means no limit');
+
+    // Every width that shortens the 69-character path but can still hold its
+    // 24-character basename must keep that basename whole.
+    for (const width of [30, 45, 60, 68]) {
+        const cut = truncatePath(path, width);
+        assert.ok(cut.length <= width, `${width}: ${cut.length} chars is over budget`);
+        assert.ok(
+            cut.endsWith('browser_ml_heuristics.js'),
+            `${width}: the filename must survive, got ${cut}`
+        );
+        assert.ok(cut.startsWith('…'), `${width}: the cut must be visible, got ${cut}`);
+    }
+
+    // Whole segments, so the result is still a readable path fragment.
+    assert.equal(truncatePath(path, 45), '…/test/browser/browser_ml_heuristics.js');
+
+    // A basename that does not fit on its own keeps its *tail*: neighbouring
+    // tests differ at the end (`…_forms.html` vs `…_form.html`), so cutting
+    // the tail here would make them identical.
+    const long = 'dom/test/test_a_very_long_file_name_indeed.html';
+    const tiny = truncatePath(long, 12);
+    assert.ok(tiny.length <= 12);
+    assert.ok(tiny.endsWith('.html'), `the distinguishing tail survives: ${tiny}`);
+});
+
+test('the try test column truncates paths from the left', async () => {
+    // End to end: the column is the thing the owner reported as unusable, and a
+    // unit test on `truncatePath` alone would not catch the column forgetting
+    // to opt in with `path: true`.
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-mochitest-plain', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    const basename = MOCHITEST_PATH.slice(MOCHITEST_PATH.lastIndexOf('/') + 1);
+    assert.ok(
+        streams.stdout.includes(basename),
+        `the filename must appear in full somewhere: ${basename}`
+    );
+    // And the full path is present too, so it can be copied into the next
+    // command. That is the whole purpose of the output.
+    assert.ok(
+        streams.stdout.includes(MOCHITEST_PATH),
+        'the full path must be obtainable from the default output'
+    );
+});
+
 test('a long failure message is truncated in the text table', async () => {
     // End to end, with a message the fixture does not have: built through the
     // try path, which is where a real stack-trace-bearing message arrives.
