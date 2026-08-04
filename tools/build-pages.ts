@@ -30,7 +30,7 @@
  */
 
 import { build } from 'esbuild';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,10 +51,30 @@ const outDir = process.env['FX_PAGES_BUILD_OUT'] ?? join(root, 'dist-pages');
  */
 const MODULE_SCRIPT = /<script\s+type="module"\s+src="\.\/([\w.-]+\.ts)"\s*><\/script>/g;
 
+/**
+ * Sibling assets a page pulls in with a plain tag: `shared.js`, `shared.css`,
+ * the favicons, and the rest of the scripts the unmigrated pages share.
+ *
+ * These are *not* inlined. `shared.js` and friends are loaded by up to 22 pages
+ * that are not being migrated, so they stay exactly where they are and keep
+ * being served as themselves; a migrated page goes on loading them by name. The
+ * duplication the migration removes is the *data* logic — `computeTestStats`,
+ * `getChunkIndex` and the rest of `common-test-data.js`, which `lib/` already
+ * has typed and tested — not the UI plumbing, which has no `lib/` equivalent
+ * and no reason to grow one yet.
+ *
+ * They do have to be *reachable*, though: the built page sits in `dist-pages/`,
+ * so a relative `src="shared.js"` resolves next to it and 404s unless the file
+ * is copied there. crash-viewer.html did not catch this because it is entirely
+ * self-contained.
+ */
+const SIBLING_ASSET = /(?:src|href)="(?!https?:|\/\/|\.\/|data:|#)([\w.-]+\.(?:js|css|svg|json))"/g;
+
 interface BuiltPage {
     name: string;
     bytes: number;
     inlined: number;
+    assets: string[];
 }
 
 /**
@@ -131,7 +151,30 @@ async function buildPage(name: string): Promise<BuiltPage> {
     // the deploy ships it and the non-zero exit is the only clue.
     checkSafe(name, bundles);
     await writeFile(join(outDir, name), output);
-    return { name, bytes: output.length, inlined };
+    const assets = await copyAssets(name, output);
+    return { name, bytes: output.length, inlined, assets };
+}
+
+/**
+ * Copies the sibling files a built page references, so its relative URLs work.
+ *
+ * A missing one is a hard error rather than a warning: the symptom of a page
+ * that cannot load `shared.js` is a dashboard that renders its markup and then
+ * does nothing, which looks far more like a data problem than a build problem.
+ */
+async function copyAssets(name: string, html: string): Promise<string[]> {
+    SIBLING_ASSET.lastIndex = 0;
+    const wanted = [...new Set([...html.matchAll(SIBLING_ASSET)].map((match) => match[1]!))];
+    for (const asset of wanted) {
+        try {
+            await copyFile(join(root, asset), join(outDir, asset));
+        } catch (error) {
+            throw new Error(
+                `${name} references ${asset}, which is not in the repository root: ${String(error)}`
+            );
+        }
+    }
+    return wanted.sort();
 }
 
 /**
@@ -190,6 +233,9 @@ if (sources.length === 0) {
     }
     for (const page of built) {
         const kb = (page.bytes / 1024).toFixed(1);
-        console.log(`Built ${join(outDir, page.name)} (${kb} kB, ${page.inlined} script inlined)`);
+        const assets = page.assets.length > 0 ? `, ${page.assets.length} assets copied` : '';
+        console.log(
+            `Built ${join(outDir, page.name)} (${kb} kB, ${page.inlined} script inlined${assets})`
+        );
     }
 }
