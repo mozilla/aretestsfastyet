@@ -3298,6 +3298,48 @@ test('try breaks ties on the path, so the output is reproducible', async () => {
  * It is not one: the two facts are about different configurations. On try push
  * 09028ab93fe1, 33 of the 54 perma-fails printed both sentences.
  */
+/**
+ * The "failed every run on X" line exists to pick *some* of a row's configs
+ * out of the rest, so when it would name all of them it says nothing the row
+ * has not already said and is omitted.
+ *
+ * The row above it already reads "N failures on <config> (n/n runs)" for one
+ * config, or lists every config for several. Repeating that list under a
+ * heading that implies a distinction invents one.
+ */
+test('try omits the every-run line when it would name every config', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        // One config, and it failed its only run — so the perma-failing
+        // configs are all of the configs.
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    assert.match(streams.stdout, /PERMA-FAILS \(1\)/, 'the fixture must produce a perma-fail');
+    // The config is named once, on the "N failures on …" line.
+    assert.match(streams.stdout, /1 failure on test-linux\/opt-xpcshell \(1\/1 runs\)/);
+    assert.doesNotMatch(
+        streams.stdout,
+        /Failed every run on/,
+        'naming the same single config again distinguishes nothing'
+    );
+});
+
 test('try scopes the rerun sentence to the configs it applies to', async () => {
     const streams = captureStreams();
     await run({
