@@ -16,6 +16,8 @@ import type { CommandContext, OutputStreams } from './context.ts';
 import { CliError, ExitCode, type ExitCodeValue, usageError } from './errors.ts';
 import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
 import { runDates } from './commands/dates.ts';
+import { ERRORS_OPTIONS, runErrors } from './commands/errors.ts';
+import { MANIFESTS_OPTIONS, runManifests } from './commands/manifests.ts';
 import { SUMMARY_OPTIONS, runSummary } from './commands/summary.ts';
 import { TEST_OPTIONS, runTest } from './commands/test.ts';
 import { TRY_OPTIONS, runTry } from './commands/try.ts';
@@ -53,6 +55,20 @@ const COMMANDS: CommandSpec[] = [
         run: runTry,
     },
     {
+        name: 'errors',
+        summary: 'What is loudest in the test logs on one day. Defaults to mochitest.',
+        usage: 'fx-tests errors [options]',
+        options: ERRORS_OPTIONS,
+        run: runErrors,
+    },
+    {
+        name: 'manifests',
+        summary: 'Which manifest is eating a job’s time budget, and on which configs.',
+        usage: 'fx-tests manifests [name] [options]',
+        options: MANIFESTS_OPTIONS,
+        run: runManifests,
+    },
+    {
         name: 'summary',
         summary: 'The 7-day topline rates, per harness, against the prior period.',
         usage: 'fx-tests summary [options]',
@@ -84,8 +100,6 @@ const PLANNED_COMMANDS: Record<string, string> = {
     failures: 'failing runs grouped by message',
     crashes: 'crashes grouped by signature',
     crash: 'read a processed crash dump',
-    manifests: 'which manifest is eating a job’s time budget',
-    errors: 'errors and warnings in test logs',
     skips: 'what is disabled and where',
     guide: 'orientation for an agent',
 };
