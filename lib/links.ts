@@ -59,9 +59,14 @@ export const FIREFOX_CI_ROOT = 'https://firefox-ci-tc.services.mozilla.com';
  * `parseTaskId()` splits off a task ID's `.<n>` suffix — and not the harness's
  * within-job rerun, which has no URL of its own.
  *
- * Requests to this URL 302-redirect to `firefoxci.taskcluster-artifacts.net`;
- * a caller that follows redirects (every `fetch` implementation, by default)
- * needs to do nothing about that.
+ * Requests to this URL redirect to `firefoxci.taskcluster-artifacts.net` (303,
+ * measured 2026-08-04); a caller that follows redirects — every `fetch`
+ * implementation, by default — needs to do nothing about that.
+ *
+ * The segment order is `runs/<retryId>/artifacts/<path>`, and transposing the
+ * run past `artifacts` yields a 403 rather than a 404, so it does not even
+ * fail like a missing artifact. `sources/http.ts` builds the same path and a
+ * test asserts the two agree.
  */
 export function taskArtifactUrl(taskId: string, retryId: number, artifactPath: string): string {
     return `${FIREFOX_CI_ROOT}/api/queue/v1/task/${taskId}/runs/${retryId}/artifacts/${artifactPath}`;

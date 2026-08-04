@@ -58,8 +58,20 @@ export type CoverageState =
     | 'intermittent'
     /** Ran every time and never passed — a perma-fail on this config. */
     | 'perma-fail'
-    /** Scheduled, but skipped by an annotation. Never actually executed. */
+    /** Scheduled, but a `skip-if` disabled it. Never actually executed. */
     | 'skipped'
+    /**
+     * Did not run because a `run-if` scopes the test to another platform —
+     * the annotation working, not something disabled.
+     *
+     * A distinct state rather than `skipped` because the two mean opposite
+     * things to whoever reads the table: a `skip-if` is work someone owes, a
+     * `run-if` is the test correctly not applying here. Only ever produced
+     * from a **daily** file: the 21-day aggregates drop `run-if` skips
+     * upstream, so on those families such a config simply does not appear
+     * (`FORMATS.md`). On the daily fixture 11 rows are in this state.
+     */
+    | 'not-applicable'
     /**
      * The config runs this suite, but never scheduled this test. Only ever
      * reported when the caller supplied a universe to compare against.
@@ -259,9 +271,14 @@ export function coverageOf(
  */
 function stateOf(r: ConfigCoverage): CoverageState {
     if (r.runCount === 0) {
-        // No verdict on this config at all. If anything was skipped here, that
-        // is why; otherwise the config appeared only through a filtered-out
-        // `run-if` skip, which still means the test did not run here.
+        // No verdict on this config. Which of the two non-running states it is
+        // depends on *why*: a reportable skip means disabled, while a row that
+        // exists only because of a `run-if` means the test is scoped
+        // elsewhere. Calling the latter "skipped" reads as "someone turned
+        // this off here", which is the opposite of what the annotation says.
+        if (r.skipCount === 0 && r.runIfSkipCount > 0) {
+            return 'not-applicable';
+        }
         return 'skipped';
     }
     const nonPass = r.failCount + r.timeoutCount + r.crashCount;

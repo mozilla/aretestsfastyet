@@ -254,6 +254,24 @@ test('computeConfigStats reconciles with the test total', () => {
     for (let i = 1; i < configs.length; i++) {
         assert.ok(configs[i - 1]!.failRate >= configs[i]!.failRate);
     }
+
+    // And it holds for every test in the fixture, not just the chosen one —
+    // otherwise this asserts a property of one well-behaved test.
+    for (let testId = 0; testId < bucket.testCount; testId++) {
+        const perConfig = computeConfigStats(bucket, testId);
+        const totals = computeTestStats(bucket, testId);
+        const path = bucket.testAt(testId).fullPath;
+        assert.equal(
+            perConfig.reduce((sum, config) => sum + config.runCount, 0),
+            totals.runCount,
+            path
+        );
+        assert.equal(
+            perConfig.reduce((sum, config) => sum + config.failCount, 0),
+            totals.failCount + totals.timeoutCount + totals.crashCount,
+            path
+        );
+    }
 });
 
 test('every config shares one recent window, sized by run count', () => {
@@ -291,6 +309,28 @@ test('a config too sparse for the minimum gets null, not zero', () => {
     // And it did not widen the window for everyone: unreachable minimums leave
     // the default width of 1 rather than stretching to the whole file.
     assert.equal(configs[0]!.recentDays, 1);
+});
+
+test('a day range re-anchors the recent window to the filtered days', () => {
+    // Worth pinning because it is easy to assume otherwise: the window is
+    // derived from whatever days survived the filter and is anchored to the
+    // newest of *those*, not to the newest day in the file. So `--since` and
+    // `--day` narrow the recent window too rather than leaving it dangling
+    // past the end of the requested range.
+    const identity = bucket.findTest(WINDOWS_TEST)!;
+    const full = computeConfigStats(bucket, identity.testId);
+    const sliced = computeConfigStats(bucket, identity.testId, { dayRange: { from: 0, to: 5 } });
+
+    assert.equal(full[0]!.recentDays, 10);
+    assert.equal(sliced[0]!.recentDays, 4);
+    assert.ok(
+        sliced.reduce((sum, config) => sum + config.runCount, 0) <
+            full.reduce((sum, config) => sum + config.runCount, 0)
+    );
+    // The window can never exceed the slice it was derived from.
+    for (const config of sliced) {
+        assert.ok(config.recentDays <= 6, 'the window must fit inside the requested range');
+    }
 });
 
 test('--recent-days overrides the derived window', () => {
@@ -396,6 +436,39 @@ test('coverage row counts reconcile with the test totals', () => {
     assert.equal(sum((row) => row.timeoutCount), stats.timeoutCount);
     assert.equal(sum((row) => row.skipCount), stats.skipCount);
     assert.equal(sum((row) => row.runCount), stats.runCount);
+});
+
+test('a run-if-only config reads as not-applicable, not as skipped', () => {
+    // Only reachable from a daily file: the aggregates drop `run-if` skips
+    // upstream, so a config that appears solely through one is invisible
+    // there. Labelling it "skipped" would read as "someone disabled this
+    // here", which is the opposite of what a `run-if` says.
+    let notApplicable = 0;
+    let skipped = 0;
+    for (let testId = 0; testId < daily.testCount; testId++) {
+        for (const config of coverageOf(daily, testId).configs) {
+            if (config.state === 'not-applicable') {
+                notApplicable += 1;
+                assert.equal(config.skipCount, 0);
+                assert.ok(config.runIfSkipCount > 0);
+                assert.equal(config.runCount, 0);
+            }
+            if (config.state === 'skipped') {
+                skipped += 1;
+                assert.ok(config.skipCount > 0);
+            }
+        }
+    }
+    assert.equal(notApplicable, 11, 'the daily fixture has 11 run-if-only configs');
+
+    // The aggregates cannot produce the state at all, because the generator
+    // already filtered those rows out.
+    for (let testId = 0; testId < bucket.testCount; testId++) {
+        for (const config of coverageOf(bucket, testId).configs) {
+            assert.notEqual(config.state, 'not-applicable');
+        }
+    }
+    assert.ok(skipped >= 0);
 });
 
 test('never-scheduled is null when no universe was supplied', () => {

@@ -26,8 +26,10 @@
  *   gecko.v2.{repository}.latest.source.test-info-{index}/artifacts/public/{filename}
  * ```
  *
- * This 302-redirects to `firefoxci.taskcluster-artifacts.net`, where the bytes
- * actually are.
+ * This redirects to `firefoxci.taskcluster-artifacts.net`, where the bytes
+ * actually are. Measured 2026-08-04: the status is **303**, not the 302 an
+ * earlier note claimed. Immaterial to a `fetch`, which follows both, and
+ * recorded because the number was written down wrong once.
  *
  * ## Why the redirect base is cached
  *
