@@ -867,7 +867,6 @@ test('--coverage lists passing configs, which the default view omits', async () 
     const coverage = json(stdout)['coverage'] as {
         attributedPasses: boolean;
         configs: { jobName: string; state: string; passCount: number }[];
-        neverScheduled: string[] | null;
     };
     assert.equal(coverage.attributedPasses, true);
     assert.ok(
@@ -878,7 +877,6 @@ test('--coverage lists passing configs, which the default view omits', async () 
         coverage.configs.some((config) => config.state === 'ok' && config.passCount > 0),
         'at least one config that only ever passed'
     );
-    assert.ok(coverage.neverScheduled !== null, 'a universe was supplied, so this is a list');
 });
 
 test('--coverage reports a config that both ran and skipped as having run', async () => {
@@ -942,152 +940,106 @@ test('--coverage does not label a config with 191 skips a bare "ok"', async () =
     }
 });
 
-test('--coverage counts the three states CLI.md says it distinguishes', async () => {
+test('--coverage counts the states CLI.md says it distinguishes', async () => {
     const { stdout } = await invoke(['test', TEST_PATH, '--coverage', '--limit', '4']);
     // Counted, not left for the reader to total by eye off a truncated table
     // — the skipped rows are the easiest to miss because they sort last.
     assert.match(stdout, /^States: \d+ ran/m);
-    assert.match(stdout, /never scheduled/);
     assert.match(stdout, /also skipped it on other days/);
 });
 
-// --- the never-scheduled universe ------------------------------------------
+// --- the "Scheduled on" rollup ---------------------------------------------
 
 test('--coverage answers "does this run on <platform>" without --limit 0', async () => {
-    // The review finding this replaces: the default tail was "Never scheduled
-    // on 453 configs that run this suite:" followed by five Android media
-    // variants a browser-chrome test could never have run under. 453 of 495 is
-    // not information, and the owner's verdict was that the reader had to
-    // rerun with `--limit 0` to find anything usable in it.
-    //
-    // The Windows-only fixture test is the check: every platform gets one row,
-    // and each row says which of the three things happened there.
+    // One row per platform the test is scheduled on, each saying what happened
+    // there, at the default limit. The reader must not have to rerun with
+    // `--limit 0` and total a config table by eye.
     const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage']);
-
-    // The platform a reader asks about gets a verdict at the default limit.
-    assert.match(stdout, /^ {2}mac\s+0\/\d+ ran — \d+ never scheduled$/m);
+    assert.match(stdout, /^Scheduled on:$/m);
     assert.match(stdout, /^ {2}windows\s+[1-9]\d*\/\d+ ran/m);
-
-    // …and the config names are not in the default output. They are the detail
-    // behind the rollup, not the answer to the question.
-    assert.doesNotMatch(stdout, /never scheduled: test-/);
-    assert.match(stdout, /--limit 0 lists the \d+ never-scheduled configs by name\./);
 });
 
-test('--coverage states the scope its never-scheduled count is drawn against', async () => {
-    // A count of missing configs is meaningless without the set it was
-    // subtracted from, and the version this replaces printed the count and not
-    // the set — which is how it stayed wrong by two orders of magnitude
-    // without the output admitting anything.
-    const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage']);
-    assert.match(stdout, /^Scope: compared against every config running the \d+ suites?/m);
-    assert.match(stdout, /Configs running other suites cannot schedule this test/);
-
-    // …and it names them. A count of suites is not a scope: "compared against
-    // the 5 suites this test runs under" leaves the reader unable to tell
-    // whether the right ones were compared, which is the whole reason the
-    // scope is stated. A mutation deleting just the names survived the suite.
-    const scope = /^Scope: [^\n]*$/m.exec(stdout)![0];
-    const json_ = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage', '--json']);
-    const suites = (
-        json(json_.stdout)['coverage'] as { universeSuites: string[] }
-    ).universeSuites;
-    assert.ok(suites.length > 1, 'the fixture test spans several suites');
-    assert.ok(
-        scope.includes(suites[0]!),
-        `the scope line states a count but not the suites themselves: ${scope}`
-    );
-});
-
-test('--coverage does not list a config from a suite the test never ran', async () => {
-    // The scoping rule, asserted against the output rather than the library:
-    // every named never-scheduled config must run a suite the test itself ran.
+test('--coverage lists no config the test was not scheduled on', async () => {
+    // The design point, asserted on output. The previous version subtracted
+    // the test's configs from a universe of every config in the file and
+    // printed the difference — 453 rows for a browser-chrome test, all Android
+    // media variants it could never have run under. Narrowing that universe
+    // kept the concept; the concept is what was wrong, because there is no
+    // boundary at which "things this test does not run on" stops.
+    //
+    // So every config named anywhere in the output must be one the data says
+    // this test was scheduled on. Checked at `--limit 0`, where nothing is
+    // hidden by truncation.
     const { stdout } = await invoke([
+        'test',
+        WINDOWS_ONLY_TEST,
+        '--coverage',
+        '--limit',
+        '0',
+    ]);
+    const jsonRun = await invoke([
         'test',
         WINDOWS_ONLY_TEST,
         '--coverage',
         '--json',
     ]);
-    const coverage = json(stdout)['coverage'] as {
+    const coverage = json(jsonRun.stdout)['coverage'] as {
         configs: { jobName: string; state: string }[];
-        neverScheduled: string[];
-        universeSuites: string[];
     };
-    assert.ok(coverage.neverScheduled.length > 0, 'the fixture must have real gaps');
-    const suites = new Set(coverage.universeSuites);
-    assert.ok(suites.size > 1);
-    for (const jobName of coverage.neverScheduled) {
-        const suite = jobName.slice(jobName.indexOf('/') + 1).replace(/^[^-]+-/, '');
+    const scheduled = new Set(coverage.configs.map((config) => config.jobName));
+    assert.ok(scheduled.size > 0, 'the fixture test must be scheduled somewhere');
+
+    const named = [...stdout.matchAll(/\btest-[\w.-]+\/[\w.-]+/g)].map((match) => match[0]!);
+    assert.ok(named.length > 0, 'the output must name some configs');
+    for (const jobName of named) {
         assert.ok(
-            suites.has(suite),
-            `${jobName} runs "${suite}", which this test never ran, so it is not a gap`
+            scheduled.has(jobName),
+            `${jobName} is named in the output but is not a config this test ran on`
         );
+    }
+
+    // And no state names an absence. `never-scheduled` is gone from the
+    // vocabulary, not merely hidden behind a limit.
+    assert.doesNotMatch(stdout, /never scheduled/);
+    for (const config of coverage.configs) {
+        assert.notEqual(config.state, 'never-scheduled');
     }
 });
 
-test('--limit 0 is what lists the never-scheduled configs by name', async () => {
-    // Not dropped, just not the default. The requirement is that the long list
-    // stays available, only behind a flag.
-    const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage', '--limit', '0']);
-    assert.match(stdout, /^ {6}never scheduled: test-/m);
-    assert.doesNotMatch(stdout, /--limit 0 lists/);
+test('--coverage has no row for a platform with nothing scheduled', async () => {
+    // Absence is the signal. A `mac 0/0` row, or a line saying these suites do
+    // not run on mac, is a claim about a config set the data does not contain
+    // — and it has no stopping point: iOS would qualify equally.
+    const jsonRun = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage', '--json']);
+    const platforms = (
+        json(jsonRun.stdout)['coverage'] as {
+            scheduledPlatforms: { platform: string; ranCount: number; skippedCount: number }[];
+        }
+    ).scheduledPlatforms;
+    assert.ok(platforms.length > 0);
+    for (const entry of platforms) {
+        assert.ok(
+            entry.ranCount + entry.skippedCount > 0,
+            `${entry.platform} has a row but nothing scheduled on it`
+        );
+    }
+
+    const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage']);
+    assert.doesNotMatch(stdout, /do not run on/);
+    assert.doesNotMatch(stdout, /^ {2}\w+\s+0\/0 ran/m);
 });
 
-test('--coverage distinguishes skipped-everywhere from never-scheduled', async () => {
-    // Two different answers to "is this covered on Android", and folding them
-    // together loses the only one that is someone's work: a `skip-if` that
-    // disabled the test is a bug to fix, CI not scheduling the suite is not.
+test('--coverage distinguishes skipped-everywhere from not being scheduled', async () => {
+    // The distinction that survives, and must: a platform where the test is
+    // scheduled and disabled on every config is a `skip-if` someone owes, and
+    // it looks nothing like a platform CI does not schedule it on. The first
+    // gets a row saying so; the second gets no row.
     const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage']);
     assert.match(
         stdout,
         /^ {2}android\s+0\/\d+ ran — scheduled here, but skipped on every config$/m,
-        'android scheduled and skipped it, which is not "never scheduled"'
+        'android scheduled and skipped it, and the row has to say the "scheduled" half'
     );
-});
-
-test('--coverage names a platform its suites do not run on at all', async () => {
-    // The cost of scoping the universe to the test's own suites: a platform
-    // the suite does not exist on drops out of the comparison entirely. That
-    // must not become silence, because "does this run on Android?" is the
-    // question CLI.md says --coverage exists to answer, and an omitted row
-    // answers it wrongly.
-    const { stdout } = await invoke(['test', MOCHITEST_PATH, '--coverage']);
-    const rows = [...stdout.matchAll(/^ {2}(\w+)\s+\d+/gm)].map((match) => match[1]!);
-    assert.ok(rows.length > 0, 'the rollup produced rows');
-    // Every platform the file knows about is accounted for one way or another:
-    // either it has a ran/skipped/never row, or it is named as a platform
-    // these suites do not run on.
-    const absent = [...stdout.matchAll(/these suites do not run on (\w+)/g)].map((m) => m[1]!);
-    const reach = /— not ([a-z, ]+); see --coverage/.exec(stdout);
-    if (reach !== null) {
-        for (const platform of reach[1]!.split(', ')) {
-            assert.ok(
-                rows.includes(platform) || absent.includes(platform),
-                `the default view says the test does not run on ${platform}, but --coverage ` +
-                    `neither lists it nor says the suites do not reach it`
-            );
-        }
-    }
-});
-
-test('--coverage never contradicts itself about a platform', async () => {
-    // The bug this catches, found on real data: `test_playback.html` is
-    // scheduled on 20 Android configs and skipped on all of them, so it landed
-    // in the rollup *and* in the "these suites do not run on android" list —
-    // two rows, saying opposite things, three lines apart.
-    for (const path of [TEST_PATH, MOCHITEST_PATH, WINDOWS_ONLY_TEST]) {
-        const { stdout } = await invoke(['test', path, '--coverage']);
-        const rows = new Set(
-            [...stdout.matchAll(/^ {2}(\w+)\s+\d+\/\d+ ran/gm)].map((match) => match[1]!)
-        );
-        for (const match of stdout.matchAll(/these suites do not run on (\w+)/g)) {
-            const platform = match[1]!;
-            assert.ok(
-                !rows.has(platform),
-                `${path}: ${platform} has a coverage row and is also called unreachable`
-            );
-        }
-    }
 });
 
 test('--coverage JSON keeps the raw state, so the annotation is presentation only', async () => {

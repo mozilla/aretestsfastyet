@@ -16,9 +16,11 @@
  *    (`FORMATS.md`), and the fixtures reproduce it exactly: 2,147 `run-if`
  *    skips in the daily file, zero in every aggregate. A regression that
  *    applied the filter in the wrong place would move one of those numbers.
- * 3. **The three coverage states.** ran-and-passed, ran-and-skipped and
- *    never-scheduled are what `--coverage` exists to separate, and the test
- *    asserts a real test that has all three.
+ * 3. **The coverage states.** ran-and-passed and ran-and-skipped are what
+ *    `--coverage` exists to separate — both are recorded facts, and a
+ *    failure-only view shows neither. The test asserts a real test that has
+ *    both. Configs the test was *not* scheduled on are deliberately absent:
+ *    see `lib/query/coverage.ts`.
  * 4. **The recent window's exact width.** Sized by run count rather than by
  *    days, and inclusive at both ends. An off-by-one there reports an 11-day
  *    window as 10 days — a plausible-looking wrong number, which is the
@@ -45,7 +47,7 @@ import {
 } from '../lib/formats/issues.ts';
 import type { StatsFile } from '../lib/formats/stats.ts';
 import { classifyStatus } from '../lib/model/status.ts';
-import { parseJobName, stripChunkSuffix } from '../lib/model/job-name.ts';
+import { stripChunkSuffix } from '../lib/model/job-name.ts';
 import {
     computeTestStats,
     configFilter,
@@ -59,10 +61,10 @@ import {
     computeConfigStats,
 } from '../lib/query/config-stats.ts';
 import {
-    configUniverse,
-    coverageGaps,
     coverageOf,
+    coveragePlatforms,
     platformsCovered,
+    platformsInFile,
 } from '../lib/query/coverage.ts';
 import { findIssues, findSkips, groupIssues } from '../lib/query/issues.ts';
 import { groupFailuresByMessage } from '../lib/query/failures.ts';
@@ -86,9 +88,12 @@ const xpcshellStats = await fixture<StatsFile>('xpcshell-stats.json');
 const mochitestStats = await fixture<StatsFile>('mochitest-stats.json');
 
 /**
- * A Windows-only crash-reporter test, chosen because it exercises all three
- * coverage states at once: it runs and is intermittent on 5 Windows configs,
- * is `skip-if`-skipped on 13 others, and is never scheduled on 29 more.
+ * A Windows-only crash-reporter test, chosen because it exercises the coverage
+ * states at once: it runs and is intermittent on 5 Windows configs, runs clean
+ * on 4, and is `skip-if`-skipped on 13 others — including every Android config
+ * it is scheduled on. The file also holds mac configs it is not scheduled on
+ * at all, which is what makes it a check on `--coverage` reporting only what
+ * the data records.
  */
 const WINDOWS_TEST = 'toolkit/crashreporter/test/unit/test_crash_win64cfi_push_nonvol.js';
 
@@ -674,27 +679,22 @@ test('the issues family cannot attribute configs, and says so', () => {
 
 // --- coverage ------------------------------------------------------------
 
-test('coverage separates ran-and-passed, ran-and-skipped and never-scheduled', () => {
+test('coverage separates ran-and-passed from ran-and-skipped', () => {
     const identity = bucket.findTest(WINDOWS_TEST)!;
-    const universe = configUniverse(bucket);
-    assert.equal(universe.size, 51);
-
-    const coverage = coverageOf(bucket, identity.testId, { universe });
+    const coverage = coverageOf(bucket, identity.testId);
     assert.equal(coverage.attributedPasses, true);
 
     const byState = new Map<string, number>();
     for (const config of coverage.configs) {
         byState.set(config.state, (byState.get(config.state) ?? 0) + 1);
     }
-    // The three states that look alike in a failure-only view, all present on
-    // one test: a Windows-only crash-reporter test.
+    // The states that look alike in a failure-only view, all present on one
+    // test: a Windows-only crash-reporter test.
     assert.deepEqual(Object.fromEntries([...byState].sort()), {
         intermittent: 5,
-        'never-scheduled': 20,
         ok: 4,
         skipped: 13,
     });
-    assert.equal(coverage.neverScheduled?.length, 20);
 
     // The skipped rows carry the reason, which is what makes them actionable.
     const android = coverage.configs.find((config) => config.jobName.includes('android'));
@@ -704,215 +704,108 @@ test('coverage separates ran-and-passed, ran-and-skipped and never-scheduled', (
     assert.deepEqual([...android.skipMessages.keys()], ["os == 'android'"]);
 });
 
-test('the never-scheduled universe is scoped to the suites the test runs', () => {
-    // The fix for a review finding: with the universe drawn as "every config
-    // in the file", a `mochitest-browser-chrome` test was reported as never
-    // scheduled on 453 of 495 configs, led by `geckoview-mochitest-media`
-    // variants it could never have run under. 453 of 495 is not information.
+test('every coverage row is a config the test itself was scheduled on', () => {
+    // The property that replaced the never-scheduled universe. `--coverage`
+    // reports what the data records and nothing else, so a reader can take a
+    // missing platform as the answer rather than as a gap in the report.
     //
-    // Checked structurally rather than by pinning a count, so it stays true as
-    // the fixture changes: every never-scheduled config must run a suite the
-    // test itself ran, and no config running any other suite may appear.
+    // Checked against the test's own runs, independently of `coverageOf`: the
+    // set of job names it produces must be exactly the set reachable from
+    // `runsOfTest`, with no row added from anywhere else.
     const identity = bucket.findTest(WINDOWS_TEST)!;
-    const coverage = coverageOf(bucket, identity.testId, {
-        universe: configUniverse(bucket),
-    });
-
-    const ownSuites = new Set(
-        coverage.configs
-            .filter((config) => config.state !== 'never-scheduled')
-            .map((config) => parseJobName(config.jobName).suite)
-    );
-    assert.ok(ownSuites.size > 1, 'the fixture test should span several suites');
-    for (const jobName of coverage.neverScheduled!) {
-        assert.ok(
-            ownSuites.has(parseJobName(jobName).suite),
-            `${jobName} runs a suite this test never ran, so it is not a place it could ` +
-                `have been scheduled`
-        );
-    }
-
-    // …and the scope is reported, not just applied. A never-scheduled count
-    // with no stated comparison set is the number a reader cannot check.
-    assert.deepEqual(coverage.universeSuites, [...ownSuites].sort());
-
-    // The narrowing is real and not vacuous: the unscoped universe would have
-    // produced strictly more rows.
-    const unscoped = [...configUniverse(bucket)].filter(
-        (jobName) => !coverage.configs.some((config) => config.jobName === jobName)
-    );
-    assert.ok(
-        coverage.neverScheduled!.length < unscoped.length + coverage.neverScheduled!.length,
-        'scoping must drop configs'
-    );
-    assert.ok(unscoped.length > 0, 'the fixture must contain out-of-suite configs to drop');
-});
-
-test('a config whose name has no suite cannot widen or enter the scope', () => {
-    // Built by hand, and the reason is worth stating: no config in any
-    // fixture, and none in five real bucket files (2,663 configs), has an
-    // unparseable job name. The guard is defensive, so the only way to test it
-    // is to supply the input CI does not currently produce — and two mutations
-    // that removed it survived the whole suite until this existed.
-    //
-    // Both halves matter. A `null` suite must not become a bucket that every
-    // other `null` suite matches (which would put unrelated configs in scope),
-    // and it must not be treated as matching everything (same effect, opposite
-    // spelling).
-    const file = decodeDaily({
-        metadata: {
-            date: '2026-08-03',
-            startTime: 0,
-            jobCount: 1,
-            processedJobCount: 1,
-            invalidJobCount: 0,
-        },
-        tables: {
-            // Index 0 is the test's own config. Index 1 parses to a suite, and
-            // is the control: it is out of scope for an ordinary reason. Index
-            // 2 and 3 have no `/` at all, so `parseJobName` gives them a null
-            // suite.
-            jobNames: [
-                'test-linux2404-64/opt-xpcshell',
-                'test-linux2404-64/opt-mochitest-plain',
-                'some-unparseable-name',
-                'another-unparseable-name',
-            ],
-            testPaths: ['a/b'],
-            testNames: ['test_x.js'],
-            repositories: ['mozilla-central'],
-            taskIds: ['AAA.0'],
-            components: ['Core :: X'],
-            commitIds: ['abc'],
-            statuses: ['PASS'],
-            messages: [],
-            crashSignatures: [],
-        },
-        taskInfo: { repositoryIds: [0], jobNameIds: [0], commitIds: [0] },
-        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
-        testRuns: [[{ taskIdIds: [0], durations: [1], timestamps: [0], messageIds: [null] }]],
-    } as unknown as DailyFile);
-
-    const coverage = coverageOf(file, 0, {
-        universe: [
-            'test-linux2404-64/opt-mochitest-plain',
-            'some-unparseable-name',
-            'another-unparseable-name',
-        ],
-    });
-
-    // The test ran only `xpcshell`, so that is the whole scope. An
-    // unparseable name contributes no suite to it.
-    assert.deepEqual(coverage.universeSuites, ['xpcshell']);
-    // And nothing out of scope is reported missing — neither the config with a
-    // different real suite nor either unparseable one.
-    assert.deepEqual(coverage.neverScheduled, []);
-});
-
-test('an unparseable config in scope does not drag in its unparseable peers', () => {
-    // The other direction of the same guard: when the test *itself* ran on a
-    // config with no parseable suite, that config's `null` must not become a
-    // key matching every other unparseable config in the file.
-    const file = decodeDaily({
-        metadata: {
-            date: '2026-08-03',
-            startTime: 0,
-            jobCount: 1,
-            processedJobCount: 1,
-            invalidJobCount: 0,
-        },
-        tables: {
-            jobNames: ['unparseable-one', 'unparseable-two'],
-            testPaths: ['a/b'],
-            testNames: ['test_x.js'],
-            repositories: ['mozilla-central'],
-            taskIds: ['AAA.0'],
-            components: ['Core :: X'],
-            commitIds: ['abc'],
-            statuses: ['PASS'],
-            messages: [],
-            crashSignatures: [],
-        },
-        taskInfo: { repositoryIds: [0], jobNameIds: [0], commitIds: [0] },
-        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
-        testRuns: [[{ taskIdIds: [0], durations: [1], timestamps: [0], messageIds: [null] }]],
-    } as unknown as DailyFile);
-
-    const coverage = coverageOf(file, 0, {
-        universe: ['unparseable-one', 'unparseable-two'],
-    });
-    assert.deepEqual(coverage.universeSuites, [], 'a null suite is not a scope entry');
-    assert.deepEqual(
-        coverage.neverScheduled,
-        [],
-        'unparseable-two is not "missing" merely because it is also unparseable'
-    );
-});
-
-test('a never-scheduled name keeps the suite half a reader needs', () => {
-    // The names exist so someone can act on them, and the actionable half is
-    // the suite: `test-macosx1500-aarch64` alone does not say what did not run
-    // there. A mutation truncating them at the slash survived the suite.
-    const identity = bucket.findTest(WINDOWS_TEST)!;
-    const coverage = coverageOf(bucket, identity.testId, {
-        universe: configUniverse(bucket),
-    });
-    assert.ok(coverage.neverScheduled!.length > 0);
-    for (const jobName of coverage.neverScheduled!) {
-        assert.ok(
-            jobName.includes('/'),
-            `${jobName} lost its suite, so it does not say what failed to run`
-        );
-        assert.notEqual(parseJobName(jobName).suite, null);
-    }
-    // The rollup carries the same full names, not a truncated copy.
-    for (const gap of coverageGaps(coverage)) {
-        for (const jobName of gap.neverConfigs) {
-            assert.ok(coverage.neverScheduled!.includes(jobName));
+    const scheduled = new Set<string>();
+    for (const entry of bucket.runsOfTest(identity.testId)) {
+        const jobName = jobNameOfEntry(bucket, entry);
+        if (jobName !== null) {
+            scheduled.add(stripChunkSuffix(jobName));
         }
     }
+    assert.ok(scheduled.size > 0, 'the fixture test must have runs');
+
+    const reported = new Set(coverageOf(bucket, identity.testId).configs.map((c) => c.jobName));
+    assert.deepEqual([...reported].sort(), [...scheduled].sort());
+
+    // And the file holds configs this test never touched, so the equality
+    // above is a real constraint rather than one the fixture satisfies by
+    // having nothing else in it.
+    const everyConfig = new Set<string>();
+    for (let testId = 0; testId < bucket.testCount; testId++) {
+        for (const entry of bucket.runsOfTest(testId)) {
+            const jobName = jobNameOfEntry(bucket, entry);
+            if (jobName !== null) {
+                everyConfig.add(stripChunkSuffix(jobName));
+            }
+        }
+    }
+    assert.ok(
+        everyConfig.size > reported.size,
+        'the fixture must contain configs this test never ran, or the check is vacuous'
+    );
 });
 
-test('universeSuites is empty when no universe was supplied', () => {
-    // Symmetric with `neverScheduled: null`. Reporting suites for a comparison
-    // that was never made would name a scope for a number that does not exist.
-    const identity = bucket.findTest(WINDOWS_TEST)!;
-    assert.deepEqual(coverageOf(bucket, identity.testId).universeSuites, []);
-});
-
-test('coverageGaps separates ran, scheduled-but-skipped and never-scheduled', () => {
-    // The three cannot be folded together. A platform where every config was
+test('coveragePlatforms separates ran from scheduled-but-skipped', () => {
+    // The two cannot be folded together. A platform where every config was
     // scheduled and skipped is not covered — but it is also not a platform CI
     // declines to schedule, and only one of those is someone's `skip-if` to
     // fix.
     const identity = bucket.findTest(WINDOWS_TEST)!;
-    const coverage = coverageOf(bucket, identity.testId, {
-        universe: configUniverse(bucket),
-    });
-    const gaps = coverageGaps(coverage);
+    const coverage = coverageOf(bucket, identity.testId);
+    const platforms = coveragePlatforms(coverage);
 
     // Every config in the matrix lands in exactly one bucket of exactly one
     // platform: the rollup may not lose or duplicate a row.
-    const total = gaps.reduce(
-        (sum, gap) => sum + gap.ranCount + gap.skippedCount + gap.neverCount,
+    const total = platforms.reduce(
+        (sum, entry) => sum + entry.ranCount + entry.skippedCount,
         0
     );
     assert.equal(total, coverage.configs.length);
-    assert.equal(
-        gaps.reduce((sum, gap) => sum + gap.neverConfigs.length, 0),
-        coverage.neverScheduled!.length
-    );
 
     // A Windows-only test: windows is where it ran, and the android configs
-    // were scheduled and skipped rather than never scheduled.
-    const windows = gaps.find((gap) => gap.platform === 'windows')!;
+    // were scheduled and skipped rather than absent.
+    const windows = platforms.find((entry) => entry.platform === 'windows')!;
     assert.ok(windows.ranCount > 0, 'it runs on windows');
-    const android = gaps.find((gap) => gap.platform === 'android')!;
+    const android = platforms.find((entry) => entry.platform === 'android')!;
     assert.equal(android.ranCount, 0, 'it never ran on android');
     assert.ok(
         android.skippedCount > 0,
-        'android scheduled it and skipped it, which is not the same as never scheduling it'
+        'android scheduled it and skipped it, which is not the same as not scheduling it'
     );
+});
+
+test('coveragePlatforms has no row for a platform with nothing scheduled', () => {
+    // The whole point of dropping the universe: a platform the test is not
+    // scheduled on produces no row at all, not a zero row. A reader takes the
+    // absence as the answer, so a `mac 0/0` row would be noise at best and, on
+    // a platform that has never existed in this data, an invention.
+    const identity = bucket.findTest(WINDOWS_TEST)!;
+    const coverage = coverageOf(bucket, identity.testId);
+    const platforms = coveragePlatforms(coverage);
+    for (const entry of platforms) {
+        assert.ok(
+            entry.ranCount + entry.skippedCount > 0,
+            `${entry.platform} has a row but nothing scheduled on it`
+        );
+    }
+    // And a platform present in the file but not on this test is simply not
+    // named — the file has mac configs, this Windows-only test does not.
+    assert.ok(platformsInFile(bucket).has('mac'), 'the fixture file must have mac configs');
+    assert.equal(
+        platforms.find((entry) => entry.platform === 'mac'),
+        undefined,
+        'a mac row would be a claim the data does not make'
+    );
+});
+
+test('platformsInFile is the platforms, not the configs', () => {
+    // What replaced `configUniverse()`. The default view needs a set to
+    // subtract from for its "not android" clause, and the coarse platform is
+    // the widest thing the data supports: the file either has configs on a
+    // platform or it does not. Configs were the level that had no boundary.
+    const platforms = platformsInFile(bucket);
+    assert.deepEqual([...platforms].sort(), ['android', 'linux', 'mac', 'windows']);
+    // `unknown` is a parse failure, not a platform, and must never appear —
+    // "not unknown" is not a statement about where a test runs.
+    assert.ok(!platforms.has('unknown'));
 });
 
 test('coverage row counts reconcile with the test totals', () => {
@@ -1117,17 +1010,6 @@ test('a config with both a skip-if and a run-if reads as disabled', () => {
     assert.equal(coverageOf(runIfOnly, 0).configs[0]!.state, 'not-applicable');
 });
 
-test('never-scheduled is null when no universe was supplied', () => {
-    // "not checked" and "none missing" must not look the same: without a
-    // universe there is nothing to subtract from, and [] would claim there is.
-    const identity = bucket.findTest(WINDOWS_TEST)!;
-    assert.equal(coverageOf(bucket, identity.testId).neverScheduled, null);
-    assert.deepEqual(
-        coverageOf(bucket, identity.testId, { universe: [] }).neverScheduled,
-        []
-    );
-});
-
 test('coverage reports when a family cannot attribute passing runs', () => {
     // On the issues families the pass-like groups are `counts` with no job
     // attribution, so a coverage table there would show only failing configs —
@@ -1143,10 +1025,10 @@ test('coverage reports when a family cannot attribute passing runs', () => {
 
 test('platformsCovered counts only configs the test ran on', () => {
     const identity = bucket.findTest(WINDOWS_TEST)!;
-    const coverage = coverageOf(bucket, identity.testId, { universe: configUniverse(bucket) });
+    const coverage = coverageOf(bucket, identity.testId);
     const platforms = platformsCovered(coverage);
     // A Windows-only test: it runs on windows and nowhere else, even though
-    // android rows exist (skipped) and 29 configs never scheduled it.
+    // android rows exist (scheduled and skipped).
     assert.deepEqual([...platforms.keys()], ['windows']);
     assert.equal(platforms.get('windows'), 9);
 });

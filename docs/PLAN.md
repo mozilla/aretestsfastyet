@@ -413,10 +413,12 @@ before deleting code on the strength of it.
   `common-test-data.js` onto the new primitives, preserving behaviour and the
   reasoning comments (the recent-window logic is subtle and correct; it should
   be moved, not rewritten).
-- `query/coverage.ts`: the per-config ran/passed/skipped/never-scheduled matrix,
-  ported from `test.html:2610`. New as a *library* function, not new logic —
-  but it is what `fx-tests test --coverage` needs, and the reason a
-  failure-only view cannot answer "does this test run on Android?".
+- `query/coverage.ts`: the per-config ran/passed/skipped matrix, ported from
+  `test.html:2610`. New as a *library* function, not new logic — but it is what
+  `fx-tests test --coverage` needs, and the reason a failure-only view cannot
+  answer "does this test run on Android?". Like the page it is ported from, it
+  reports only the configs the test was scheduled on; a missing platform is the
+  answer, not a gap to be filled by enumerating configs that do not exist.
 - `sources/http.ts`: the Taskcluster index URL construction and
   redirect-base caching from `fetch-utils.js:63`, with the data-source choice
   passed in as config rather than sniffed from `window.location`. Must handle

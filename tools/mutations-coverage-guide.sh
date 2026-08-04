@@ -1,5 +1,5 @@
 #!/bin/bash
-# Mutation campaign for the `--coverage` universe fix and the `guide` rewrite.
+# Mutation campaign for `--coverage` and the `guide` rewrite.
 #
 # Checked in for the same reason as `tools/mutations-step5.sh`: a mutation score
 # is only meaningful if the next person can reproduce it. Each entry is one
@@ -9,12 +9,15 @@
 #
 # What these mutations are aimed at:
 #
-#  - The **scope** of the never-scheduled universe. This is the change, and the
-#    failure mode it fixes is a plausible-looking wrong number, so the tests
-#    have to fail when the scope widens, narrows or is dropped.
-#  - The **three-way split** in the platform rollup. Folding
-#    scheduled-but-skipped into either neighbour loses the only outcome that is
-#    someone's work to fix, and both foldings are mutated here.
+#  - **Only what the data records.** `--coverage` reports the configs the test
+#    was scheduled on and nothing else, so a mutation that invents a row must
+#    fail. This is the change: the never-scheduled universe is gone, because
+#    enumerating configs that do not exist has no principled boundary.
+#  - The **ran/skipped split** in the platform rollup. Folding
+#    scheduled-but-skipped into ran loses the only outcome that is someone's
+#    work to fix, and dropping it loses it too; both are mutated here.
+#  - **No row for a platform with nothing scheduled.** A zero row is the old
+#    "these suites do not run on android" line under another name.
 #  - The **guide's no-snapshot rule**. Reintroducing a measured count must fail,
 #    or the rule is a comment rather than a constraint.
 #
@@ -61,41 +64,26 @@ summary() {
     return 0
 }
 
-# --- lib/query/coverage.ts: the universe scope --------------------------
+# --- lib/query/coverage.ts: only what the data records -----------------
 
-# The bug this whole change fixes: without the suite filter the universe is
-# every config in the bucket, which is what produced 453 never-scheduled rows.
+# The property that replaced the never-scheduled universe: every row is a
+# config the test's own runs name. A mutation that adds a row from anywhere
+# else must fail, or the guarantee is a comment.
 mutate lib/query/coverage.ts \
-    '            .filter((jobName) => inSuites(jobName, suites))' \
-    '            .filter((jobName) => true || inSuites(jobName, suites))' \
-    'the suite scope is dropped, restoring the whole-bucket universe'
-
-# The opposite error: a scope so narrow nothing is ever reported missing.
-mutate lib/query/coverage.ts \
-    '    return suite !== null && suites.has(suite);' \
-    '    return false;' \
-    'the suite scope excludes everything, so no gap is ever found'
-
-# An unparseable job name must not join a catch-all bucket that widens the
-# universe to every other unparseable name.
-mutate lib/query/coverage.ts \
-    '        if (suite !== null) {' \
-    '        if (suite !== null || true) {' \
-    'a config with no parseable suite widens the scope'
-
-mutate lib/query/coverage.ts \
-    '    return suite !== null && suites.has(suite);' \
-    '    return suite === null || suites.has(suite);' \
-    'a config with no parseable suite counts as in-scope'
-
-# The scope has to be *reported*, not just applied: a count with no stated
-# comparison set is the number the reader cannot check.
-mutate lib/query/coverage.ts \
-    '        universeSuites = [...suites].sort();' \
-    '        universeSuites = [];' \
-    'the scope is applied but not reported'
+    '        for (const target of targets) {' \
+    '        for (const target of [...targets, { jobName: "test-ios-18/opt-mochitest-plain", count: 0 }]) {' \
+    'a config the test never ran on is added to the matrix'
 
 # --- lib/query/coverage.ts: the platform rollup -------------------------
+
+mutate lib/query/coverage.ts \
+    '        if (config.runCount > 0) {
+            entry.ranCount++;
+        } else {
+            entry.skippedCount++;
+        }' \
+    '        entry.ranCount++;' \
+    'skipped-everywhere is folded into ran, reading as full coverage'
 
 mutate lib/query/coverage.ts \
     '        } else {
@@ -104,70 +92,44 @@ mutate lib/query/coverage.ts \
     '        }' \
     'scheduled-but-skipped configs vanish from the rollup'
 
+# A platform with nothing scheduled must produce no row. The mutation adds one
+# for every platform the parser knows, which is the old "0 configs" line back.
 mutate lib/query/coverage.ts \
-    '        } else if (config.runCount > 0) {
-            entry.ranCount++;
-        } else {
-            entry.skippedCount++;
-        }' \
-    '        } else {
-            entry.ranCount++;
-        }' \
-    'skipped-everywhere is folded into ran, reading as full coverage'
+    '    const byPlatform = new Map<string, CoveragePlatform>();' \
+    '    const byPlatform = new Map<string, CoveragePlatform>([["mac", { platform: "mac", ranCount: 0, skippedCount: 0 }]]);' \
+    'a platform with nothing scheduled gets a zero row'
 
+# `platformsInFile` backs the default view's "not android" clause, and
+# `unknown` is a parse failure rather than a platform.
 mutate lib/query/coverage.ts \
-    '        if (config.state === '"'"'never-scheduled'"'"') {' \
-    '        if (config.state === '"'"'never-scheduled'"'"' || config.runCount === 0) {' \
-    'skipped-everywhere is folded into never-scheduled'
-
-mutate lib/query/coverage.ts \
-    '            entry.neverConfigs.push(config.jobName);' \
-    '            entry.neverConfigs.push(config.jobName.split('"'"'/'"'"')[0]!);' \
-    'the never-scheduled names lose their suite half'
+    '        if (os !== '"'"'unknown'"'"') {' \
+    '        if (true) {' \
+    'a job name that does not parse becomes a platform called "unknown"'
 
 # --- cli/commands/test.ts: the rendered answer --------------------------
 
-# The requirement the review set: usable at a glance, without --limit 0.
+# The requirement: usable at a glance, without --limit 0.
 mutate cli/commands/test.ts \
-    '    lines.push(...renderCoverageScope(coverage, limit));' \
+    '    lines.push(...renderScheduledPlatforms(coverage));' \
     '' \
     'the platform rollup is not printed at all'
 
 mutate cli/commands/test.ts \
-    '            `(${truncate(suites.join('"'"', '"'"'), 100)}). Configs running other suites cannot ` +' \
-    '            `. Configs running other suites cannot ` +' \
-    'the scope line stops naming the suites it compared against'
-
-# The default must not become the old dump.
-mutate cli/commands/test.ts \
-    '    if (limit === 0) {' \
-    '    if (limit >= 0) {' \
-    'the never-scheduled names are printed by default again'
+    '                ? '"'"' — scheduled here, but skipped on every config'"'"'' \
+    "                ? ''" \
+    'a platform where the test is disabled everywhere stops saying so'
 
 mutate cli/commands/test.ts \
-    '                : ` — ${notes.join('"'"', '"'"')}`;' \
-    "                : '';" \
-    'a platform row stops saying what is missing on it'
+    '                  ? ` — ${entry.skippedCount} scheduled but skipped`' \
+    "                  ? ''" \
+    'a platform row stops reporting its skipped configs'
 
-# The cost of scoping: a platform the suites do not reach must be named, not
-# omitted, or "does this run on Android" is answered wrongly by silence.
+# The rollup counts scheduled configs, not configs that ran: collapsing the two
+# loses the Android-is-disabled-here answer entirely.
 mutate cli/commands/test.ts \
-    '    for (const platform of coverage.absentPlatforms) {
-        if (!covered.has(platform)) {' \
-    '    for (const platform of []) {
-        if (!covered.has(platform)) {' \
-    'a platform the suites do not reach is silently omitted'
-
-# …and the de-duplication that stops it contradicting a row above it.
-mutate cli/commands/test.ts \
-    '        if (!covered.has(platform)) {' \
-    '        if (true) {' \
-    'a platform gets both a coverage row and an "unreachable" line'
-
-mutate cli/commands/test.ts \
-    '        result.coverage = buildCoverage(coverage, result.reach?.absentPlatforms ?? []);' \
-    '        result.coverage = buildCoverage(coverage, []);' \
-    'the coverage block loses the measured absent platforms'
+    '        const total = entry.ranCount + entry.skippedCount;' \
+    '        const total = entry.ranCount;' \
+    'the rollup denominator drops the skipped configs'
 
 # --- cli/commands/guide.ts: the no-snapshot rule ------------------------
 

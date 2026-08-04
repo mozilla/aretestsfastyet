@@ -240,52 +240,66 @@ platform is unaffected. `--coverage` lists every config, including the ones
 that only ever passed:
 
 ```
-$ fx-tests test dom/base/test/test_selection.html --coverage
+$ fx-tests test dom/media/test/test_playback.html --coverage
 
-Configuration                              runs   pass   fail  skip   status
-  test-linux1804-64/opt-mochitest-plain     412    412      0     0   ok
-  test-linux1804-64/debug-mochitest-plain   398    395      3     0   intermittent
-  test-windows11-64-24h2/opt-…-plain        204    204      0     0   ok
-  test-macosx1470-64/opt-…-plain            196    196      0     0   ok
-  test-android-em-7-0-x86_64/debug-…        168      0      0   168   skipped
-                                                                      (skip-if: os == 'android')
+Configuration                                        runs  pass  fail  skip  status
+  test-macosx1015-64-qr/debug-mochitest-media-nogpu   232   232     0     0  ok
+  test-linux2404-64/debug-mochitest-media-spi         228   228     0     0  ok
+  test-windows11-32-25h2/debug-mochitest-media-spi    215   215     0     0  ok
+  test-android-em-14-x86_64/debug-geckoview-…           0     0     0   191  skipped
+                                                                     (skip-if: os == 'android')
+  … 69 more (--limit 0 for all)
 
-34 configs, 5 platforms: linux (14), windows (8), macos (6), android (4), linux-aarch64 (2)
-States: 28 ran, 4 only ever skipped, 2 never scheduled
+79 configs, 3 platforms: mac (16), linux (15), windows (28)
+States: 59 ran, 20 only ever skipped
 
-Scope: compared against every config running the 6 suites this test runs under
-(mochitest-plain, mochitest-plain-nofis, …). Configs running other suites cannot
-schedule this test and are not counted.
-  linux    14/14 ran
-  windows  8/10 ran — 2 never scheduled
-  android  0/4 ran — scheduled here, but skipped on every config
-  macos    6/6 ran
-  --limit 0 lists the 2 never-scheduled configs by name.
+Scheduled on:
+  windows  28/28 ran
+  android  0/20 ran — scheduled here, but skipped on every config
+  mac      16/16 ran
+  linux    15/15 ran
 ```
 
 This is available because the 64-bucket per-test files attribute passing runs to
 a job name (`jobNameIds` on PASS status groups), and `test.html` already builds
-this matrix — it simply has no CLI equivalent today. `--coverage`
-distinguishes the three states that look alike in a failure-only view: ran and
-passed, ran and was skipped, never scheduled.
+this matrix — it simply has no CLI equivalent today.
 
-**The comparison set is the test's own suites, and the output says so.** The
-"never scheduled" answer needs a universe to subtract from, and "every config in
-the bucket file" is the wrong one: a bucket holds tests from every mochitest
-suite, because buckets shard on a hash of the test path. Drawn that way, a
-`mochitest-browser-chrome` test reported 453 never-scheduled configs out of 495,
-led by `geckoview-mochitest-media` variants it could never have run under. The
-universe is therefore every config running a suite **this test itself ran**,
-which on the same test is 45 configs and 3 real gaps.
+**`--coverage` lists what the test *was* scheduled on, and absence is the
+answer.** A reader asking "does this run on Android?" looks for an `android`
+row. In the example above there is one, and it says the test is scheduled on 20
+Android configs and skipped on all of them. On a desktop-only test there is no
+Android row, and that is the answer: nothing in the data says CI schedules it
+there.
 
-**The rollup is the default; the config names are behind `--limit 0`.** "Never
-runs on mac" is the answer; twenty config strings all beginning `test-macosx`
-are the same answer at a length nobody reads. Each platform row carries ran,
-scheduled-but-skipped and never-scheduled separately, because folding
-skipped-everywhere into either of the others loses the only outcome that is
-someone's work to fix. A platform whose suites do not exist at all is named
-rather than omitted — an absent row reads as "fine here", which is exactly the
-wrong conclusion.
+Nothing is listed that the data does not record. There is deliberately **no
+"never scheduled" list**, and an earlier version that had one is why the point
+is worth stating. It subtracted the test's configs from a universe of every
+config in the bucket file, and reported 453 "never scheduled" configs out of 495
+for a `mochitest-browser-chrome` test — led by `geckoview-mochitest-media`
+variants it could never have run under, because buckets shard on a hash of the
+test path and hold tests from every suite. Narrowing that universe to the test's
+own suites cut it to 3, but the boundary was still arbitrary: widen it and iOS
+belongs on the list, narrow it and real gaps disappear. There is no principled
+place to stop enumerating things that do not exist, so the command does not
+start. `test.html`'s `calculateJobNameBreakdown()` has always worked this way —
+it iterates the test's own status groups and has no universe at all.
+
+**What is *not* dropped is ran-vs-skipped.** These are two recorded facts, and
+they are the two states that look identical in a failure-only view: a config
+where the test ran and passed, and a config where it was scheduled and a
+`skip-if` disabled it. The second is someone's work to fix and the first is not,
+which is why the `status` column and the platform rollup both carry it. A third
+state, `not-applicable`, marks a config that appears only because a `run-if`
+scopes the test elsewhere — the annotation working, not something disabled. It
+comes from the skip messages on real runs, so it survives too; it only ever
+appears on a daily file, since the 21-day aggregates drop `run-if` skips
+upstream.
+
+**The rollup is per platform, and only for platforms with something scheduled.**
+"Scheduled on 20 mac configs, ran on none" is the answer; twenty config strings
+all beginning `test-macosx` are the same answer at a length nobody reads. A
+platform with nothing scheduled gets no row at all — a `mac 0/0` line would be a
+claim about a config set the data does not contain.
 
 #### `--executions`: a failure is not just a failure
 
@@ -335,6 +349,15 @@ used. This is existing `computeConfigStats()` behaviour, surfaced verbatim.
 
 `--json` shape: `{ test, component, harness, metadata, totals, verdict,
 configs[], messages[], skips[] }`.
+
+`--coverage` adds `coverage: { attributedPasses, configs[], platforms[],
+scheduledPlatforms[] }`. `configs[]` is one entry per config the test was
+scheduled on, with a `state` of `ok`, `intermittent`, `perma-fail`, `skipped`
+or `not-applicable`; `platforms[]` counts the configs it *ran* on, and
+`scheduledPlatforms[]` is `{ platform, ranCount, skippedCount }` for every
+platform it is scheduled on. There is no list of configs it was not scheduled
+on, and no platform entry with both counts zero — see `--coverage` above for
+why absence is the answer rather than something to enumerate.
 
 ### `fx-tests try <revision>` — triage a Try push
 
