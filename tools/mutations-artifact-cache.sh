@@ -254,22 +254,22 @@ mutate cli/main.ts \
     '--no-cache still caches artifacts'
 
 mutate cli/main.ts \
-    '    const source = taskArtifactSource({ fetch: nodeFetch });
+    '    const source = taskArtifactSource({ fetch: http });
     if (globals.noCache) {
         return source;
     }' \
-    '    const source = taskArtifactSource({ fetch: nodeFetch });
+    '    const source = taskArtifactSource({ fetch: http });
     if (false) {
         return source;
     }' \
     '--no-cache still caches crash dumps'
 
 mutate cli/main.ts \
-    '    const client = treeherderClient({ fetch: nodeFetch });
+    '    const client = treeherderClient({ fetch: http });
     if (globals.noCache) {
         return client;
     }' \
-    '    const client = treeherderClient({ fetch: nodeFetch });
+    '    const client = treeherderClient({ fetch: http });
     if (false) {
         return client;
     }' \
