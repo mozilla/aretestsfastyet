@@ -748,6 +748,131 @@ test('the never-scheduled universe is scoped to the suites the test runs', () =>
     assert.ok(unscoped.length > 0, 'the fixture must contain out-of-suite configs to drop');
 });
 
+test('a config whose name has no suite cannot widen or enter the scope', () => {
+    // Built by hand, and the reason is worth stating: no config in any
+    // fixture, and none in five real bucket files (2,663 configs), has an
+    // unparseable job name. The guard is defensive, so the only way to test it
+    // is to supply the input CI does not currently produce — and two mutations
+    // that removed it survived the whole suite until this existed.
+    //
+    // Both halves matter. A `null` suite must not become a bucket that every
+    // other `null` suite matches (which would put unrelated configs in scope),
+    // and it must not be treated as matching everything (same effect, opposite
+    // spelling).
+    const file = decodeDaily({
+        metadata: {
+            date: '2026-08-03',
+            startTime: 0,
+            jobCount: 1,
+            processedJobCount: 1,
+            invalidJobCount: 0,
+        },
+        tables: {
+            // Index 0 is the test's own config. Index 1 parses to a suite, and
+            // is the control: it is out of scope for an ordinary reason. Index
+            // 2 and 3 have no `/` at all, so `parseJobName` gives them a null
+            // suite.
+            jobNames: [
+                'test-linux2404-64/opt-xpcshell',
+                'test-linux2404-64/opt-mochitest-plain',
+                'some-unparseable-name',
+                'another-unparseable-name',
+            ],
+            testPaths: ['a/b'],
+            testNames: ['test_x.js'],
+            repositories: ['mozilla-central'],
+            taskIds: ['AAA.0'],
+            components: ['Core :: X'],
+            commitIds: ['abc'],
+            statuses: ['PASS'],
+            messages: [],
+            crashSignatures: [],
+        },
+        taskInfo: { repositoryIds: [0], jobNameIds: [0], commitIds: [0] },
+        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+        testRuns: [[{ taskIdIds: [0], durations: [1], timestamps: [0], messageIds: [null] }]],
+    } as unknown as DailyFile);
+
+    const coverage = coverageOf(file, 0, {
+        universe: [
+            'test-linux2404-64/opt-mochitest-plain',
+            'some-unparseable-name',
+            'another-unparseable-name',
+        ],
+    });
+
+    // The test ran only `xpcshell`, so that is the whole scope. An
+    // unparseable name contributes no suite to it.
+    assert.deepEqual(coverage.universeSuites, ['xpcshell']);
+    // And nothing out of scope is reported missing — neither the config with a
+    // different real suite nor either unparseable one.
+    assert.deepEqual(coverage.neverScheduled, []);
+});
+
+test('an unparseable config in scope does not drag in its unparseable peers', () => {
+    // The other direction of the same guard: when the test *itself* ran on a
+    // config with no parseable suite, that config's `null` must not become a
+    // key matching every other unparseable config in the file.
+    const file = decodeDaily({
+        metadata: {
+            date: '2026-08-03',
+            startTime: 0,
+            jobCount: 1,
+            processedJobCount: 1,
+            invalidJobCount: 0,
+        },
+        tables: {
+            jobNames: ['unparseable-one', 'unparseable-two'],
+            testPaths: ['a/b'],
+            testNames: ['test_x.js'],
+            repositories: ['mozilla-central'],
+            taskIds: ['AAA.0'],
+            components: ['Core :: X'],
+            commitIds: ['abc'],
+            statuses: ['PASS'],
+            messages: [],
+            crashSignatures: [],
+        },
+        taskInfo: { repositoryIds: [0], jobNameIds: [0], commitIds: [0] },
+        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+        testRuns: [[{ taskIdIds: [0], durations: [1], timestamps: [0], messageIds: [null] }]],
+    } as unknown as DailyFile);
+
+    const coverage = coverageOf(file, 0, {
+        universe: ['unparseable-one', 'unparseable-two'],
+    });
+    assert.deepEqual(coverage.universeSuites, [], 'a null suite is not a scope entry');
+    assert.deepEqual(
+        coverage.neverScheduled,
+        [],
+        'unparseable-two is not "missing" merely because it is also unparseable'
+    );
+});
+
+test('a never-scheduled name keeps the suite half a reader needs', () => {
+    // The names exist so someone can act on them, and the actionable half is
+    // the suite: `test-macosx1500-aarch64` alone does not say what did not run
+    // there. A mutation truncating them at the slash survived the suite.
+    const identity = bucket.findTest(WINDOWS_TEST)!;
+    const coverage = coverageOf(bucket, identity.testId, {
+        universe: configUniverse(bucket),
+    });
+    assert.ok(coverage.neverScheduled!.length > 0);
+    for (const jobName of coverage.neverScheduled!) {
+        assert.ok(
+            jobName.includes('/'),
+            `${jobName} lost its suite, so it does not say what failed to run`
+        );
+        assert.notEqual(parseJobName(jobName).suite, null);
+    }
+    // The rollup carries the same full names, not a truncated copy.
+    for (const gap of coverageGaps(coverage)) {
+        for (const jobName of gap.neverConfigs) {
+            assert.ok(coverage.neverScheduled!.includes(jobName));
+        }
+    }
+});
+
 test('universeSuites is empty when no universe was supplied', () => {
     // Symmetric with `neverScheduled: null`. Reporting suites for a comparison
     // that was never made would name a scope for a number that does not exist.

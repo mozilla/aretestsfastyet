@@ -982,6 +982,21 @@ test('--coverage states the scope its never-scheduled count is drawn against', a
     const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage']);
     assert.match(stdout, /^Scope: compared against every config running the \d+ suites?/m);
     assert.match(stdout, /Configs running other suites cannot schedule this test/);
+
+    // …and it names them. A count of suites is not a scope: "compared against
+    // the 5 suites this test runs under" leaves the reader unable to tell
+    // whether the right ones were compared, which is the whole reason the
+    // scope is stated. A mutation deleting just the names survived the suite.
+    const scope = /^Scope: [^\n]*$/m.exec(stdout)![0];
+    const json_ = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage', '--json']);
+    const suites = (
+        json(json_.stdout)['coverage'] as { universeSuites: string[] }
+    ).universeSuites;
+    assert.ok(suites.length > 1, 'the fixture test spans several suites');
+    assert.ok(
+        scope.includes(suites[0]!),
+        `the scope line states a count but not the suites themselves: ${scope}`
+    );
 });
 
 test('--coverage does not list a config from a suite the test never ran', async () => {
@@ -2148,6 +2163,305 @@ test('try reports a test that passed on harness rerun as intermittent', async ()
     assert.equal(all[0]!.passedOnRerun, true);
     // Passing on rerun is decisive: it cannot be a perma-fail.
     assert.equal((result['permaFails'] as unknown[]).length, 0);
+});
+
+// --- where the message actually lives -------------------------------------
+
+/**
+ * The shape measured on task `GwXgN5-rTOOtVkoQvJlDBQ` of try push 7d16bff8:
+ * a `Test` marker with a status and no `message` field at all, and the real
+ * message on a `TestStatus` marker inside its time range.
+ *
+ * This is what a plain mochitest assertion failure looks like. Reading only
+ * `data.message` off the `Test` marker left 12 of that push's 26 failing tests
+ * with no message, which printed `?` in the `same msg` column and — because an
+ * uncomparable failure cannot be exonerated or convicted — took every one of
+ * them out of the running for PERMA-FAILS.
+ */
+test('try reads a failure message off the TestStatus markers, not the Test marker', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                // No `message` on the Test marker — the harness does not put
+                // one there for a FAIL.
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', start: 10, end: 20 },
+                {
+                    type: 'TestStatus',
+                    test: TEST_PATH,
+                    message: 'the real failure message',
+                    start: 12,
+                    end: 12,
+                },
+                // A later one inside the same range: the first is the one taken.
+                {
+                    type: 'TestStatus',
+                    test: TEST_PATH,
+                    message: 'a subsequent message',
+                    start: 15,
+                    end: 15,
+                },
+                // Outside the range, so it belongs to no execution here.
+                {
+                    type: 'TestStatus',
+                    test: TEST_PATH,
+                    message: 'from some other execution',
+                    start: 90,
+                    end: 90,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { messages: string[]; messageComparable: boolean }[]),
+        ...(result['knownIntermittents'] as { messages: string[]; messageComparable: boolean }[]),
+        ...(result['newIntermittents'] as { messages: string[]; messageComparable: boolean }[]),
+    ];
+    assert.equal(all.length, 1);
+    assert.deepEqual(
+        all[0]!.messages,
+        ['the real failure message'],
+        'the message on the TestStatus marker inside the range, and only that one'
+    );
+    // The whole point: with a message there is something to compare, so the
+    // failure can reach a verdict instead of being parked as uncomparable.
+    assert.equal(all[0]!.messageComparable, true);
+});
+
+test('try takes an ERROR-named TestStatus marker as a message too', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', start: 10, end: 20 },
+                {
+                    type: 'TestStatus',
+                    test: TEST_PATH,
+                    markerName: 'ERROR',
+                    message: 'an ERROR-named status marker',
+                    start: 12,
+                    end: 12,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { messages: string[] }[]),
+        ...(result['knownIntermittents'] as { messages: string[] }[]),
+        ...(result['newIntermittents'] as { messages: string[] }[]),
+    ];
+    assert.equal(all.length, 1);
+    assert.deepEqual(all[0]!.messages, ['an ERROR-named status marker']);
+});
+
+test('try ignores a TestStatus marker recorded against a different test', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', start: 10, end: 20 },
+                // Same time range, different test: two tests can be in flight
+                // at once under parallel execution, so the range alone does not
+                // identify the owner.
+                {
+                    type: 'TestStatus',
+                    test: 'dom/base/test/unit/test_other.js',
+                    message: 'belongs to the neighbour',
+                    start: 12,
+                    end: 12,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { messages: string[]; messageComparable: boolean }[]),
+        ...(result['knownIntermittents'] as { messages: string[]; messageComparable: boolean }[]),
+        ...(result['newIntermittents'] as { messages: string[]; messageComparable: boolean }[]),
+    ];
+    assert.equal(all.length, 1);
+    assert.deepEqual(all[0]!.messages, [], 'the neighbour’s message is not this test’s');
+    assert.equal(all[0]!.messageComparable, false);
+});
+
+// --- perma-fail classification is per configuration -----------------------
+
+/**
+ * The shape measured for `browser_ml_heuristics.js` on try push 7d16bff8, and
+ * the case `try.html` and this command used to disagree on.
+ *
+ * The test fails on two configurations. On CONFIG-A it is plainly intermittent
+ * — another run of the same job name passed outright. On CONFIG-B every run
+ * failed and none passed. `try.html` lists the test under "Permanent failures"
+ * because it tags each failing *instance* and calls the test permanent when any
+ * instance is not intermittent (`try.html:1400`, `:1765`).
+ *
+ * Asking "did every run of this test fail?" of the whole test answers no, and
+ * hides a configuration the test never once passed on. That is the question
+ * this command used to ask.
+ */
+test('try calls a test perma-failing when one config failed every run, even if another is flaky', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            // CONFIG-A: two runs, one failed the test and one passed the job
+            // outright, so the failure is intermittent there.
+            job('test-linux/opt-xpcshell-a', 'TASKA1', 'testfailed'),
+            job('test-linux/opt-xpcshell-a', 'TASKA2', 'success'),
+            // CONFIG-B: one run, and it failed. Nothing passed here.
+            job('test-linux/opt-xpcshell-b', 'TASKB1', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            TASKA1: profileWith([
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+            TASKB1: profileWith([
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const perma = result['permaFails'] as {
+        path: string;
+        everyRunFailed: boolean;
+        permaFailingConfigs: string[];
+    }[];
+    assert.equal(perma.length, 1, 'the config that never passed makes this a perma-fail');
+    assert.equal(perma[0]!.path, MOCHITEST_PATH);
+    assert.equal(perma[0]!.everyRunFailed, true);
+    // And it names *which* config, since that is the actionable part and the
+    // test is perfectly healthy on the other one.
+    assert.deepEqual(perma[0]!.permaFailingConfigs, ['test-linux/opt-xpcshell-b']);
+});
+
+test('try does not call a config perma-failing when a run of it passed the job', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell-a', 'TASKA1', 'testfailed'),
+            job('test-linux/opt-xpcshell-a', 'TASKA2', 'success'),
+        ]),
+        fetchUrl: profileFetcher({
+            TASKA1: profileWith([
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    // The only config had a fully successful run, so nothing here is permanent.
+    assert.equal((result['permaFails'] as unknown[]).length, 0);
+    const rest = [
+        ...(result['knownIntermittents'] as { everyRunFailed: boolean; permaFailingConfigs: string[] }[]),
+        ...(result['newIntermittents'] as { everyRunFailed: boolean; permaFailingConfigs: string[] }[]),
+    ];
+    assert.equal(rest.length, 1);
+    assert.equal(rest[0]!.everyRunFailed, false);
+    assert.deepEqual(rest[0]!.permaFailingConfigs, []);
+});
+
+/**
+ * The other half of the per-config rule, and the one that is easy to get
+ * backwards: a test that passed on the harness's rerun *on one config* must
+ * still be a perma-fail when a different config failed every run.
+ *
+ * `isPermaFail` used to reject on the test-level `passedOnRerun`, which threw
+ * the permanent config away. Measured on push 7d16bff8: four of that push's
+ * five every-run-failed tests had `passedOnRerun` set somewhere.
+ */
+test('try keeps a perma-failing config when the test passed on rerun elsewhere', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell-a', 'TASKA1', 'testfailed'),
+            job('test-linux/opt-xpcshell-b', 'TASKB1', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            // CONFIG-A: failed, then passed when the harness reran it.
+            TASKA1: profileWith([
+                { type: 'Text', text: 'retry', start: 10, end: 20 },
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+                { type: 'Test', test: MOCHITEST_PATH, status: 'PASS', start: 12, end: 14 },
+            ]),
+            // CONFIG-B: failed, and never passed.
+            TASKB1: profileWith([
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const perma = result['permaFails'] as {
+        passedOnRerun: boolean;
+        permaFailingConfigs: string[];
+    }[];
+    assert.equal(perma.length, 1, 'the rerun on one config does not excuse the other');
+    // The test-level flag is still true and reported — it is a real fact about
+    // the push — it just does not decide the section on its own.
+    assert.equal(perma[0]!.passedOnRerun, true);
+    assert.deepEqual(perma[0]!.permaFailingConfigs, ['test-linux/opt-xpcshell-b']);
 });
 
 test('try treats a green FAIL as an expected failure, not a failure', async () => {
