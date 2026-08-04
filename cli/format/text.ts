@@ -24,6 +24,11 @@ export interface Column {
      * that truncation must be visible — the `…` is that signal.
      */
     maxWidth?: number;
+    /**
+     * Treat cells as slash-separated paths, so `maxWidth` drops leading
+     * directories rather than the basename. See `truncatePath()`.
+     */
+    path?: boolean;
 }
 
 /**
@@ -42,8 +47,12 @@ export function table(
     }
     const cells = rows.map((row) =>
         row.map((cell, i) => {
-            const max = columns[i]?.maxWidth;
-            return max === undefined ? cell : truncate(cell, max);
+            const column = columns[i];
+            const max = column?.maxWidth;
+            if (max === undefined) {
+                return cell;
+            }
+            return column?.path === true ? truncatePath(cell, max) : truncate(cell, max);
         })
     );
     const widths = columns.map((column, i) =>
@@ -80,6 +89,52 @@ export function truncate(value: string, maxWidth: number): string {
         return value;
     }
     return `${value.slice(0, Math.max(0, maxWidth - 1))}…`;
+}
+
+/**
+ * Truncates a slash-separated path by dropping **leading directories**.
+ *
+ * `truncate()` cuts the tail, which for a path removes the only part that
+ * identifies it. `browser/extensions/formautofill/test/browser/browser_ml_heu…`
+ * cannot be pasted into `fx-tests test`, cannot be grepped for, and cannot be
+ * told apart from its neighbours — and feeding the next command is what this
+ * output is for. The basename is what a reader recognises and what every other
+ * command accepts as an argument, so it is the part that survives.
+ *
+ * The result is `…/` plus as many trailing segments as fit:
+ *
+ * ```
+ * …/test/browser/browser_ml_heuristics.js
+ * ```
+ *
+ * A basename longer than the budget on its own is still cut from the tail —
+ * there is nothing else to drop — but that is a rare filename, not the common
+ * case of a deep directory. Paths that fit are returned untouched, so the
+ * `…/` prefix is itself the signal that something was dropped.
+ */
+export function truncatePath(value: string, maxWidth: number): string {
+    if (maxWidth <= 0 || value.length <= maxWidth) {
+        return value;
+    }
+    const segments = value.split('/');
+    // Grow the tail one segment at a time while it still fits under the
+    // budget, which the `…/` prefix eats two characters of.
+    let kept = '';
+    for (let i = segments.length - 1; i >= 0; i--) {
+        const candidate = segments.slice(i).join('/');
+        if (candidate.length + 2 > maxWidth) {
+            break;
+        }
+        kept = candidate;
+    }
+    if (kept === '') {
+        // Not even the basename fits. Keep its tail rather than its head: a
+        // filename's distinguishing part is usually at the end
+        // (`…_forms.html` vs `…_form.html`).
+        const basename = segments[segments.length - 1] ?? value;
+        return `…${basename.slice(Math.max(0, basename.length - (maxWidth - 1)))}`;
+    }
+    return `…/${kept}`;
 }
 
 /**

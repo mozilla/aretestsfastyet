@@ -50,6 +50,7 @@ import {
     moreLine,
     table,
     truncate,
+    truncatePath,
 } from '../format/text.ts';
 
 /** Options `manifests` adds to the globals. */
@@ -313,7 +314,9 @@ function renderText(result: ManifestsJson): string {
                 { header: 'total', align: 'right' },
             ],
             result.rows.map((row) => [
-                truncate(row.manifest, 56),
+                // A manifest is a path too, and `fx-tests manifests <path>`
+                // takes it, so the filename is the part that must survive.
+                truncatePath(row.manifest, 56),
                 fmtCount(row.runCount),
                 duration(row.durations?.median),
                 duration(row.durations?.p95),

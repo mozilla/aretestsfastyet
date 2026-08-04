@@ -68,6 +68,7 @@ import {
     percent,
     table,
     truncate,
+    truncatePath,
 } from '../format/text.ts';
 import type { Harness } from '../options.ts';
 import { type DayWindow, loadIssues, resolveDayWindow } from '../data.ts';
@@ -430,7 +431,9 @@ function renderIssueRows(result: {
                 { header: 'rate', align: 'right' },
             ],
             rows: result.rows.map((row) => [
-                truncate(String(row.test), 62),
+                // Leading directories go, not the filename: the basename is
+                // what identifies a test and what `fx-tests test` takes.
+                truncatePath(String(row.test), 62),
                 fmtCount(Number(row.runCount)),
                 fmtCount(Number(row.failCount)),
                 fmtCount(Number(row.timeoutCount)),
@@ -771,7 +774,7 @@ function renderSkips(result: {
             rows: result.rows.map((row) => {
                 const messages = row.messages as { message: string; count: number }[];
                 return [
-                    truncate(String(row.test), 56),
+                    truncatePath(String(row.test), 56),
                     fmtCount(Number(row.skipCount)),
                     truncate(oneLine(messages[0]?.message ?? '(no reason recorded)'), 50) +
                         (messages.length > 1 ? ` (+${messages.length - 1} more)` : ''),
