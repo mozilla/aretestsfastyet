@@ -21,6 +21,11 @@ node_modules/
 # exist. Rebuild with `npm run build`; `npm test` fails on a stale bundle.
 /bin/
 
+# Built dashboard pages. Unlike dist/fx-tests.js these are never committed:
+# nothing installs them, they are rebuilt by the deploy, and a committed copy
+# would be one more artefact that can go stale against next/.
+dist-pages/
+
 # V8 profiling logs
 isolate-*.log
 jit-*.dump

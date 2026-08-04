@@ -24,6 +24,7 @@
     "// scripts": "The bundler task is named `bundle`, not `build`. pacote prepares a git dependency — running `npm install` inside its cache clone — whenever the manifest has a build, prepare, prepack, install, preinstall or postinstall script, and under `npm install -g` that preparation leaves the global package a symlink into `_cacache/tmp/git-clone*`, which is deleted when the install finishes. Renaming the script keeps the git-URL install a plain copy.",
     "scripts": {
         "bundle": "node --experimental-strip-types tools/build-cli.ts",
+        "pages": "node --experimental-strip-types tools/build-pages.ts",
         "typecheck": "tsc --noEmit",
         "fixtures": "node --experimental-strip-types tools/make-fixtures.ts",
         "test": "node --experimental-strip-types --test 'test/**/*.test.ts' && npm run check-bundle",
