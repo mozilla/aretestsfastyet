@@ -224,11 +224,21 @@ export function computeManifestStats(
  * Skipped configs go to the bottom rather than to the top, which is where a
  * zero median would put them. That ordering is the visible half of the
  * all-zero rule: the table's first row is the slowest config that actually ran.
+ *
+ * The `?? -1` is what implements it, and it is load-bearing rather than
+ * defensive. A skipped config has `durations === null`, and every real median
+ * is at least 0, so a sentinel below zero sorts it after all of them under the
+ * descending comparison — no separate branch needed.
+ *
+ * This used to open with `if (a.skipped !== b.skipped) return a.skipped ? 1 :
+ * -1`, which read as the rule and was not: the sentinel already produced that
+ * order, so deleting the branch changed no output on any input. Mutation
+ * testing found it — the mutation survived a suite that covers this ordering
+ * from three directions — and it is recorded here because "an explicit guard
+ * that duplicates a fallback" is the same unreachable-by-effect shape a review
+ * already found once in `config-stats.ts`.
  */
 function compareConfigs(a: ManifestConfigStats, b: ManifestConfigStats): number {
-    if (a.skipped !== b.skipped) {
-        return a.skipped ? 1 : -1;
-    }
     const aMedian = a.durations?.median ?? -1;
     const bMedian = b.durations?.median ?? -1;
     return bMedian - aMedian || a.configuration.localeCompare(b.configuration);
