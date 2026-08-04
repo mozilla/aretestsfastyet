@@ -1010,8 +1010,11 @@ export function checkManifests(c: Checker, data: unknown, _ctx: FileContext): vo
                 durations: runs['durations'],
             });
 
-            // The declared redundancy: runs.jobNameIds[i] should agree with
-            // tasks.jobName[runs.taskIds[i]].
+            // `runs.jobNameIds[i]` is the chunk-stripped job name and
+            // `tasks.jobName[runs.taskIds[i]]` keeps the chunk suffix. They
+            // are not interchangeable, and the two must agree once the
+            // suffix is stripped — if they ever stop agreeing, one of them
+            // means something this code does not know about.
             const runJobNames = runs['jobNameIds'];
             const runTaskIds = runs['taskIds'];
             const tasks = data['tasks'];
@@ -1023,23 +1026,36 @@ export function checkManifests(c: Checker, data: unknown, _ctx: FileContext): vo
             ) {
                 const taskJobName = (tasks as Record<string, unknown>)['jobName'];
                 if (Array.isArray(taskJobName)) {
-                    let disagreements = 0;
+                    let chunkOnly = 0;
+                    let unexplained = 0;
                     let zeroDurations = 0;
                     const durations = runs['durations'];
                     for (let i = 0; i < runJobNames.length; i++) {
-                        const viaTask = taskJobName[runTaskIds[i] as number];
-                        if (viaTask !== runJobNames[i]) {
-                            disagreements += 1;
+                        const viaRun = jobNames[runJobNames[i] as number];
+                        const viaTask = jobNames[taskJobName[runTaskIds[i] as number] as number];
+                        if (viaRun !== viaTask) {
+                            if (viaTask?.replace(/-\d+$/, '') === viaRun) {
+                                chunkOnly += 1;
+                            } else {
+                                unexplained += 1;
+                                if (unexplained === 1) {
+                                    c.error(
+                                        `runs.jobNameIds says ${JSON.stringify(viaRun)} but ` +
+                                            `tasks.jobName says ${JSON.stringify(viaTask)}, ` +
+                                            'which is not a chunk-suffix difference',
+                                        '.jobNameIds'
+                                    );
+                                }
+                            }
                         }
                         if (Array.isArray(durations) && durations[i] === 0) {
                             zeroDurations += 1;
                         }
                     }
                     c.observe(
-                        'manifestJobNameRedundancy',
-                        disagreements === 0
-                            ? `agree on all ${runJobNames.length} runs`
-                            : `${disagreements}/${runJobNames.length} disagree`
+                        'manifestJobNameChunkSuffix',
+                        `${chunkOnly}/${runJobNames.length} runs differ by chunk suffix only, ` +
+                            `${unexplained} otherwise`
                     );
                     c.observe(
                         'manifestZeroDurations',

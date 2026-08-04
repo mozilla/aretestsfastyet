@@ -64,11 +64,13 @@ function checkerFor(name: string): { check: Check; ctx: FileContext } | undefine
     if (name.endsWith('-resources.json')) {
         return { check: checkResources, ctx };
     }
-    if (/-[0-9a-f]{2}\.json$/.test(name)) {
-        return { check: checkBucket, ctx };
-    }
+    // The daily test comes first: a date ends in two hex-looking digits, so
+    // `xpcshell-2026-08-03.json` matches the bucket pattern too.
     if (/-\d{4}-\d{2}-\d{2}\.json$/.test(name)) {
         return { check: checkDaily, ctx };
+    }
+    if (/-[0-9a-f]{2}\.json$/.test(name)) {
+        return { check: checkBucket, ctx };
     }
     return undefined;
 }

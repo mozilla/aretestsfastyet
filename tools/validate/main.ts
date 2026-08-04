@@ -25,7 +25,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 
-import { Checker } from './check.ts';
+import { Checker, noteKey } from './check.ts';
 import {
     checkBucket,
     checkDaily,
@@ -230,11 +230,11 @@ async function main(): Promise<number> {
             bytes,
             errors: c.errors,
             notes: Object.fromEntries(
-                [...c.notes].map(([path, kinds]) => [
-                    path,
+                [...c.notes].map(([field, kinds]) => [
+                    field,
                     [...kinds].map((kind) => ({
                         kind,
-                        count: c.noteCounts.get(`${path} ${kind}`) ?? 0,
+                        count: c.noteCounts.get(noteKey(field, kind)) ?? 0,
                     })),
                 ])
             ),

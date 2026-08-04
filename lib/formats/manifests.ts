@@ -12,9 +12,14 @@
  * on 2026-08-03 — so missing this makes every skipped config read as
  * infinitely fast.
  *
- * Note the redundancy in `runs`: `jobNameIds[i]` and
- * `tasks.jobName[runs.taskIds[i]]` are two paths to the same job name. Both
- * are published; they agreed on every run in the file the validator checked.
+ * `runs.jobNameIds[i]` and `tasks.jobName[runs.taskIds[i]]` are **not** the
+ * same string, which is easy to assume and wrong: the run's job name has the
+ * chunk suffix stripped and the task's keeps it. On 2026-08-03 they differed
+ * on 360,373 of 433,836 runs, and agreed on all 433,836 once the trailing
+ * `-<chunk>` was stripped from the task's. Both index the same `jobNames`
+ * table, which is why the difference is invisible in the shape — pick the one
+ * that answers the question: per-config aggregation wants the stripped name,
+ * identifying an individual job wants the chunked one.
  */
 
 import type { TableIndex } from './common.ts';

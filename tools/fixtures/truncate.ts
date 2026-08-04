@@ -243,8 +243,21 @@ export function truncateTimingFile(data: AnyRecord, perStatus: number): AnyRecor
     };
 }
 
-/** Truncates an errors file to its first `count` marker groups. */
-export function truncateErrors(data: AnyRecord, count: number): AnyRecord {
+/**
+ * Truncates an errors file to its first `count` marker groups, keeping at most
+ * `tasksPerGroup` tasks in each.
+ *
+ * Capping the tasks per group is what makes a mochitest fixture viable: a
+ * single group there spans 8,000-odd tasks, so 60 groups would drag in most of
+ * a 17,000-entry `taskIds` table and produce a 1.8 MB fixture. The cap keeps
+ * the delta-encoded structure — several tasks per group, ascending — while
+ * cutting the table down to what a test needs.
+ */
+export function truncateErrors(
+    data: AnyRecord,
+    count: number,
+    tasksPerGroup = 8
+): AnyRecord {
     const tables = data['tables'] as Record<string, string[]>;
     const messages = data['messages'] as Record<string, (number | null)[]>;
     const testInfo = data['testInfo'] as Record<string, (number | null)[]>;
@@ -278,6 +291,9 @@ export function truncateErrors(data: AnyRecord, count: number): AnyRecord {
         for (const delta of markers.taskIdIds[i]!) {
             acc += delta;
             decoded.push(acc);
+            if (decoded.length >= tasksPerGroup) {
+                break;
+            }
         }
         const pairs = decoded.map((taskId, j) => ({
             taskId: taskRemap.map(taskId)!,
