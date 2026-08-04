@@ -43,14 +43,13 @@ import { notFoundError, usageError } from '../errors.ts';
 import { toJson } from '../format/json.ts';
 import * as md from '../format/markdown.ts';
 import {
+    type Column,
     applyLimit,
     count as fmtCount,
     dateWithWeekday,
     joinLines,
-    moreLine,
-    table,
+    tableSection,
     truncate,
-    truncatePath,
 } from '../format/text.ts';
 
 /** Options `manifests` adds to the globals. */
@@ -303,29 +302,39 @@ function renderText(result: ManifestsJson): string {
         return joinLines(lines);
     }
 
+    // `--sort` names the column directly, except `name`, which orders by the
+    // manifest itself. `sortManifests()` is descending for every numeric key.
+    const sortColumn = result.sort === 'name' ? 'Manifest' : result.sort;
+    const column = (header: string, rest: Omit<Column, 'header'> = {}): Column => ({
+        header,
+        ...rest,
+        ...(header === sortColumn
+            ? { sort: result.sort === 'name' ? 'asc' : 'desc' }
+            : {}),
+    });
     lines.push(
-        ...table(
+        ...tableSection(
             [
-                { header: 'Manifest' },
-                { header: 'runs', align: 'right' },
-                { header: 'median', align: 'right' },
-                { header: 'p95', align: 'right' },
-                { header: 'max', align: 'right' },
-                { header: 'total', align: 'right' },
+                // A manifest is a path too, and `fx-tests manifests <path>`
+                // takes it, so it gets the same auto-sized path column.
+                column('Manifest', { path: true }),
+                column('runs', { align: 'right' }),
+                column('median', { align: 'right' }),
+                column('p95', { align: 'right' }),
+                column('max', { align: 'right' }),
+                column('total', { align: 'right' }),
             ],
             result.rows.map((row) => [
-                // A manifest is a path too, and `fx-tests manifests <path>`
-                // takes it, so the filename is the part that must survive.
-                truncatePath(row.manifest, 56),
+                row.manifest,
                 fmtCount(row.runCount),
                 duration(row.durations?.median),
                 duration(row.durations?.p95),
                 duration(row.durations?.max),
                 duration(row.durations?.total),
-            ])
+            ]),
+            { total: result.rowCount, shown: result.rows.length }
         )
     );
-    lines.push(moreLine(result.rowCount, result.rows.length));
 
     const skippedEverywhere = result.rows.filter((row) => row.durations === null);
     if (skippedEverywhere.length > 0) {
@@ -377,21 +386,28 @@ function renderOneManifest(row: ManifestRowJson): string[] {
     if (ran.length > 0) {
         lines.push('');
         lines.push(
-            ...table(
+            ...tableSection(
                 [
-                    { header: 'Configuration' },
+                    // A configuration name is what `--config` takes, so it is
+                    // an identifier to copy rather than prose: same auto-sized
+                    // treatment as a path, and it is slash-separated too. A
+                    // tail cut here produced
+                    // `…/debug-mochitest-devtools-chr…`, which names nothing.
+                    { header: 'Configuration', path: true },
                     { header: 'runs', align: 'right' },
-                    { header: 'median', align: 'right' },
+                    // Ordered by median duration, as the ranking above is.
+                    { header: 'median', align: 'right', sort: 'desc' },
                     { header: 'p95', align: 'right' },
                     { header: 'max', align: 'right' },
                 ],
                 ran.map((config) => [
-                    truncate(config.configuration, 52),
+                    config.configuration,
                     fmtCount(config.runCount),
                     duration(config.durations?.median),
                     duration(config.durations?.p95),
                     duration(config.durations?.max),
-                ])
+                ]),
+                { total: ran.length, shown: ran.length }
             )
         );
     }

@@ -60,7 +60,15 @@ import { type CommandContext, emit, progress, warn } from '../context.ts';
 import { usageError } from '../errors.ts';
 import { toJson } from '../format/json.ts';
 import * as md from '../format/markdown.ts';
-import { applyLimit, joinLines, moreLine, percent, table, truncate } from '../format/text.ts';
+import {
+    applyLimit,
+    fullPathLines,
+    joinLines,
+    moreLine,
+    percent,
+    tableWithPaths,
+    truncate,
+} from '../format/text.ts';
 import { detectHarness } from '../options.ts';
 
 /** Options `try` adds. */
@@ -1530,30 +1538,30 @@ function compactSection(
         return lines;
     }
     const shown = applyLimit(failures, limit);
-    lines.push(
-        ...table(
-            [
-                // The column the rows are ordered by. Without it the ordering
-                // is unexplained — the reader sees a list that is not
-                // alphabetical and has nothing to read it against.
-                { header: '#', align: 'right' },
-                // Path-aware: the basename is what identifies a test and what
-                // `fx-tests test <path>` takes, so the leading directories go
-                // rather than the filename. See `truncatePath()`.
-                { header: 'test', maxWidth: TEST_COLUMN_WIDTH, path: true },
-                { header: 'here', align: 'right' },
-                { header: 'central', align: 'right' },
-                { header: 'same msg', align: 'right' },
-            ],
-            shown.map((failure) => [
-                String(failure.failureCount),
-                failure.path,
-                `${failure.failedRuns}/${failure.totalRuns}`,
-                failure.central === null ? 'n/a' : percent(failure.central.failRate),
-                sameMessageCell(failure),
-            ])
-        )
+    const rendered = tableWithPaths(
+        [
+            // The column the rows are ordered by. Without it the ordering
+            // is unexplained — the reader sees a list that is not
+            // alphabetical and has nothing to read it against.
+            { header: '#', align: 'right', sort: 'desc' },
+            // Path-aware: the column sizes itself to the longest path here, so
+            // in normal use nothing is cut at all. If one ever exceeds the cap,
+            // the leading directories go rather than the filename, and the
+            // recovery block below prints it whole. See `tableWithPaths()`.
+            { header: 'test', path: true },
+            { header: 'here', align: 'right' },
+            { header: 'central', align: 'right' },
+            { header: 'same msg', align: 'right' },
+        ],
+        shown.map((failure) => [
+            String(failure.failureCount),
+            failure.path,
+            `${failure.failedRuns}/${failure.totalRuns}`,
+            failure.central === null ? 'n/a' : percent(failure.central.failRate),
+            sameMessageCell(failure),
+        ])
     );
+    lines.push(...rendered.lines);
     for (const failure of shown) {
         if (failure.passedOnRerun) {
             lines.push(`    ${basename(failure.path)}: passed on harness rerun`);
@@ -1562,27 +1570,15 @@ function compactSection(
         // every such failure is now in the perma-fail section, which states it
         // per row along with what central shows on that config.
     }
-    // The table shortens deep paths from the left, so the basename always
-    // survives and every row can be told apart and grepped for. The full path
-    // is still what `fx-tests test` takes, so the shortened ones are repeated
-    // here in full, ready to copy — printing them is the difference between
-    // output that feeds the next command and output that only reads well.
-    const shortened = shown.filter((failure) => failure.path.length > TEST_COLUMN_WIDTH);
-    if (shortened.length > 0) {
-        lines.push(`  full paths (${shortened.length} shortened above):`);
-        for (const failure of shortened) {
-            lines.push(`    ${failure.path}`);
-        }
-    }
+    // Only when the cap actually bit. With the column sized to the rows, this
+    // is now the rare fallback rather than something every table carries.
+    lines.push(...fullPathLines(rendered.shortenedPaths));
     const more = moreLine(failures.length, shown.length);
     if (more !== null) {
         lines.push(more);
     }
     return lines;
 }
-
-/** The width of the `test` column in the compact sections. */
-const TEST_COLUMN_WIDTH = 60;
 
 /** The last segment of a path — what identifies a test to a reader. */
 function basename(path: string): string {

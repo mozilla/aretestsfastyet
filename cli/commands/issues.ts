@@ -44,6 +44,7 @@ import { canAttributeConfigs } from '../../lib/query/config-stats.ts';
 import { type CrashGroup, groupCrashesBySignature } from '../../lib/query/crashes.ts';
 import { type FailureGroup, groupFailuresByMessage } from '../../lib/query/failures.ts';
 import {
+    DEFAULT_TYPES,
     type IssueGroup,
     type IssueRow,
     type IssueType,
@@ -64,11 +65,9 @@ import {
     count as fmtCount,
     dateWithWeekday,
     joinLines,
-    moreLine,
     percent,
-    table,
+    tableSection,
     truncate,
-    truncatePath,
 } from '../format/text.ts';
 import type { Harness } from '../options.ts';
 import { type DayWindow, loadIssues, resolveDayWindow } from '../data.ts';
@@ -93,7 +92,8 @@ export const ISSUES_OPTIONS: OptionSpecs = {
     type: {
         type: 'list',
         placeholder: '<fail|timeout|crash|skip>',
-        describe: 'Which outcomes count. Repeatable. Default fail,timeout,crash.',
+        describe:
+            'Which outcomes count as an issue. Repeatable. Default all four, as on issues.html.',
     },
     'min-rate': {
         type: 'string',
@@ -102,13 +102,15 @@ export const ISSUES_OPTIONS: OptionSpecs = {
     },
     sort: {
         type: 'string',
-        placeholder: '<rate|count|name>',
-        describe: 'How to rank. Default rate.',
+        placeholder: '<issues|rate|count|name>',
+        describe: 'How to rank. Default issues.',
     },
     'group-by': {
         type: 'string',
-        placeholder: '<test|component|directory|message>',
-        describe: 'How to group. Default test. `message` is the one-bug-many-tests view.',
+        placeholder: '<component|test|directory|message>',
+        describe:
+            'How to group. Default component, as issues.html does. `message` is the ' +
+            'one-bug-many-tests view.',
     },
 };
 
@@ -274,7 +276,7 @@ function sharedOptions(query: TreeQuery): {
 }
 
 /** The header lines every tree-wide command prints. */
-function headerLines(header: TreeHeader, subject: string): string[] {
+function headerLines(header: TreeHeader, subject: string, types?: readonly IssueType[]): string[] {
     const lines: string[] = [];
     lines.push(
         `${header.harness} ${subject} — ` +
@@ -284,6 +286,17 @@ function headerLines(header: TreeHeader, subject: string): string[] {
                   `${dateWithWeekday(header.endDate)})`) +
             `, ${fmtCount(header.testCount)} tests in the file`
     );
+    if (types !== undefined) {
+        // What "issue" means for this invocation. The count is a union over
+        // four outcomes and `--type` changes it, so a reader comparing two runs
+        // has to be able to see which population each one counted.
+        lines.push(
+            `  Counting ${types.join(', ')} as issues` +
+                (types.length === DEFAULT_TYPES.length
+                    ? ' (all four, as issues.html does; --type narrows it).'
+                    : ' (--type changed this from the default of all four).')
+        );
+    }
     if (!header.canAttributeConfigs) {
         // Stated up front rather than only when someone asks for a config:
         // a reader comparing this against `fx-tests test` needs to know the two
@@ -315,8 +328,12 @@ export async function runIssues(context: CommandContext, args: ParsedArgs): Prom
 
     const types = readTypes(args);
     const minRate = readPercent(stringOption(args, 'min-rate'), '--min-rate');
-    const sort = readSort(args, ['rate', 'count', 'name'], 'rate');
-    const groupBy = readGroupBy(args, ['test', 'component', 'directory', 'message'], 'test');
+    // Both defaults are the dashboard's: `issues.html` hardcodes the components
+    // view (`:888`) and sorts it by issue count (`:663`). The CLI used to lead
+    // with a flat per-test list ranked by rate, which answers a question triage
+    // asks second.
+    const sort = readSort(args, ['issues', 'rate', 'count', 'name'], 'issues');
+    const groupBy = readGroupBy(args, ['component', 'test', 'directory', 'message'], 'component');
     const limit = context.globals.limit ?? DEFAULT_LIMIT;
 
     // `--group-by message` is a different query, not a regrouping of the rows:
@@ -337,14 +354,19 @@ export async function runIssues(context: CommandContext, args: ParsedArgs): Prom
         return;
     }
 
+    // The grouped views keep issue-free tests so a component's run total covers
+    // its whole population, as the page's does; the per-test view drops them,
+    // since a clean test is not a row anyone wants listed.
+    const grouped = groupBy === 'component' || groupBy === 'directory';
     const rows = findIssues(query.file, {
         ...sharedOptions(query),
         types,
         ...(minRate === undefined ? {} : { minRate }),
+        ...(grouped && minRate === undefined ? { keepClean: true } : {}),
     });
 
-    if (groupBy === 'component' || groupBy === 'directory') {
-        const groups = sortGroups(groupIssues(rows, groupBy), sort);
+    if (grouped) {
+        const groups = sortGroups(groupIssues(rows, groupBy, types), sort);
         const shown = applyLimit(groups, limit);
         const result = {
             header: query.header,
@@ -374,6 +396,10 @@ export async function runIssues(context: CommandContext, args: ParsedArgs): Prom
 /** One issue row's JSON. */
 function issueRowJson(row: IssueRow): Record<string, unknown> {
     return {
+        // Always the whole path, never the shortened display form: `--json` is
+        // the programmatic surface and a truncated identifier in it would be
+        // useless to the caller that asked for JSON precisely to avoid parsing
+        // the table.
         test: row.fullPath,
         directory: row.directory,
         component: row.component,
@@ -384,6 +410,9 @@ function issueRowJson(row: IssueRow): Record<string, unknown> {
         crashCount: row.crashCount,
         skipCount: row.skipCount,
         failRate: row.failRate,
+        /** The dashboard's issue total over the requested `--type`s. */
+        issueCount: row.issueCount,
+        issueRate: row.issueRate,
     };
 }
 
@@ -396,6 +425,11 @@ function sortIssueRows(rows: readonly IssueRow[], sort: string): IssueRow[] {
         const nonPass = (row: IssueRow): number =>
             row.failCount + row.timeoutCount + row.crashCount + row.skipCount;
         sorted.sort((a, b) => nonPass(b) - nonPass(a) || a.fullPath.localeCompare(b.fullPath));
+    } else if (sort === 'issues') {
+        // The per-test analogue of the component ranking, and the default here
+        // too, so `--group-by test` and the default view agree on what "worst"
+        // means. `findIssues` returns rate order, so this is a real re-sort.
+        sorted.sort((a, b) => b.issueCount - a.issueCount || a.fullPath.localeCompare(b.fullPath));
     }
     // `rate` is `findIssues`' own order, so nothing to do.
     return sorted;
@@ -409,42 +443,61 @@ function sortGroups(groups: readonly IssueGroup[], sort: string): IssueGroup[] {
     } else if (sort === 'count') {
         const nonPass = (g: IssueGroup): number => g.failCount + g.timeoutCount + g.crashCount;
         sorted.sort((a, b) => nonPass(b) - nonPass(a) || a.key.localeCompare(b.key));
+    } else if (sort === 'rate') {
+        sorted.sort((a, b) => b.issueRate - a.issueRate || a.key.localeCompare(b.key));
     }
+    // `issues` is `groupIssues`' own order, so nothing to do.
     return sorted;
 }
 
 /** Renders the per-test issues table. */
 function renderIssueRows(result: {
     header: TreeHeader;
+    sort: string;
+    types: readonly IssueType[];
     rowCount: number;
     rows: Record<string, unknown>[];
 }): Rendered {
+    // Which column the rows are ordered by, so the marker follows `--sort`
+    // rather than asserting an order the command may not have produced.
+    const sortColumn = { issues: 'issues', rate: 'rate', count: 'fail', name: 'Test' }[result.sort];
+    const column = (header: string, rest: Omit<Column, 'header'> = {}): Column => ({
+        header,
+        ...rest,
+        // `name` sorts ascending (A→Z); the numeric orders are descending.
+        ...(header === sortColumn ? { sort: result.sort === 'name' ? 'asc' : 'desc' } : {}),
+    });
     return {
-        preamble: headerLines(result.header, 'issues'),
+        preamble: headerLines(result.header, 'issues by test', result.types),
         table: {
+            // The path column is declared, not truncated by hand: `path: true`
+            // sizes it to the longest path present and keeps the filename if a
+            // cap ever bites. See `tableWithPaths()`.
             columns: [
-                { header: 'Test' },
-                { header: 'runs', align: 'right' },
-                { header: 'fail', align: 'right' },
-                { header: 'timeout', align: 'right' },
-                { header: 'crash', align: 'right' },
-                { header: 'rate', align: 'right' },
+                column('Test', { path: true }),
+                column('issues', { align: 'right' }),
+                column('runs', { align: 'right' }),
+                column('fail', { align: 'right' }),
+                column('timeout', { align: 'right' }),
+                column('crash', { align: 'right' }),
+                column('skip', { align: 'right' }),
+                column('rate', { align: 'right' }),
             ],
             rows: result.rows.map((row) => [
-                // Leading directories go, not the filename: the basename is
-                // what identifies a test and what `fx-tests test` takes.
-                truncatePath(String(row.test), 62),
+                String(row.test),
+                fmtCount(Number(row.issueCount)),
                 fmtCount(Number(row.runCount)),
                 fmtCount(Number(row.failCount)),
                 fmtCount(Number(row.timeoutCount)),
                 fmtCount(Number(row.crashCount)),
-                percent(Number(row.failRate)),
+                fmtCount(Number(row.skipCount)),
+                percent(Number(row.issueRate)),
             ]),
         },
         total: result.rowCount,
         shown: result.rows.length,
         epilogue: [],
-        empty: 'No test matched.',
+        empty: emptyMessage(result.header, result.types),
     };
 }
 
@@ -452,32 +505,94 @@ function renderIssueRows(result: {
 function renderIssueGroups(result: {
     header: TreeHeader;
     groupBy: string;
+    sort: string;
+    types: readonly IssueType[];
     rowCount: number;
     rows: IssueGroup[];
 }): Rendered {
+    const keyHeader = result.groupBy === 'component' ? 'Component' : 'Directory';
+    const sortColumn = { issues: 'issues', rate: 'rate', count: 'fail', name: keyHeader }[
+        result.sort
+    ];
+    const column = (header: string, rest: Omit<Column, 'header'> = {}): Column => ({
+        header,
+        ...rest,
+        ...(header === sortColumn ? { sort: result.sort === 'name' ? 'asc' : 'desc' } : {}),
+    });
     return {
-        preamble: headerLines(result.header, `issues by ${result.groupBy}`),
+        preamble: headerLines(result.header, `issues by ${result.groupBy}`, result.types),
         table: {
+            // The page's per-component columns: the issue total it ranks on,
+            // how many tests contributed, and the breakdown that says what kind
+            // of issue they are.
             columns: [
-                { header: result.groupBy === 'component' ? 'Component' : 'Directory' },
-                { header: 'tests', align: 'right' },
-                { header: 'runs', align: 'right' },
-                { header: 'fail', align: 'right' },
-                { header: 'rate', align: 'right' },
+                // A directory key is a path and gets the path treatment; a
+                // component name ("Core :: Storage: IndexedDB") is not one.
+                column(keyHeader, result.groupBy === 'directory' ? { path: true } : {}),
+                column('issues', { align: 'right' }),
+                // "with issues / in the component", as the page's "(393 tests
+                // with issues, out of 402)". One number would hide whether a
+                // component is broadly sick or has three bad tests.
+                column('tests', { align: 'right' }),
+                column('runs', { align: 'right' }),
+                column('fail', { align: 'right' }),
+                column('timeout', { align: 'right' }),
+                column('crash', { align: 'right' }),
+                column('skip', { align: 'right' }),
+                column('rate', { align: 'right' }),
             ],
             rows: result.rows.map((group) => [
-                truncate(group.key, 58),
-                fmtCount(group.testCount),
+                group.key,
+                fmtCount(group.issueCount),
+                `${fmtCount(group.testCount)}/${fmtCount(group.totalTestCount)}`,
                 fmtCount(group.runCount),
-                fmtCount(group.failCount + group.timeoutCount + group.crashCount),
-                percent(group.failRate),
+                fmtCount(group.failCount),
+                fmtCount(group.timeoutCount),
+                fmtCount(group.crashCount),
+                fmtCount(group.skipCount),
+                percent(group.issueRate),
             ]),
         },
         total: result.rowCount,
         shown: result.rows.length,
-        epilogue: [],
-        empty: 'No test matched.',
+        // Suppressed when there is nothing to drill into: advice to narrow a
+        // set that is already empty is worse than none.
+        epilogue:
+            result.rows.length === 0
+                ? []
+                : [
+                      '  Drill in with --component "<name>", or --group-by test for the tests ' +
+                          'themselves.',
+                  ],
+        empty: emptyMessage(result.header, result.types),
     };
+}
+
+/**
+ * What to say when a filter matched nothing.
+ *
+ * "No test matched." alone leaves a reader unable to tell a healthy tree from a
+ * mistyped `--path`, which are the two possibilities and want opposite actions.
+ * So it names the population that *was* searched and the filters that could
+ * have emptied it.
+ */
+function emptyMessage(
+    header: TreeHeader,
+    types?: readonly IssueType[],
+    subject = 'test',
+    extraFilters = ''
+): string {
+    const searched = `${fmtCount(header.testCount)} tests in ${header.harness}-issues.json`;
+    const typeNote =
+        types !== undefined && types.length < DEFAULT_TYPES.length
+            ? ` Only ${types.join(', ')} counted as issues, so --type may be why.`
+            : '';
+    return (
+        `No ${subject} matched. Searched ${searched} over ` +
+        `${header.startDate} … ${header.endDate}.${typeNote}` +
+        ` Check --path (a directory prefix)${extraFilters} and --component (a substring) ` +
+        'for typos.'
+    );
 }
 
 // --- fx-tests failures ---------------------------------------------------
@@ -530,7 +645,9 @@ function renderFailures(
         // test is another kind of bug entirely.
         table: {
             columns: [
-                { header: 'failures', align: 'right' },
+                // Ordered by total failing runs — the only order this command
+                // offers, so the marker is unconditional.
+                { header: 'failures', align: 'right', sort: 'desc' },
                 { header: 'tests', align: 'right' },
                 { header: 'message' },
             ],
@@ -543,7 +660,7 @@ function renderFailures(
         total: result.rowCount,
         shown: result.rows.length,
         epilogue: [],
-        empty: 'No failure matched.',
+        empty: emptyMessage(result.header, undefined, 'failure', ', --message (a substring)'),
     };
 }
 
@@ -661,7 +778,8 @@ function renderCrashes(
         preamble: headerLines(header, 'crashes by signature'),
         table: {
             columns: [
-                { header: 'crashes', align: 'right' },
+                // `groupCrashesBySignature()` orders by crash count descending.
+                { header: 'crashes', align: 'right', sort: 'desc' },
                 { header: 'tests', align: 'right' },
                 { header: 'dumps', align: 'right' },
                 { header: 'signature' },
@@ -676,7 +794,7 @@ function renderCrashes(
         total: result.rowCount,
         shown: result.rows.length,
         epilogue,
-        empty: 'No crash matched.',
+        empty: emptyMessage(header, undefined, 'crash', ', --signature (a substring)'),
     };
 }
 
@@ -767,14 +885,15 @@ function renderSkips(result: {
         preamble,
         table: {
             columns: [
-                { header: 'Test' },
-                { header: 'skips', align: 'right' },
+                { header: 'Test', path: true },
+                // `findSkips()` orders by skip count descending.
+                { header: 'skips', align: 'right', sort: 'desc' },
                 { header: 'reason' },
             ],
             rows: result.rows.map((row) => {
                 const messages = row.messages as { message: string; count: number }[];
                 return [
-                    truncatePath(String(row.test), 56),
+                    String(row.test),
                     fmtCount(Number(row.skipCount)),
                     truncate(oneLine(messages[0]?.message ?? '(no reason recorded)'), 50) +
                         (messages.length > 1 ? ` (+${messages.length - 1} more)` : ''),
@@ -784,7 +903,7 @@ function renderSkips(result: {
         total: result.rowCount,
         shown: result.rows.length,
         epilogue: [],
-        empty: 'No skipped test matched.',
+        empty: emptyMessage(result.header, undefined, 'skipped test'),
     };
 }
 
@@ -809,7 +928,8 @@ function rejectPositionals(args: ParsedArgs, name: string): void {
 function readTypes(args: ParsedArgs): IssueType[] {
     const values = listOption(args, 'type');
     if (values.length === 0) {
-        return ['fail', 'timeout', 'crash'];
+        // All four, as the dashboard's checkboxes all start checked.
+        return [...DEFAULT_TYPES];
     }
     const allowed: IssueType[] = ['fail', 'timeout', 'crash', 'skip'];
     for (const value of values) {
@@ -900,8 +1020,10 @@ function renderTextFrom(content: Rendered): string {
     if (content.table === null || content.table.rows.length === 0) {
         lines.push(content.empty);
     } else {
-        lines.push(...table(content.table.columns, content.table.rows));
-        lines.push(moreLine(content.total, content.shown));
+        // `tableSection` renders the table, the `… n more` line and the
+        // full-path recovery block together: a path column cannot be shortened
+        // here without the whole value being printed back.
+        lines.push(...tableSection(content.table.columns, content.table.rows, content));
     }
     lines.push(...content.epilogue);
     return joinLines(lines);
