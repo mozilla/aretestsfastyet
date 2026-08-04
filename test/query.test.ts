@@ -803,9 +803,47 @@ test('platformsInFile is the platforms, not the configs', () => {
     // platform or it does not. Configs were the level that had no boundary.
     const platforms = platformsInFile(bucket);
     assert.deepEqual([...platforms].sort(), ['android', 'linux', 'mac', 'windows']);
-    // `unknown` is a parse failure, not a platform, and must never appear —
-    // "not unknown" is not a statement about where a test runs.
-    assert.ok(!platforms.has('unknown'));
+});
+
+test('a job name that does not parse is not a platform called "unknown"', () => {
+    // Built by hand, and the reason is worth stating: no config in any fixture,
+    // and none in five real bucket files (2,663 configs), has an unparseable
+    // job name — so the guard cannot be reached from recorded data and a
+    // mutation removing it survived the whole suite until this existed.
+    //
+    // What it prevents is a sentence: `platformsInFile` feeds the default
+    // view's "Runs on N configs across … — not android" clause, so an
+    // `unknown` entry there becomes the CLI telling a reader the test does not
+    // run on "unknown". That is a parse failure reported as a place.
+    const file = decodeDaily({
+        metadata: {
+            date: '2026-08-03',
+            startTime: 0,
+            jobCount: 2,
+            processedJobCount: 2,
+            invalidJobCount: 0,
+        },
+        tables: {
+            // Index 1 has no `/`, so it has no platform to speak of.
+            jobNames: ['test-linux2404-64/opt-xpcshell', 'some-unparseable-name'],
+            testPaths: ['a/b'],
+            testNames: ['test_x.js'],
+            repositories: ['mozilla-central'],
+            taskIds: ['AAA.0', 'BBB.0'],
+            components: ['Core :: X'],
+            commitIds: ['abc'],
+            statuses: ['PASS'],
+            messages: [],
+            crashSignatures: [],
+        },
+        taskInfo: { repositoryIds: [0, 0], jobNameIds: [0, 1], commitIds: [0, 0] },
+        testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+        testRuns: [
+            [{ taskIdIds: [0, 1], durations: [1, 1], timestamps: [0, 0], messageIds: [null, null] }],
+        ],
+    } as unknown as DailyFile);
+
+    assert.deepEqual([...platformsInFile(file)], ['linux']);
 });
 
 test('coverage row counts reconcile with the test totals', () => {

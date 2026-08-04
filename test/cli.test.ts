@@ -59,10 +59,12 @@ const MOCHITEST_PATH =
 /**
  * A Windows-only crash-reporter test, for the `--coverage` rollup.
  *
- * Chosen because one test exhibits all four platform outcomes at once: it runs
- * on Windows, is scheduled and skipped on every Android config, and is never
- * scheduled on any mac or linux config. A rollup that conflates any two of
- * those produces a visibly wrong row here.
+ * Chosen because one test exhibits every outcome the rollup has to tell apart:
+ * on Windows it ran on 9 configs and was scheduled-and-skipped on 2 more, on
+ * Android it was scheduled and skipped on every config, and on mac and linux it
+ * is not scheduled at all — so those platforms have no row, which is how
+ * `--coverage` reports them. A rollup that conflates any two of those produces
+ * a visibly wrong row here, or a row where there should be none.
  */
 const WINDOWS_ONLY_TEST =
     'toolkit/crashreporter/test/unit/test_crash_win64cfi_push_nonvol.js';
@@ -1027,6 +1029,23 @@ test('--coverage has no row for a platform with nothing scheduled', async () => 
     const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage']);
     assert.doesNotMatch(stdout, /do not run on/);
     assert.doesNotMatch(stdout, /^ {2}\w+\s+0\/0 ran/m);
+});
+
+test('a platform row says how many of its configs only ever skipped', async () => {
+    // The partly-disabled case, which is neither of the two easy ones: on
+    // Windows this test ran on 9 configs and was scheduled-and-skipped on 2
+    // more. A bare `9/11 ran` leaves the reader to work out what the other two
+    // did, and "scheduled but skipped" is the half that is someone's `skip-if`.
+    const { stdout } = await invoke(['test', WINDOWS_ONLY_TEST, '--coverage']);
+    const row = /^ {2}windows\s+(\d+)\/(\d+) ran(.*)$/m.exec(stdout);
+    assert.ok(row !== null, 'the rollup has a windows row');
+    const [, ran, total, rest] = row;
+    assert.ok(Number(total) > Number(ran), 'the fixture must have partly-skipped windows');
+    assert.match(
+        rest!,
+        new RegExp(`${Number(total) - Number(ran)} scheduled but skipped`),
+        `the windows row does not account for its non-running configs: ${row[0]}`
+    );
 });
 
 test('--coverage distinguishes skipped-everywhere from not being scheduled', async () => {
