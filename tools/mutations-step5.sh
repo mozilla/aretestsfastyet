@@ -16,7 +16,8 @@
 # Usage: tools/mutations-step5.sh [-k]   (-k stops at the first survivor)
 
 cd "$(dirname "$0")/.." || exit 2
-export PATH=/opt/homebrew/Cellar/node@22/22.16.0/bin:$PATH
+# See tools/node-env.sh: resolves node without naming a specific install.
+. "$(dirname "$0")/node-env.sh"
 
 STOP_ON_SURVIVOR=0
 [ "${1:-}" = "-k" ] && STOP_ON_SURVIVOR=1
@@ -95,25 +96,27 @@ mutate lib/query/error-ranking.ts \
     '    return path.includes(wanted);' \
     '--test matches any substring'
 # The grouping key's separator and absent-sentinel. Both were survivors on the
-# first pass: the key is built from invisible control characters, so a
-# replacement that collides is easy to write and hard to see.
+# first pass, when they were literal control characters in the source: a
+# mutation could not even be applied textually. Named as escapes, they are
+# mutatable — which is the point of having named them.
 mutate lib/query/error-ranking.ts \
-    "    const absent = '∅';" \
-    "    const absent = '';" \
+    "const KEY_ABSENT = '\\u0001';" \
+    "const KEY_ABSENT = '';" \
     'the absent-field sentinel becomes the empty string'
 mutate lib/query/error-ranking.ts \
-    "    const absent = '∅';" \
-    "    const absent = ':';" \
+    "const KEY_ABSENT = '\\u0001';" \
+    "const KEY_ABSENT = ':';" \
     'the absent-field sentinel becomes a character that can occur in data'
 mutate lib/query/error-ranking.ts \
-    "                \`\${part(message.kind)}\${part(message.text)}\` +
-                \`\${part(message.file)}\${part(message.line)}\`" \
-    "                \`\${part(message.kind)}\${part(message.text)}\`" \
-    'location grouping ignores file and line'
-mutate lib/query/error-ranking.ts \
-    "    const SEPARATOR = '';" \
-    "    const SEPARATOR = ':';" \
+    "const KEY_SEPARATOR = '\\u001f';" \
+    "const KEY_SEPARATOR = ':';" \
     'the key separator becomes a character that can occur in data'
+mutate lib/query/error-ranking.ts \
+    '                part(message.file),
+                part(message.line),
+' \
+    '' \
+    'location grouping ignores file and line'
 
 # --- lib/formats/manifests.ts -------------------------------------------
 mutate lib/formats/manifests.ts \
@@ -172,8 +175,8 @@ mutate lib/model/crash-signature.ts \
         }' \
     'inlines are flattened after their parent rather than before'
 mutate lib/model/crash-signature.ts \
-    'const match = /(.*)\\(.*\\)/.exec(signature);' \
-    'const match = /(.*?)\\(.*\\)/.exec(signature);' \
+    'const match = /(.*)\(.*\)/.exec(signature);' \
+    'const match = /(.*?)\(.*\)/.exec(signature);' \
     'parameter stripping is made lazy'
 mutate lib/model/crash-signature.ts \
     'if (!isAbortFrame(name)) {' 'if (true) {' \

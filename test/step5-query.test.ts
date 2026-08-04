@@ -144,22 +144,59 @@ test('a line with no file does not merge with another line-only message', () => 
     assert.equal(lined.length, 2);
 });
 
-test('an absent field does not collide with an empty one', () => {
-    // The sentinel's whole job. With `KEY_ABSENT` set to the empty string,
-    // a message from a file named "" and a message with no file at all build
-    // the same key and merge into one row — and the merged row's count belongs
-    // to neither. A mutation doing exactly that survived the first campaign.
+test('an absent field does not collide with any real value', () => {
+    // The sentinel's whole job: whatever stands in for "absent" must be a value
+    // a field cannot actually hold, or a message with no file merges with a
+    // message whose file happens to *be* that value, and the merged row's count
+    // belongs to neither.
+    //
+    // Both plausible wrong sentinels are covered, because they fail on
+    // different inputs and a test pinning one lets the other through — which is
+    // exactly what happened: `''` was caught and `':'` survived.
+    //
+    //  - `''` collides with a file named `""`.
+    //  - `':'`, or any printable byte, collides with a file named `":"`.
+    for (const collidingValue of ['', ':', '', 'null', '0']) {
+        const file = decodeErrors(
+            buildErrorsFile([
+                { kind: 'C++ warning', text: 'msg', file: null, line: 7, counts: [3] },
+                { kind: 'C++ warning', text: 'msg', file: collidingValue, line: 7, counts: [5] },
+            ])
+        );
+        const rows = rankErrors(file, { grouping: 'location' }).rows;
+        assert.equal(
+            rows.length,
+            2,
+            `a file named ${JSON.stringify(collidingValue)} must not merge with no file at all`
+        );
+        assert.deepEqual(
+            rows.map((row) => row.count).sort((a, b) => a - b),
+            [3, 5]
+        );
+        // …and each row keeps its own identity, so the split is real rather
+        // than two rows that happen to have the right counts.
+        assert.deepEqual(
+            rows.map((row) => row.file).sort(),
+            [collidingValue, null].sort()
+        );
+    }
+});
+
+test('an absent line does not collide with a real line either', () => {
+    // The same hazard on the numeric field, which `String()` renders — so a
+    // sentinel that is a digit string collides with a real line number.
     const file = decodeErrors(
         buildErrorsFile([
-            { kind: 'C++ warning', text: 'msg', file: null, line: 7, counts: [3] },
-            { kind: 'C++ warning', text: 'msg', file: '', line: 7, counts: [5] },
+            { kind: 'C++ warning', text: 'msg', file: 'a.cpp', line: null, counts: [3] },
+            { kind: 'C++ warning', text: 'msg', file: 'a.cpp', line: 1, counts: [5] },
+            { kind: 'C++ warning', text: 'msg', file: 'a.cpp', line: 0, counts: [7] },
         ])
     );
     const rows = rankErrors(file, { grouping: 'location' }).rows;
-    assert.equal(rows.length, 2, 'no-file and empty-file must not merge');
+    assert.equal(rows.length, 3, 'no line, line 0 and line 1 are three groups');
     assert.deepEqual(
-        rows.map((row) => [row.file, row.count]).sort(),
-        [['', 5], [null, 3]].sort()
+        rows.map((row) => row.count).sort((a, b) => a - b),
+        [3, 5, 7]
     );
 });
 

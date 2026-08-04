@@ -26,7 +26,8 @@
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
-export PATH=/opt/homebrew/Cellar/node@22/22.16.0/bin:$PATH
+# See tools/node-env.sh: resolves node without naming a specific install.
+. "$(dirname "$0")/node-env.sh"
 
 FILE="$1"; OLD="$2"; NEW="$3"; DESC="$4"
 
