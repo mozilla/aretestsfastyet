@@ -44,6 +44,7 @@
 import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } from '../../lib/formats/buckets.ts';
 import { computeConfigStats } from '../../lib/query/config-stats.ts';
 import { computeTestStats } from '../../lib/query/test-stats.ts';
+import { stripChunkSuffix } from '../../lib/model/job-name.ts';
 import { resourceUsageProfileUrl, uploadedProfileUrl } from '../../lib/links.ts';
 import { treeherderPushUrl } from '../../lib/links.ts';
 import {
@@ -100,9 +101,19 @@ export interface TryFailure {
     /** Failing runs, and how many runs of those jobs there were. */
     failedRuns: number;
     totalRuns: number;
-    /** True when every run of every affected config failed. */
+    /**
+     * True when at least one affected configuration failed in every run.
+     *
+     * Per-configuration on purpose: see `permaFailingConfigs`.
+     */
     everyRunFailed: boolean;
-    /** True when the harness reran it in-job and it passed. */
+    /**
+     * The configurations on which every run failed, none succeeded, and the
+     * harness's in-job rerun never passed. These are what makes the test a
+     * perma-fail; a test can be one of these *and* intermittent elsewhere.
+     */
+    permaFailingConfigs: string[];
+    /** True when the harness reran it in-job and it passed on some config. */
     passedOnRerun: boolean;
     /** The distinct failure messages seen, most common first. */
     messages: string[];
@@ -141,6 +152,18 @@ export interface CentralHistory {
     sameMessageFailRate: number | null;
     /** The worst affected config's overall rate, for the one-line summary. */
     worstConfig: { jobName: string; failRate: number; sameMsgFailRate: number } | null;
+    /**
+     * Same-message failures on central, restricted to the configurations on
+     * which this push's failure was permanent (`permaFailingConfigs`).
+     *
+     * Separate from `sameMessageFailCount` because the two answer different
+     * questions and only this one bears on the verdict. A test can fail the
+     * same way on some *other* config for weeks without that saying anything
+     * about the config where this push made it fail every single time.
+     * `null` when the test perma-failed on no config, or when none of them
+     * appears in central's history.
+     */
+    sameMessageFailCountOnPermaConfigs: number | null;
     /** Whether the test appears in central data at all. */
     known: boolean;
 }
@@ -292,12 +315,25 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
 /**
  * Whether a failure is a perma-fail candidate.
  *
- * Both halves are required, and the second is what stops a long-standing
- * central intermittent that happened to fail in all three runs here from being
- * reported as caused by the patch.
+ * Two independent halves. The first — every run of some configuration failed —
+ * is what `try.html` shows in its "Permanent failures" table, and is computed
+ * from the push alone. The second is the CLI's addition, which `CLI.md` states
+ * as "and were not failing on central": a long-standing central intermittent
+ * that happened to fail in all three runs here is not the patch's doing.
+ *
+ * The central half is asked **of the configurations that perma-failed**, not
+ * of the test as a whole. Asking it globally is what made this command report
+ * 0 perma-fails on try push 7d16bff8 where the dashboard reports 3: all three
+ * of that push's permanent failures do fail on central with the same message
+ * *on some other configuration*, which says nothing about the config where the
+ * push failed every run.
  */
 function isPermaFail(failure: TryFailure): boolean {
-    if (!failure.everyRunFailed || failure.passedOnRerun) {
+    // `everyRunFailed` already excludes any config the harness's rerun turned
+    // green, so the test-level `passedOnRerun` must not be re-tested here: a
+    // test that is intermittent on one config and permanent on another has it
+    // set, and rejecting on it discards the permanent config.
+    if (!failure.everyRunFailed) {
         return false;
     }
     const central = failure.central;
@@ -309,25 +345,33 @@ function isPermaFail(failure: TryFailure): boolean {
         // Never failed on central. The clean perma-fail case.
         return true;
     }
-    // Central *has* seen this test fail. Whether that exonerates the push
-    // depends on it being the *same* failure, and answering that needs a
-    // message on both sides.
+    // Central *has* seen this test fail somewhere. Whether that exonerates the
+    // push depends on it being the *same* failure on the *same* configuration,
+    // and answering the first half needs a message on both sides.
     //
     // Measured on autoland push 7c06165ae50f70: 20 of 21 candidate perma-fails
-    // recorded **no message at all** in the push's profile. With no message,
-    // `sameMessageFailCount` is 0 not because the failures differ but because
-    // there was nothing to compare — and treating that as "not failing on
-    // central" reported a test that fails 24.9% of the time on central as
-    // almost certainly caused by the patch. That is exactly the confidently
-    // wrong number this project keeps producing.
-    //
-    // So an unmatchable failure against a test that already fails on central
-    // is not a perma-fail. It goes to the known-intermittent section, where
-    // the rate is shown and the missing comparison is stated.
+    // recorded no message the command could read, and `sameMessageFailCount`
+    // was 0 not because the failures differed but because there was nothing to
+    // compare. Treating that as "not failing on central" reported a test that
+    // fails 24.9% of the time on central as almost certainly caused by the
+    // patch. Most of those messages are now read — they were on the
+    // `TestStatus` markers this command did not look at — but a failure with
+    // genuinely no message still cannot be compared, so the guard stays.
     if (!failure.messageComparable) {
         return false;
     }
-    return central.sameMessageFailCount === 0;
+    // Restricted to the configs that perma-failed here — see `isPermaFail`'s
+    // header for why the question is asked per config.
+    //
+    // `null` means central attributed no runs at all to those configs, so
+    // there is no config-scoped answer. Falling through to the whole-test
+    // count is the conservative reading: it keeps a test that central already
+    // fails the same way out of "almost certainly yours" when the finer
+    // comparison is unavailable, which is the direction the 15 false
+    // perma-fails on autoland push 7c06165ae50f70 came from.
+    const onPermaConfigs =
+        central.sameMessageFailCountOnPermaConfigs ?? central.sameMessageFailCount;
+    return onPermaConfigs === 0;
 }
 
 /** Whether central has seen this test fail the same way. */
@@ -450,6 +494,25 @@ interface ProfileThread {
     };
 }
 
+/**
+ * A `TestStatus` marker: one logged failure line, with the message on it.
+ *
+ * These are where a mochitest failure's message actually lives. The `Test`
+ * marker that says `status: 'FAIL'` carries no `message` field at all for a
+ * plain assertion failure — measured on task `GwXgN5-rTOOtVkoQvJlDBQ` of try
+ * push 7d16bff8, whose two `Test` markers for `browser_sync.js` are
+ * `{test, status: 'FAIL', color: 'orange'}` and nothing more, while the
+ * twenty-one `TestStatus` markers inside their time ranges carry
+ * `"handleEvent() was unable to perform a11y checks on hidden node: …"` and
+ * the rest.
+ */
+interface TestStatusMarker {
+    /** The raw `data.test`, still carrying any `manifest.toml:` prefix. */
+    test: string;
+    time: number;
+    message: string;
+}
+
 /** A `Crash` marker, before it is matched to a test. */
 interface CrashMarker {
     /** The test the crash was recorded against, as written in the marker. */
@@ -541,6 +604,40 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         });
     }
 
+    // The failure messages, which live on separate `TestStatus` markers rather
+    // than on the `Test` marker. Named `FAIL` or `ERROR` in the string table
+    // — the marker *name*, not `data.status`, is what distinguishes them.
+    // `try.html:936`.
+    const failStringId = stringArray.indexOf('FAIL');
+    const errorStringId = stringArray.indexOf('ERROR');
+    const testStatusMarkers: TestStatusMarker[] = [];
+    for (let i = 0; i < length; i++) {
+        const nameId = markers.name[i];
+        if (nameId !== failStringId && nameId !== errorStringId) {
+            continue;
+        }
+        const data = markers.data[i];
+        if (data?.type !== 'TestStatus' || data.test === undefined) {
+            continue;
+        }
+        const message = normalizeMessage(data.message ?? null);
+        if (message === null) {
+            continue;
+        }
+        testStatusMarkers.push({ test: data.test, time: startTime[i] ?? 0, message });
+    }
+    // `try.html:952` sorts by test then time, and then takes the *first* match
+    // in that order — which for one test's one time range is its earliest
+    // message. Sorting by time alone gives the same first element per range
+    // and keeps the intent visible.
+    testStatusMarkers.sort((a, b) => a.time - b.time);
+
+    /** The first message logged inside a test execution's time range. */
+    const messageInRange = (test: string, start: number, end: number): string | null =>
+        testStatusMarkers.find(
+            (marker) => marker.test === test && marker.time >= start && marker.time <= end
+        )?.message ?? null;
+
     const testStringId = stringArray.indexOf('test');
     const timings: TestTiming[] = [];
 
@@ -552,10 +649,14 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         if (data?.type !== 'Test') {
             continue;
         }
-        let path = data.test ?? data.name ?? null;
-        if (path === null) {
+        // The full ID keeps the `manifest.toml:` prefix, which is how the
+        // `TestStatus` and `Crash` markers name the test; `path` is the
+        // stripped form the aggregates use. Both are needed.
+        const fullTestId = data.test ?? data.name ?? null;
+        if (fullTestId === null) {
             continue;
         }
+        let path = fullTestId;
         if (path.includes(':')) {
             path = path.split(':')[1] ?? path;
         }
@@ -575,7 +676,18 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
             status += overlaps(start, end, parallelRanges) ? '-PARALLEL' : '-SEQUENTIAL';
         }
 
-        let message = data.message ?? null;
+        let message = normalizeMessage(data.message ?? null);
+        // A failing test's message comes from the `TestStatus` markers logged
+        // inside its execution, and overrides the `Test` marker's own
+        // `message` when there is one — `try.html:983` assigns
+        // `allMessages[0].message` over whatever it had. It is usually the
+        // only message there is: the `Test` marker has no `message` field for
+        // a plain assertion failure, so without this every `FAIL` on the push
+        // looks message-less. Measured on push 7d16bff8, that was 12 of the 26
+        // failing tests, including all three of its permanent failures.
+        if (status.startsWith('FAIL') || status.startsWith('TIMEOUT') || status === 'ERROR') {
+            message = messageInRange(fullTestId, start, end) ?? message;
+        }
         if (status.startsWith('CRASH')) {
             // Claim the crash marker inside this test's range, so it is not
             // also emitted as a synthetic entry below. Matched on the raw
@@ -584,20 +696,20 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
             const matching = crashMarkers.find(
                 (crash) =>
                     !crash.consumed &&
-                    crash.testPath === data.test &&
+                    crash.testPath === fullTestId &&
                     crash.start >= start &&
                     crash.start <= end
             );
             if (matching !== undefined) {
                 matching.consumed = true;
-                message ??= matching.signature;
+                message ??= normalizeMessage(matching.signature);
             }
         }
 
         timings.push({
             path,
             status,
-            message: normalizeMessage(message),
+            message,
             jobName: job.jobName,
             taskId: job.taskId,
             retryId: job.retryId,
@@ -687,11 +799,12 @@ function aggregateFailures(
 
     interface Accumulator {
         path: string;
-        jobNames: Set<string>;
-        failedRunKeys: Set<string>;
+        /** Per config: the runs of it in which this test failed. */
+        failedRunsByJobName: Map<string, Set<string>>;
+        /** Per config: whether the harness's in-job rerun ever passed there. */
+        passedOnRerunByJobName: Map<string, boolean>;
         messages: Map<string, number>;
         statuses: Set<string>;
-        passedOnRerun: boolean;
         modes: Set<string>;
     }
     const byTest = new Map<string, Accumulator>();
@@ -704,23 +817,26 @@ function aggregateFailures(
         if (entry === undefined) {
             entry = {
                 path: timing.path,
-                jobNames: new Set(),
-                failedRunKeys: new Set(),
+                failedRunsByJobName: new Map(),
+                passedOnRerunByJobName: new Map(),
                 messages: new Map(),
                 statuses: new Set(),
-                passedOnRerun: false,
                 modes: new Set(),
             };
             byTest.set(timing.path, entry);
         }
-        entry.jobNames.add(timing.jobName);
-        entry.failedRunKeys.add(runKeyOf(timing));
+        let runs = entry.failedRunsByJobName.get(timing.jobName);
+        if (runs === undefined) {
+            runs = new Set();
+            entry.failedRunsByJobName.set(timing.jobName, runs);
+        }
+        runs.add(runKeyOf(timing));
         entry.statuses.add(timing.status);
         if (timing.message !== null) {
             entry.messages.set(timing.message, (entry.messages.get(timing.message) ?? 0) + 1);
         }
         if (passedOnRerunByRun.get(runKeyOf(timing))?.has(timing.path) === true) {
-            entry.passedOnRerun = true;
+            entry.passedOnRerunByJobName.set(timing.jobName, true);
         }
         const suffix = /-(PARALLEL|SEQUENTIAL)$/.exec(timing.status)?.[1];
         entry.modes.add(suffix ?? 'UNRECORDED');
@@ -728,25 +844,51 @@ function aggregateFailures(
 
     const failures: TryFailure[] = [];
     for (const entry of byTest.values()) {
-        const totalRuns = [...entry.jobNames].reduce(
+        const jobNames = [...entry.failedRunsByJobName.keys()];
+        const totalRuns = jobNames.reduce(
             (sum, jobName) => sum + (runsPerJobName.get(jobName) ?? 0),
             0
         );
-        const failedRuns = entry.failedRunKeys.size;
+        const failedRuns = new Set(
+            [...entry.failedRunsByJobName.values()].flatMap((runs) => [...runs])
+        ).size;
+
+        // Whether this test is a permanent failure **on one configuration**:
+        // every run of that config failed, no run of it succeeded outright,
+        // and the harness's in-job rerun never turned it green there.
+        //
+        // Per-config, not per-test, because those are different questions and
+        // only the per-config one matches `try.html`, which tags each failing
+        // *instance* intermittent (`try.html:1400`) and calls the test
+        // permanent when any instance is not (`try.html:1765`).
+        //
+        // Measured on push 7d16bff8: `browser_ml_heuristics.js` failed on
+        // three configs — intermittently on `browser-chrome-3` and
+        // `browser-chrome-7`, which also had passing runs, and in all four
+        // runs of `browser-chrome-msix-18`, which had none. Asking the
+        // question of the whole test answers "intermittent" and hides a
+        // config on which the test never once passed. `try.html` lists it as
+        // one of the push's three permanent failures.
+        const permaFailingConfigs = jobNames.filter((jobName) => {
+            if (successfulJobNames.has(jobName)) {
+                return false;
+            }
+            if (entry.passedOnRerunByJobName.get(jobName) === true) {
+                return false;
+            }
+            const runsOfConfig = runsPerJobName.get(jobName) ?? 0;
+            const failed = entry.failedRunsByJobName.get(jobName)?.size ?? 0;
+            return runsOfConfig > 0 && failed >= runsOfConfig;
+        });
+
         failures.push({
             path: entry.path,
-            jobNames: [...entry.jobNames].sort(),
+            jobNames: jobNames.sort(),
             failedRuns,
             totalRuns,
-            // Every run of every affected config failed, and no config of this
-            // test succeeded outright. The second half matters: a config with
-            // a fully-successful run of the same job name means the failure is
-            // not deterministic there.
-            everyRunFailed:
-                totalRuns > 0 &&
-                failedRuns >= totalRuns &&
-                ![...entry.jobNames].some((jobName) => successfulJobNames.has(jobName)),
-            passedOnRerun: entry.passedOnRerun,
+            everyRunFailed: permaFailingConfigs.length > 0,
+            permaFailingConfigs: permaFailingConfigs.sort(),
+            passedOnRerun: [...entry.passedOnRerunByJobName.values()].some(Boolean),
             messages: [...entry.messages]
                 .sort((a, b) => b[1] - a[1])
                 .map(([message]) => message),
@@ -846,6 +988,23 @@ async function attachCentralHistory(
                 0
             );
             const worst = configs.find((config) => config.failCount > 0) ?? null;
+
+            // The same question, asked only of the configs where this push's
+            // failure was permanent. `computeConfigStats` reports
+            // chunk-stripped names, so the push's names have to be stripped
+            // too — otherwise `…-msix-18` never matches `…-msix` and every
+            // config looks absent from history.
+            const permaConfigNames = new Set(
+                failure.permaFailingConfigs.map(stripChunkSuffix)
+            );
+            const permaConfigs = configs.filter((config) =>
+                permaConfigNames.has(config.jobName)
+            );
+            const sameMessageFailCountOnPermaConfigs =
+                permaConfigs.length === 0
+                    ? null
+                    : permaConfigs.reduce((sum, config) => sum + config.sameMsgFailCount, 0);
+
             failure.central = {
                 runCount: stats.runCount,
                 failCount,
@@ -853,6 +1012,7 @@ async function attachCentralHistory(
                 sameMessageFailCount,
                 sameMessageFailRate:
                     stats.runCount > 0 ? (sameMessageFailCount / stats.runCount) * 100 : null,
+                sameMessageFailCountOnPermaConfigs,
                 worstConfig:
                     worst === null
                         ? null
@@ -1137,7 +1297,10 @@ function compactSection(
     lines.push(
         ...table(
             [
-                { header: 'test', maxWidth: 60 },
+                // Path-aware: the basename is what identifies a test and what
+                // `fx-tests test <path>` takes, so the leading directories go
+                // rather than the filename. See `truncatePath()`.
+                { header: 'test', maxWidth: TEST_COLUMN_WIDTH, path: true },
                 { header: 'here', align: 'right' },
                 { header: 'central', align: 'right' },
                 { header: 'same msg', align: 'right' },
@@ -1152,7 +1315,36 @@ function compactSection(
     );
     for (const failure of shown) {
         if (failure.passedOnRerun) {
-            lines.push(`    ${failure.path}: passed on harness rerun`);
+            lines.push(`    ${basename(failure.path)}: passed on harness rerun`);
+        }
+        // A test that failed *every* run of a config and is still in this
+        // section was put here by central history alone. `try.html` shows the
+        // same test under "Permanent failures", because that page classifies
+        // from the push and never consults central — so saying which of the
+        // two facts applies is what lets a reader reconcile them instead of
+        // assuming one of the tools is broken.
+        if (failure.everyRunFailed && failure.central !== null) {
+            const configs =
+                failure.permaFailingConfigs.length === 1
+                    ? failure.permaFailingConfigs[0]
+                    : `${failure.permaFailingConfigs.length} configs`;
+            lines.push(
+                `    ${basename(failure.path)}: failed every run on ${configs}, ` +
+                    `but central already fails the same way there ` +
+                    `(${failure.central.sameMessageFailCountOnPermaConfigs ?? failure.central.sameMessageFailCount} times)`
+            );
+        }
+    }
+    // The table shortens deep paths from the left, so the basename always
+    // survives and every row can be told apart and grepped for. The full path
+    // is still what `fx-tests test` takes, so the shortened ones are repeated
+    // here in full, ready to copy — printing them is the difference between
+    // output that feeds the next command and output that only reads well.
+    const shortened = shown.filter((failure) => failure.path.length > TEST_COLUMN_WIDTH);
+    if (shortened.length > 0) {
+        lines.push(`  full paths (${shortened.length} shortened above):`);
+        for (const failure of shortened) {
+            lines.push(`    ${failure.path}`);
         }
     }
     const more = moreLine(failures.length, shown.length);
@@ -1160,6 +1352,14 @@ function compactSection(
         lines.push(more);
     }
     return lines;
+}
+
+/** The width of the `test` column in the compact sections. */
+const TEST_COLUMN_WIDTH = 60;
+
+/** The last segment of a path — what identifies a test to a reader. */
+function basename(path: string): string {
+    return path.slice(path.lastIndexOf('/') + 1);
 }
 
 /** Markdown, for pasting into a bug or PR. */

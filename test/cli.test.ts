@@ -1065,7 +1065,8 @@ test('--coverage never contradicts itself about a platform', async () => {
         const rows = new Set(
             [...stdout.matchAll(/^ {2}(\w+)\s+\d+\/\d+ ran/gm)].map((match) => match[1]!)
         );
-        for (const [, platform] of stdout.matchAll(/these suites do not run on (\w+)/g)) {
+        for (const match of stdout.matchAll(/these suites do not run on (\w+)/g)) {
+            const platform = match[1]!;
             assert.ok(
                 !rows.has(platform),
                 `${path}: ${platform} has a coverage row and is also called unreachable`
@@ -1783,21 +1784,36 @@ function job(
  * Hand-built rather than a fixture because the cases that matter — a crash
  * marker no test claims, a rerun that passed, a FAIL that is green — are
  * combinations a captured profile does not contain all of at once.
+ *
+ * `TestStatus` is where a real mochitest failure's message lives, and the
+ * marker *name* is what identifies it: `FAIL` or `ERROR` in the string table,
+ * not `test`. The `Test` marker itself carries no `message` for a plain
+ * assertion failure, so a fixture that puts the message on the `Test` marker
+ * tests a shape the harness does not emit.
  */
 function profileWith(
     entries: {
-        type: 'Test' | 'Crash' | 'Text';
+        type: 'Test' | 'Crash' | 'Text' | 'TestStatus';
         test?: string;
         text?: string;
         status?: string;
         message?: string;
         color?: string;
         signature?: string;
+        /** For `TestStatus`: the marker name, `FAIL` (default) or `ERROR`. */
+        markerName?: 'FAIL' | 'ERROR';
         start: number;
         end: number;
     }[]
 ): string {
-    const stringArray = ['test'];
+    // Index 0 is `test`; `FAIL` and `ERROR` get their own indexes so a
+    // `TestStatus` marker can be named one of them, as the harness names them.
+    const stringArray = ['test', 'other', 'FAIL', 'ERROR'];
+    const nameIndexOf = (entry: (typeof entries)[number]): number => {
+        if (entry.type === 'Test') return 0;
+        if (entry.type === 'TestStatus') return entry.markerName === 'ERROR' ? 3 : 2;
+        return 1;
+    };
     const data = entries.map((entry) => {
         const record: Record<string, unknown> = { type: entry.type };
         if (entry.test !== undefined) record['test'] = entry.test;
@@ -1815,10 +1831,10 @@ function profileWith(
                 stringArray,
                 markers: {
                     length: entries.length,
-                    // Only `Test` markers are named `test`; the rest get an
-                    // index that is not 0, matching how a real profile names
-                    // its Text and Crash markers something else.
-                    name: entries.map((entry) => (entry.type === 'Test' ? 0 : 1)),
+                    // Only `Test` markers are named `test`; Text and Crash get
+                    // an index that is not 0, and `TestStatus` is named after
+                    // its status, matching how a real profile names them.
+                    name: entries.map(nameIndexOf),
                     data,
                     startTime: entries.map((entry) => entry.start),
                     endTime: entries.map((entry) => entry.end),
