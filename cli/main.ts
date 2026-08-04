@@ -46,7 +46,7 @@ import {
     DataFileNotFoundError,
     type DataSource,
 } from '../lib/sources/source.ts';
-import { httpSource, taskArtifactSource, taskArtifactUrl } from '../lib/sources/http.ts';
+import { type FetchLike, httpSource, taskArtifactSource, taskArtifactUrl } from '../lib/sources/http.ts';
 import { PushNotFoundError, TreeherderError, treeherderClient } from '../lib/sources/treeherder.ts';
 
 /** One command's registration. */
@@ -199,6 +199,17 @@ export interface RunOptions {
      * Node's `fetch`.
      */
     httpFetchUrl?: ((url: string) => Promise<Uint8Array | null>) | undefined;
+    /**
+     * Replaces Node's `fetch` underneath everything the CLI builds itself,
+     * leaving each wrapper's caching in place.
+     *
+     * The same seam as `httpFetchUrl` for the sources that take a `FetchLike`
+     * rather than a URL fetcher: `fx-tests crash`'s artifact source and
+     * Treeherder. `taskArtifacts` and `treeherder` above replace the whole
+     * object and so remove the cache with it, which is fine for a test about
+     * what a command *computes* and useless for one about what it *fetches*.
+     */
+    httpFetch?: FetchLike | undefined;
     /** Overrides the per-task artifact source, for `fx-tests crash` tests. */
     taskArtifacts?: CommandContext['taskArtifacts'];
     /**
@@ -331,7 +342,7 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         streams,
         source: options.source ?? buildSource(globals, cache, streams),
         ...(options.treeherder === undefined
-            ? { treeherder: buildTreeherder(globals, cache, streams) }
+            ? { treeherder: buildTreeherder(globals, cache, streams, options.httpFetch ?? nodeFetch) }
             : { treeherder: options.treeherder }),
         // Per-task artifacts keep their own **error handling** — an expired
         // artifact is exit 4 while a missing index file is exit 2, which is
@@ -356,7 +367,14 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
             : { fetchUrl: options.fetchUrl }),
         // Injected so `fx-tests crash` is testable without a network.
         ...(options.taskArtifacts === undefined
-            ? { taskArtifacts: buildTaskArtifacts(globals, cache, streams) }
+            ? {
+                  taskArtifacts: buildTaskArtifacts(
+                      globals,
+                      cache,
+                      streams,
+                      options.httpFetch ?? nodeFetch
+                  ),
+              }
             : { taskArtifacts: options.taskArtifacts }),
         ...(options.loadTimingFile === undefined
             ? {}
@@ -416,9 +434,10 @@ function buildArtifactFetcher(
 function buildTreeherder(
     globals: ReturnType<typeof readGlobalOptions>,
     cache: DiskCache,
-    streams: OutputStreams
+    streams: OutputStreams,
+    http: FetchLike
 ): NonNullable<CommandContext['treeherder']> {
-    const client = treeherderClient({ fetch: nodeFetch });
+    const client = treeherderClient({ fetch: http });
     if (globals.noCache) {
         return client;
     }
@@ -431,9 +450,10 @@ function buildTreeherder(
 function buildTaskArtifacts(
     globals: ReturnType<typeof readGlobalOptions>,
     cache: DiskCache,
-    streams: OutputStreams
+    streams: OutputStreams,
+    http: FetchLike
 ): DataSource {
-    const source = taskArtifactSource({ fetch: nodeFetch });
+    const source = taskArtifactSource({ fetch: http });
     if (globals.noCache) {
         return source;
     }

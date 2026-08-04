@@ -190,13 +190,40 @@ test('a task artifact is served however old the entry is', async () => {
     });
 });
 
-test('an aggregate entry is not readable as an artifact', async () => {
+test('an entry written under another rule is not readable as an artifact', async () => {
+    await withCacheDir(async (directory) => {
+        const cache = diskCache({ directory });
+        // Push job lists share `urlCacheHash`'s key space with artifacts, so
+        // the *kind* is the only thing keeping the two apart at one hash. That
+        // makes this the case the kind check actually exists for: dropping it
+        // would serve a job list — which expires after a day — as an immutable
+        // artifact that never expires at all.
+        const key = 'treeherder:jobs:1988598';
+        await cache.putPushJobs(key, new TextEncoder().encode('[]'));
+        assert.equal(await cache.getArtifact(key), null);
+        // And the converse, so the check is not merely rejecting everything:
+        // an artifact written at the same hash *is* served.
+        await cache.putArtifact(key, new TextEncoder().encode('{"a":1}'));
+        assert.equal(new TextDecoder().decode((await cache.getArtifact(key))!), '{"a":1}');
+    });
+});
+
+test('an artifact entry is not readable as a push job list', async () => {
+    await withCacheDir(async (directory) => {
+        const cache = diskCache({ directory });
+        // The other direction. An artifact never expires, so reading one as a
+        // job list would give a push's jobs an entry that outlives every
+        // retrigger.
+        await cache.putArtifact(URL_A, new TextEncoder().encode('{}'));
+        assert.equal(await cache.getPushJobs(URL_A), null);
+    });
+});
+
+test('an aggregate’s key does not address an artifact entry', async () => {
     await withCacheDir(async (directory) => {
         const cache = diskCache({ directory });
         const name: DataFileName = { index: 'x-timings', filename: 'x-00.json' };
         await cache.put(name, new TextEncoder().encode('{"metadata":{}}'));
-        // Written under the TTL rule, so serving it as immutable would give it
-        // an expiry it was never granted. The kind check is what prevents it.
         assert.equal(await cache.getArtifact(taskArtifactUrl(name)), null);
     });
 });
@@ -561,6 +588,15 @@ test('a push with no jobs at all is not settled', () => {
     assert.equal(isSettledPush([]), false);
 });
 
+test('the settled-push TTL is a literal day', () => {
+    // Pinned to the number, not to the constant. Every assertion below uses
+    // `SETTLED_PUSH_TTL_MS` symbolically, which means mutating it moves the
+    // code and the tests together — a mutation making it a year survived the
+    // whole suite. A day is a judgement about how long a retrigger may go
+    // unseen, so the value itself has to be asserted somewhere.
+    assert.equal(SETTLED_PUSH_TTL_MS, 24 * 60 * 60 * 1000);
+});
+
 test('a settled push is re-read after a day, so a retrigger is picked up', async () => {
     await withCacheDir(async (directory) => {
         let now = Date.parse('2026-01-01T00:00:00Z');
@@ -755,6 +791,126 @@ test('--no-cache makes fx-tests try re-fetch every artifact', async () => {
         assert.equal(http.calls.length, 4, '--no-cache must bypass the artifact cache too');
         const cache = diskCache({ directory });
         assert.deepEqual(await cache.list(), [], 'and write nothing');
+    });
+});
+
+/** Node-shaped `fetch` over a map, counting every call. */
+function countingHttp(
+    bodies: Record<string, string>
+): ((url: string) => Promise<{ ok: boolean; status: number; url: string; arrayBuffer(): Promise<ArrayBuffer> }>) & {
+    calls: string[];
+} {
+    const calls: string[] = [];
+    const http = (url: string) => {
+        calls.push(url);
+        const body = bodies[url];
+        const bytes = new TextEncoder().encode(body ?? '');
+        return Promise.resolve({
+            ok: body !== undefined,
+            status: body === undefined ? 404 : 200,
+            url,
+            arrayBuffer: () =>
+                Promise.resolve(
+                    bytes.buffer.slice(
+                        bytes.byteOffset,
+                        bytes.byteOffset + bytes.byteLength
+                    ) as ArrayBuffer
+                ),
+        });
+    };
+    http.calls = calls;
+    return http;
+}
+
+test('fx-tests crash caches its dump, and --no-cache does not', async () => {
+    await withCacheDir(async (directory) => {
+        const url = taskArtifactUrl(
+            taskArtifactName('TASKD', 0, 'public/test_info/dump-x.json')
+        );
+        const dump = JSON.stringify({
+            threads: [{ thread_id: 1, thread_name: null, frames: [] }],
+            crash_info: { crashing_thread: 0, type: 'SIGSEGV' },
+        });
+        const { run } = await import('../cli/main.ts');
+        const { captureStreams } = await import('../cli/context.ts');
+        const cached = countingHttp({ [url]: dump });
+        for (const _ of [1, 2]) {
+            const streams = captureStreams();
+            await run({
+                argv: ['crash', 'TASKD', 'dump-x', '--json'],
+                streams,
+                cache: diskCache({ directory }),
+                httpFetch: cached,
+            });
+        }
+        // The other per-task-artifact consumer, benefiting from the same
+        // wrapper rather than merely not regressed.
+        assert.equal(cached.calls.length, 1, 'the second crash read must fetch nothing');
+
+        const uncached = countingHttp({ [url]: dump });
+        for (const _ of [1, 2]) {
+            const streams = captureStreams();
+            await run({
+                argv: ['crash', 'TASKD', 'dump-x', '--json', '--no-cache'],
+                streams,
+                cache: diskCache({ directory }),
+                httpFetch: uncached,
+            });
+        }
+        assert.equal(uncached.calls.length, 2, '--no-cache must bypass the dump cache');
+    });
+});
+
+test('--no-cache re-reads a settled push’s job list', async () => {
+    await withCacheDir(async (directory) => {
+        const root = 'https://treeherder.mozilla.org';
+        const bodies = {
+            [`${root}/api/project/try/push/?full=true&count=10&revision=7d16bff8`]: JSON.stringify({
+                results: [{ id: 1988598, revision: '7d16bff8', revisions: [] }],
+            }),
+            [`${root}/api/jobs/?push_id=1988598`]: JSON.stringify({
+                job_property_names: [
+                    'id', 'job_type_name', 'task_id', 'retry_id', 'state', 'result',
+                ],
+                results: [[1, 'build-linux', 'TASKB', 0, 'completed', 'success']],
+                next: null,
+            }),
+        };
+        const { run } = await import('../cli/main.ts');
+        const { captureStreams } = await import('../cli/context.ts');
+        const jobsUrl = `${root}/api/jobs/?push_id=1988598`;
+
+        const cached = countingHttp(bodies);
+        for (const _ of [1, 2]) {
+            await run({
+                argv: ['try', '7d16bff8', '--json'],
+                streams: captureStreams(),
+                source: await bucketSource(),
+                cache: diskCache({ directory }),
+                httpFetch: cached,
+            });
+        }
+        assert.equal(
+            cached.calls.filter((url) => url === jobsUrl).length,
+            1,
+            'a settled push’s job list is fetched once'
+        );
+
+        const uncached = countingHttp(bodies);
+        for (const _ of [1, 2]) {
+            await run({
+                argv: ['try', '7d16bff8', '--json', '--no-cache'],
+                streams: captureStreams(),
+                source: await bucketSource(),
+                cache: diskCache({ directory }),
+                httpFetch: uncached,
+            });
+        }
+        assert.equal(
+            uncached.calls.filter((url) => url === jobsUrl).length,
+            2,
+            '--no-cache must bypass the job-list cache too'
+        );
     });
 });
 
