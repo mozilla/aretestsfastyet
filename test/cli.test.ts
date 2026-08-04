@@ -214,11 +214,18 @@ test('an unknown command exits 1 and lists what exists', async () => {
     assert.match(stderr, /unknown command "tset"/);
 });
 
-test('a command CLI.md specifies but step 5 will add says so, rather than "unknown"', async () => {
-    const { code, stderr } = await invoke(['errors']);
+test('a command CLI.md specifies but has not landed says so, rather than "unknown"', async () => {
+    // `manifests` rather than `errors`: the errors command landed while this
+    // suite was being written, and a test pinned to a specific unimplemented
+    // command fails the day someone implements it — which is the wrong signal
+    // entirely. Any name still in PLANNED_COMMANDS would do.
+    const { code, stderr } = await invoke(['manifests']);
     assert.equal(code, ExitCode.Usage);
     assert.match(stderr, /not implemented yet/);
-    assert.match(stderr, /errors and warnings in test logs/);
+    assert.match(stderr, /time budget/);
+    // And the distinction that matters: this is not "unknown command", which
+    // would send someone who read the spec correctly looking for a typo.
+    assert.doesNotMatch(stderr, /unknown command/);
 });
 
 test('--help exits 0 and writes to stdout', async () => {
@@ -788,6 +795,123 @@ test('--coverage reports a config that both ran and skipped as having run', asyn
         states.has('never-scheduled'),
         'the universe difference produced never-scheduled rows'
     );
+});
+
+test('--coverage does not label a config with 191 skips a bare "ok"', async () => {
+    const { stdout } = await invoke([
+        'test',
+        TEST_PATH,
+        '--coverage',
+        '--config',
+        'android',
+        '--limit',
+        '0',
+    ]);
+    // The reading this prevents: the android configs ran the test on some
+    // days and were skipped on others, so `ok` is the correct *state* and a
+    // skip column of 191 sits next to it. A reader takes "ok" to mean "runs
+    // fine here, nothing disabled", which is the wrong conclusion drawn from
+    // right data — this project's recurring failure mode.
+    assert.match(stdout, /ok \+skipped/);
+    for (const line of stdout.split('\n')) {
+        // No row may show a non-zero skip count with an unannotated status.
+        const match = /^\s+\S+\s+\d+\s+\d+\s+\d+\s+([1-9]\d*)\s+(\S.*)$/.exec(line);
+        if (match !== null) {
+            assert.match(
+                match[2]!,
+                /skipped/,
+                `a row with ${match[1]} skips must say so in its status: ${line}`
+            );
+        }
+    }
+});
+
+test('--coverage counts the three states CLI.md says it distinguishes', async () => {
+    const { stdout } = await invoke(['test', TEST_PATH, '--coverage', '--limit', '4']);
+    // Counted, not left for the reader to total by eye off a truncated table
+    // — the skipped rows are the easiest to miss because they sort last.
+    assert.match(stdout, /^States: \d+ ran/m);
+    assert.match(stdout, /never scheduled/);
+    assert.match(stdout, /also skipped it on other days/);
+});
+
+test('--coverage JSON keeps the raw state, so the annotation is presentation only', async () => {
+    const { stdout } = await invoke(['test', TEST_PATH, '--coverage', '--json']);
+    const coverage = json(stdout)['coverage'] as {
+        configs: { state: string; runCount: number; skipCount: number }[];
+    };
+    const mixed = coverage.configs.filter(
+        (config) => config.runCount > 0 && config.skipCount > 0
+    );
+    assert.ok(mixed.length > 0, 'the fixture has configs that both ran and skipped');
+    for (const config of mixed) {
+        // The library's state vocabulary is unchanged; only the text column
+        // annotates. A consumer switching on `state` must not have to learn a
+        // new value.
+        assert.doesNotMatch(config.state, /\+/);
+        assert.ok(['ok', 'intermittent', 'perma-fail'].includes(config.state));
+    }
+});
+
+// --- "Runs on N configs across ..." in the default view --------------------
+
+test('the default view says where the test runs, without --coverage', async () => {
+    const { stdout } = await invoke(['test', TEST_PATH]);
+    // CLI.md puts this directly under the verdict. Without it "no Android
+    // failures" is unreadable: it could mean Android is fine, or that Android
+    // never ran the test.
+    assert.match(stdout, /^Runs on \d+ configs across /m);
+    assert.match(stdout, /android \(\d+\)/);
+});
+
+test('the reach line is in --json too, and counts only configs that ran', async () => {
+    const { stdout } = await invoke(['test', TEST_PATH, '--json']);
+    const result = json(stdout);
+    const reach = result['reach'] as {
+        configCount: number;
+        platforms: { platform: string; configCount: number }[];
+        absentPlatforms: string[];
+    };
+    assert.ok(reach !== null);
+    assert.ok(reach.configCount > 0);
+    assert.ok(reach.platforms.length > 0);
+
+    // Reconciliation: the reach count must equal the number of coverage rows
+    // that actually ran, computed by a different path.
+    const withCoverage = json(
+        (await invoke(['test', TEST_PATH, '--coverage', '--json'])).stdout
+    );
+    const coverage = withCoverage['coverage'] as { configs: { runCount: number }[] };
+    assert.equal(
+        reach.configCount,
+        coverage.configs.filter((config) => config.runCount > 0).length
+    );
+});
+
+test('a platform the test never runs on is named, and is a measured absence', async () => {
+    // The synthetic bucket has linux, windows and macOS configs, and the test
+    // runs on all three, so nothing is absent. Filtering to two of them makes
+    // the third absent — which exercises the set difference rather than
+    // asserting a hardcoded platform list.
+    const { stdout } = await invoke(
+        ['test', 'dom/base/test/unit/test_permafail.js', '--json', '--config', 'linux,windows'],
+        { source: permaFailSource() }
+    );
+    const reach = json(stdout)['reach'] as {
+        platforms: { platform: string }[];
+        absentPlatforms: string[];
+    };
+    const covered = reach.platforms.map((entry) => entry.platform);
+    assert.ok(!covered.includes('mac'), 'macOS was filtered out');
+    assert.deepEqual(reach.absentPlatforms, ['mac']);
+});
+
+test('the reach line points at --coverage when a platform is absent', async () => {
+    const { stdout } = await invoke(
+        ['test', 'dom/base/test/unit/test_permafail.js', '--config', 'linux,windows'],
+        { source: permaFailSource() }
+    );
+    assert.match(stdout, /Runs on \d+ configs across .*— not mac; see --coverage/);
 });
 
 // --- --profiles -----------------------------------------------------------

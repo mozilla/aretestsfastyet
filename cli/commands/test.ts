@@ -36,6 +36,7 @@ import {
     emptyModeBreakdown,
     hasModeAxis,
 } from '../../lib/model/execution.ts';
+import { parseJobName } from '../../lib/model/job-name.ts';
 import { classifyStatus } from '../../lib/model/status.ts';
 import {
     type ConfigStats,
@@ -43,6 +44,7 @@ import {
     computeConfigStats,
 } from '../../lib/query/config-stats.ts';
 import {
+    type TestCoverage,
     configUniverse,
     coverageOf,
     platformsCovered,
@@ -136,6 +138,22 @@ export interface TestJson {
     canAttributeConfigs: boolean;
     /** The window `configs`' recent rates were computed over. */
     recentWindow: { days: number; minRuns: number } | null;
+    /**
+     * Where the test runs at all, for `CLI.md`'s "Runs on N configs across
+     * ..." line.
+     *
+     * In the default view, not just under `--coverage`: the failing-config
+     * table cannot answer "does this run on Android at all?", and that
+     * question has to be settled before concluding a platform is unaffected.
+     * `null` when the file cannot attribute passing runs to a config, since
+     * then the answer would be the failing configs only.
+     */
+    reach: {
+        configCount: number;
+        platforms: { platform: string; configCount: number }[];
+        /** Platforms in the file that this test never runs on. */
+        absentPlatforms: string[];
+    } | null;
     messages: { message: string; count: number }[];
     crashSignatures: { signature: string; count: number }[];
     skips: { message: string; count: number }[];
@@ -297,6 +315,19 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
     const failingConfigs = configs.filter((config) => config.failCount > 0);
     const verdict = computeVerdict(totals, failingConfigs, filteredEntries, decoded);
 
+    // Coverage is computed once whether or not `--coverage` was passed,
+    // because the default view needs its cheap half: `CLI.md` puts a "Runs on
+    // N configs across ..." line directly under the verdict, and a
+    // failing-config table cannot answer "does this run on Android at all?".
+    // The expensive part is `configUniverse()`, which scans every test in the
+    // file, so that is still only done for `--coverage`.
+    const wantsCoverage = boolOption(args, 'coverage');
+    const coverage = coverageOf(decoded, identity.testId, {
+        ...(window.range === null ? {} : { dayRange: window.range }),
+        ...(hasConfigFilter ? { jobFilter } : {}),
+        ...(wantsCoverage ? { universe: configUniverseCache(decoded) } : {}),
+    });
+
     const result: TestJson = {
         test: identity.name,
         path: identity.fullPath,
@@ -319,18 +350,14 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
             configs.length === 0 || window.singleDay
                 ? null
                 : { days: configs[0]!.recentDays, minRuns: 20 },
+        reach: buildReach(decoded, coverage),
         messages,
         crashSignatures,
         skips,
     };
 
-    if (boolOption(args, 'coverage')) {
-        result.coverage = buildCoverage(
-            decoded,
-            identity.testId,
-            window,
-            hasConfigFilter ? jobFilter : undefined
-        );
+    if (wantsCoverage) {
+        result.coverage = buildCoverage(coverage);
     }
     if (boolOption(args, 'executions')) {
         result.executions = buildExecutions(decoded, filteredEntries);
@@ -542,17 +569,7 @@ function rerunNoteOf(entries: readonly RunEntry[]): string | null {
 }
 
 /** The `--coverage` matrix. */
-function buildCoverage(
-    file: DecodedTimingFile,
-    testId: number,
-    window: DayWindow,
-    jobFilter: ((jobName: string) => boolean) | undefined
-): CoverageJson {
-    const coverage = coverageOf(file, testId, {
-        ...(window.range === null ? {} : { dayRange: window.range }),
-        ...(jobFilter === undefined ? {} : { jobFilter }),
-        universe: configUniverse(file),
-    });
+function buildCoverage(coverage: TestCoverage): CoverageJson {
     const platforms = platformsCovered(coverage);
     return {
         attributedPasses: coverage.attributedPasses,
@@ -574,6 +591,73 @@ function buildCoverage(
         })),
         neverScheduled: coverage.neverScheduled,
     };
+}
+
+/**
+ * Where the test runs at all — `CLI.md`'s "Runs on N configs across ..." line.
+ *
+ * In the **default** view, because the failing-config table above it cannot
+ * answer "is this test running on Android at all?", and that question has to
+ * be settled before concluding a platform is unaffected. `CLI.md` puts the
+ * line directly under the verdict for that reason.
+ *
+ * `null` where passing runs are not attributed to a config: there the only
+ * configs visible are the ones that failed, and calling that "where it runs"
+ * would be precisely the wrong answer.
+ *
+ * The `absentPlatforms` list is a set difference against the platforms the
+ * *file* knows about, not a hardcoded list — a new platform appearing in CI
+ * should show up here without a code change.
+ */
+function buildReach(
+    file: DecodedTimingFile,
+    coverage: TestCoverage
+): TestJson['reach'] {
+    if (!coverage.attributedPasses) {
+        return null;
+    }
+    const platforms = platformsCovered(coverage);
+    const ranOn = coverage.configs.filter((config) => config.runCount > 0);
+
+    // Every platform any test in this file runs on, so "not android" is a
+    // measured absence rather than an assumption about what CI has.
+    const knownPlatforms = new Set<string>();
+    for (const jobName of configUniverseCache(file)) {
+        const { os } = parseJobName(jobName);
+        if (os !== null) {
+            knownPlatforms.add(os);
+        }
+    }
+    const absentPlatforms = [...knownPlatforms]
+        .filter((platform) => !platforms.has(platform))
+        .sort();
+
+    return {
+        configCount: ranOn.length,
+        platforms: [...platforms].map(([platform, configCount]) => ({
+            platform,
+            configCount,
+        })),
+        absentPlatforms,
+    };
+}
+
+/**
+ * `configUniverse()` memoized per file.
+ *
+ * It scans every test in the file, which for a bucket file is the expensive
+ * part of `--coverage`. The default view now needs it too — for the platform
+ * set `absentPlatforms` subtracts from — so computing it twice on a
+ * `--coverage` run would double that cost for nothing.
+ */
+const universeCache = new WeakMap<DecodedTimingFile, Set<string>>();
+function configUniverseCache(file: DecodedTimingFile): Set<string> {
+    let universe = universeCache.get(file);
+    if (universe === undefined) {
+        universe = configUniverse(file);
+        universeCache.set(file, universe);
+    }
+    return universe;
 }
 
 /**
@@ -868,6 +952,12 @@ function renderText(result: TestJson, limit: number): string {
         lines.push(`  ${note}`);
     }
 
+    const reachLine = describeReach(result.reach);
+    if (reachLine !== null) {
+        lines.push('');
+        lines.push(reachLine);
+    }
+
     if (result.configs.length > 0) {
         lines.push('');
         const shown = applyLimit(result.configs, limit);
@@ -1064,7 +1154,7 @@ function renderCoverageText(coverage: CoverageJson, limit: number): string[] {
                 String(config.passCount),
                 String(config.failCount),
                 String(config.skipCount),
-                config.state,
+                coverageStatusLabel(config),
             ])
         )
     );
@@ -1090,7 +1180,61 @@ function renderCoverageText(coverage: CoverageJson, limit: number): string[] {
                 (coverage.neverScheduled.length > 5 ? ', …' : '')
         );
     }
+
+    // The three states CLI.md says this flag exists to distinguish, counted.
+    // Without this a reader has to scan the status column and total it by
+    // eye, and the skipped rows are the ones easiest to miss because they
+    // often sit below the limit.
+    const ran = coverage.configs.filter((config) => config.runCount > 0).length;
+    const skippedOnly = coverage.configs.filter(
+        (config) => config.runCount === 0 && config.skipCount > 0
+    ).length;
+    const notApplicable = coverage.configs.filter(
+        (config) => config.state === 'not-applicable'
+    ).length;
+    const alsoSkipped = coverage.configs.filter(
+        (config) => config.runCount > 0 && config.skipCount > 0
+    ).length;
+    const summary = [
+        `${ran} ran`,
+        skippedOnly > 0 ? `${skippedOnly} only ever skipped` : null,
+        notApplicable > 0 ? `${notApplicable} not applicable (run-if)` : null,
+        coverage.neverScheduled === null
+            ? null
+            : `${coverage.neverScheduled.length} never scheduled`,
+    ].filter((part): part is string => part !== null);
+    lines.push(`States: ${summary.join(', ')}`);
+    if (alsoSkipped > 0) {
+        // The case that produced a wrong reading: these configs ran the test
+        // on some days and skipped it on others, so their state is `ok` and
+        // their skip column is large. Both are true, and stating it is what
+        // stops "ok" being read as "never skipped here".
+        lines.push(
+            `${alsoSkipped} of the ${ran} configs that ran it also skipped it on other days ` +
+                `— see the skip column.`
+        );
+    }
     return lines.filter((line): line is string => line !== null);
+}
+
+/**
+ * The status cell for a coverage row.
+ *
+ * The library's `CoverageState` answers "what happened when it ran", and a
+ * config that ran on some days and was skipped on others is legitimately
+ * `ok` — it ran, and it passed. But printing a bare `ok` next to a skip
+ * column reading 191 invites exactly the wrong conclusion, and a reader
+ * drawing a wrong conclusion from correct data is this project's recurring
+ * failure mode.
+ *
+ * So the cell is annotated rather than the state being changed: `ok +skipped`
+ * says both facts, and the underlying state stays what `--json` reports.
+ */
+function coverageStatusLabel(config: CoverageJson['configs'][number]): string {
+    if (config.runCount > 0 && config.skipCount > 0) {
+        return `${config.state} +skipped`;
+    }
+    return config.state;
 }
 
 /** The `--executions` blocks. */
@@ -1208,6 +1352,11 @@ function renderMarkdown(result: TestJson, limit: number): string {
         lines.push('');
         lines.push(note);
     }
+    const reachLine = describeReach(result.reach);
+    if (reachLine !== null) {
+        lines.push('');
+        lines.push(reachLine);
+    }
 
     if (result.configs.length > 0) {
         lines.push('');
@@ -1305,6 +1454,32 @@ function renderMarkdown(result: TestJson, limit: number): string {
     }
 
     return joinLines(lines);
+}
+
+/**
+ * The "Runs on N configs across ..." line.
+ *
+ * `CLI.md` puts this directly under the verdict, and names the reason: the
+ * failing-config table above cannot say whether a platform ran the test at
+ * all, so "no Android failures" is unreadable without it — it could mean
+ * Android is fine or that Android never ran it.
+ *
+ * The "(not android — see --coverage)" clause is the load-bearing half, and
+ * it is a measured absence: `absentPlatforms` is a set difference against the
+ * platforms other tests in the same file run on.
+ */
+function describeReach(reach: TestJson['reach']): string | null {
+    if (reach === null || reach.configCount === 0) {
+        return null;
+    }
+    const platforms = reach.platforms
+        .map((entry) => `${entry.platform} (${entry.configCount})`)
+        .join(', ');
+    const absent =
+        reach.absentPlatforms.length === 0
+            ? ''
+            : ` — not ${reach.absentPlatforms.join(', ')}; see --coverage`;
+    return `Runs on ${reach.configCount} configs across ${platforms}${absent}`;
 }
 
 /** The header's window phrase. */
