@@ -19,13 +19,19 @@
 
 /** Thrown when an index is not in range for the table it indexes. */
 export class TableIndexError extends Error {
-    constructor(
-        readonly table: string,
-        readonly index: number,
-        readonly length: number
-    ) {
+    // Written out rather than declared as constructor parameter properties:
+    // `node --experimental-strip-types` erases types without emitting code, so
+    // a parameter property has nowhere to be assigned and is rejected outright.
+    readonly table: string;
+    readonly index: number;
+    readonly length: number;
+
+    constructor(table: string, index: number, length: number) {
         super(`index ${index} out of range for ${table} (length ${length})`);
         this.name = 'TableIndexError';
+        this.table = table;
+        this.index = index;
+        this.length = length;
     }
 }
 

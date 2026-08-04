@@ -102,15 +102,20 @@ export interface StatusEntry {
 
 /** Thrown when a status group matches none of the five declared shapes. */
 export class UnknownStatusGroupShapeError extends Error {
-    constructor(
-        readonly status: string,
-        readonly keys: string[]
-    ) {
+    // Written out rather than declared as constructor parameter properties:
+    // `node --experimental-strip-types` erases types without emitting code, so
+    // a parameter property has nowhere to be assigned and is rejected outright.
+    readonly status: string;
+    readonly keys: string[];
+
+    constructor(status: string, keys: string[]) {
         super(
             `status group for ${status} matches no known shape; ` +
                 `keys: ${keys.length > 0 ? keys.join(', ') : '(none)'}`
         );
         this.name = 'UnknownStatusGroupShapeError';
+        this.status = status;
+        this.keys = keys;
     }
 }
 

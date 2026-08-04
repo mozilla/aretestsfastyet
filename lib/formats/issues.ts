@@ -11,6 +11,7 @@
 
 import type { AggregateMetadata, TaskInfo, TestInfo } from './common.ts';
 import type { CountsStatusGroup, TaskIdsStatusGroup } from './status-group.ts';
+import { type DecodedTimingFile, decodeTimingFile } from './decode.ts';
 
 export interface IssuesTables {
     testPaths: string[];
@@ -50,4 +51,44 @@ export interface IssuesWithTaskIdsFile {
     taskInfo: TaskInfo;
     testInfo: TestInfo;
     testRuns: (CountsStatusGroup | TaskIdsStatusGroup | null)[][];
+}
+
+// --- decoding ------------------------------------------------------------
+
+/**
+ * Wraps a parsed `{harness}-issues.json` in the family-independent interface.
+ *
+ * Every entry has a `count` and a `day` and nothing else: this file gave up
+ * all attribution in exchange for being 2.8 MB. A query that needs to know
+ * *which* job or task saw a failure has to read `-with-taskids` or a bucket
+ * file, and `entry.jobName === undefined` is how it finds that out.
+ */
+export function decodeIssues(file: IssuesFile): DecodedTimingFile {
+    return decodeTimingFile({
+        family: 'issues',
+        days: file.metadata.days,
+        endDate: file.metadata.endDate,
+        tables: file.tables,
+        testInfo: file.testInfo,
+        testRuns: file.testRuns,
+    });
+}
+
+/**
+ * Wraps a parsed `{harness}-issues-with-taskids.json`.
+ *
+ * The pass-like groups keep the `counts` shape, so this file still has no task
+ * IDs for passing runs despite its name — `FORMATS.md` confirms it across the
+ * whole file. What it adds is task attribution on the non-passing groups, at
+ * about 5× the bytes.
+ */
+export function decodeIssuesWithTaskIds(file: IssuesWithTaskIdsFile): DecodedTimingFile {
+    return decodeTimingFile({
+        family: 'issues-with-taskids',
+        days: file.metadata.days,
+        endDate: file.metadata.endDate,
+        tables: file.tables,
+        testInfo: file.testInfo,
+        testRuns: file.testRuns,
+    });
 }
