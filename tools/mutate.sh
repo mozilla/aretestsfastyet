@@ -7,6 +7,20 @@
 # not. This version treats an ambiguous or absent pattern as a HARD ERROR with
 # a non-zero exit, so a mutation cannot be quietly skipped.
 #
+# That fix was real and is still here — and it addressed a different failure
+# from the one that was actually biting. The run below used to name
+# `test/cli.test.ts` explicitly, so it exercised 110 of the suite's 465 tests
+# and every test file added after step 4 was invisible to it: a mutation that
+# only `test/crash-signature.test.ts` could catch was reported as SURVIVED, and
+# a step-5 campaign run through this harness measured a suite four fifths of
+# which never ran.
+#
+# So the rule this file now encodes is: **the harness runs the whole suite, the
+# same command `npm test` runs.** A mutation score is a statement about the
+# tests that exist, and naming a subset of them silently redefines what is
+# being claimed. If a run gets slow, make the suite faster rather than
+# narrowing what the harness sees.
+#
 # Usage: tools/mutate.sh <file> <old> <new> <description>
 # Exit:  0 mutation was caught (good), 1 it survived (a test gap), 2 setup error.
 
@@ -41,7 +55,9 @@ if [ $? -ne 0 ]; then
     exit 2
 fi
 
-FAILED=$(node --experimental-strip-types --test test/cli.test.ts 2>&1 \
+# The whole suite, quoted so the glob reaches node rather than the shell — see
+# the header. A subset here silently narrows what a mutation score means.
+FAILED=$(node --experimental-strip-types --test 'test/**/*.test.ts' 2>&1 \
     | grep '^# fail' | awk '{print $3}')
 restore
 
