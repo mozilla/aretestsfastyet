@@ -307,5 +307,28 @@ mutate cli/commands/cache.ts \
     '    return `${match[3]}`;' \
     'the listing drops the task ID, which is the identifying part'
 
+# --- saying where the profiles came from --------------------------------
+
+# The warm run claims it downloaded them, which is the original confusing
+# output in a new place.
+mutate cli/main.ts \
+    '        artifactMisses === 0' \
+    '        artifactMisses >= 0' \
+    'a warm run still reports the profiles as downloaded'
+
+# A run that read nothing reports on profiles anyway.
+mutate cli/main.ts \
+    '    if (total === 0 || globals.quiet) {' \
+    '    if (globals.quiet) {' \
+    'a command that read no artifacts reports on them'
+
+# The hit counter never advances, so a warm run looks cold.
+mutate cli/main.ts \
+    '        onHit: () => {
+            artifactHits++;
+        },' \
+    '        onHit: () => {},' \
+    'cache hits are not counted'
+
 summary
 [ "$SURVIVED" -eq 0 ] && [ "$ERRORS" -eq 0 ]
