@@ -15,6 +15,7 @@ import { type DiskCache, cachedSource, defaultCacheDir, diskCache } from './cach
 import type { CommandContext, OutputStreams } from './context.ts';
 import { CliError, ExitCode, type ExitCodeValue, usageError } from './errors.ts';
 import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
+import { CRASH_OPTIONS, runCrash } from './commands/crash.ts';
 import { runDates } from './commands/dates.ts';
 import { ERRORS_OPTIONS, runErrors } from './commands/errors.ts';
 import { MANIFESTS_OPTIONS, runManifests } from './commands/manifests.ts';
@@ -26,7 +27,7 @@ import {
     DataFileNotFoundError,
     type DataSource,
 } from '../lib/sources/source.ts';
-import { httpSource } from '../lib/sources/http.ts';
+import { httpSource, taskArtifactSource } from '../lib/sources/http.ts';
 import { PushNotFoundError, TreeherderError, treeherderClient } from '../lib/sources/treeherder.ts';
 
 /** One command's registration. */
@@ -69,6 +70,13 @@ const COMMANDS: CommandSpec[] = [
         run: runManifests,
     },
     {
+        name: 'crash',
+        summary: 'Read a processed crash or hang dump: signature, reason, thread stacks.',
+        usage: 'fx-tests crash <taskId>[.<retryId>] <minidumpId> [options]',
+        options: CRASH_OPTIONS,
+        run: runCrash,
+    },
+    {
         name: 'summary',
         summary: 'The 7-day topline rates, per harness, against the prior period.',
         usage: 'fx-tests summary [options]',
@@ -107,7 +115,6 @@ export const PLANNED_COMMANDS: Record<string, string> = {
     issues: 'what is failing right now, across the tree',
     failures: 'failing runs grouped by message',
     crashes: 'crashes grouped by signature',
-    crash: 'read a processed crash dump',
     skips: 'what is disabled and where',
     guide: 'orientation for an agent',
 };
@@ -127,6 +134,8 @@ export interface RunOptions {
     treeherder?: CommandContext['treeherder'];
     /** Overrides per-URL artifact fetching, for `fx-tests try` tests. */
     fetchUrl?: CommandContext['fetchUrl'];
+    /** Overrides the per-task artifact source, for `fx-tests crash` tests. */
+    taskArtifacts?: CommandContext['taskArtifacts'];
     /**
      * Test-only: overrides how `fx-tests test` loads a timing file.
      *
@@ -262,6 +271,14 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         ...(options.fetchUrl === undefined
             ? { fetchUrl: nodeFetchBytes }
             : { fetchUrl: options.fetchUrl }),
+        // Per-task artifacts are their own source, deliberately not the disk
+        // cache's: `PLAN.md` §4 calls this a new dependency shape, and its
+        // failure modes differ — an expired artifact is exit 4 while a missing
+        // index file is exit 2. Injected so `fx-tests crash` is testable
+        // without a network.
+        ...(options.taskArtifacts === undefined
+            ? { taskArtifacts: taskArtifactSource({ fetch: nodeFetch }) }
+            : { taskArtifacts: options.taskArtifacts }),
         ...(options.loadTimingFile === undefined
             ? {}
             : { loadTimingFile: options.loadTimingFile }),
