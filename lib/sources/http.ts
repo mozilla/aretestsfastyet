@@ -201,9 +201,10 @@ export function httpSource(options: HttpSourceOptions): DataSource {
  * content never changes — so it is a separate source rather than a mode of the
  * one above.
  *
- * `name.index` is the task ID here and `name.filename` the artifact path under
- * `public/`, which is a slight abuse of the interface and the reason it is
- * documented: it buys `fetchJson()` and the error types for free.
+ * `name.index` is the task ID here and `name.filename` the rest of the path
+ * after it — `runs/<retryId>/<artifactPath>`, as `taskArtifactName()` builds
+ * it. That is a slight abuse of the interface and the reason it is documented:
+ * it buys `fetchJson()` and the error types for free.
  */
 export function taskArtifactSource(options: {
     fetch: FetchLike;
@@ -213,7 +214,10 @@ export function taskArtifactSource(options: {
     return {
         name: 'task-artifacts',
         async fetch(name: DataFileName): Promise<Uint8Array> {
-            const url = `${root}/api/queue/v1/task/${name.index}/artifacts/${name.filename}`;
+            // `/task/<id>/runs/<n>/artifacts/<path>`: the run comes *before*
+            // `artifacts`, not after. `name.filename` already carries the
+            // `runs/<n>/artifacts/` prefix from `taskArtifactName()`.
+            const url = `${root}/api/queue/v1/task/${name.index}/${name.filename}`;
             let response: FetchLikeResponse;
             try {
                 response = await options.fetch(url);
@@ -231,11 +235,18 @@ export function taskArtifactSource(options: {
     };
 }
 
-/** Names the artifact of a task run, for `taskArtifactSource`. */
+/**
+ * Names the artifact of a task run, for `taskArtifactSource`.
+ *
+ * The path after the task ID is `runs/<retryId>/artifacts/<artifactPath>` —
+ * the run segment precedes `artifacts`, which is easy to transpose and
+ * produces a URL that 404s in a way indistinguishable from an expired
+ * artifact. `lib/links.ts` builds the same path for display.
+ */
 export function taskArtifactName(
     taskId: string,
     retryId: number,
     artifactPath: string
 ): DataFileName {
-    return { index: taskId, filename: `runs/${retryId}/${artifactPath}` };
+    return { index: taskId, filename: `runs/${retryId}/artifacts/${artifactPath}` };
 }
