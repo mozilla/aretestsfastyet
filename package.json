@@ -4,19 +4,25 @@
     "description": "Command-line access to the Firefox test-health data behind https://tests.firefox.dev/",
     "license": "MPL-2.0",
     "type": "module",
+    "// bin": "Points at the launcher, not the esbuild bundle: bin/fx-tests.js is gitignored build output, and a git-URL install has no chance to build it (npm runs prepare in a bare cache clone before devDependencies exist). The launcher runs the TypeScript sources directly, so installing needs no bundler.",
     "bin": {
-        "fx-tests": "./bin/fx-tests.js"
+        "fx-tests": "./cli/bin/fx-tests-launcher.mjs"
     },
     "engines": {
         "node": ">=20"
     },
+    "// files": "An install runs from the TypeScript sources, so cli/ and lib/ ship and nothing else needs to. Without this the tarball also carries 4.5 MB of test fixtures and every dashboard .html, none of which the CLI reads.",
+    "files": [
+        "cli/",
+        "lib/",
+        "docs/CLI.md",
+        "docs/PLAN.md"
+    ],
     "// publishConfig": "Not published to npm. `private: true` would block the git-URL install this is distributed by, so accidental publishing is prevented with a registry that refuses the request instead.",
     "publishConfig": {
         "registry": "https://localhost.invalid/refusing-to-publish"
     },
     "scripts": {
-        "// prepare": "bin/ is build output and gitignored, so a git install has no binary until this runs. npm runs prepare after installing devDependencies, which is what esbuild needs.",
-        "prepare": "node --experimental-strip-types tools/build-cli.ts",
         "build": "node --experimental-strip-types tools/build-cli.ts",
         "typecheck": "tsc --noEmit",
         "fixtures": "node --experimental-strip-types tools/make-fixtures.ts",
