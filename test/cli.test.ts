@@ -1048,6 +1048,41 @@ test('a platform row says how many of its configs only ever skipped', async () =
     );
 });
 
+test('--coverage counts run-if configs apart from disabled ones', async () => {
+    // `not-applicable` is the third non-running state, and it is the opposite
+    // of `skipped`: a `run-if` scoping the test elsewhere is the annotation
+    // working, while a `skip-if` is work someone owes. Folding it into the
+    // skipped count would report a correctly-scoped test as disabled on 11
+    // configs.
+    //
+    // Driven through the `loadTimingFile` seam because `fx-tests test` always
+    // reads a bucket file, and the 21-day aggregates drop `run-if` skips
+    // upstream (`FORMATS.md`) — so the state exists only on a daily file and
+    // the States clause was unreachable from the command's own path. A
+    // mutation deleting it survived the suite until this existed.
+    const { decodeDaily } = await import('../lib/formats/daily.ts');
+    type DailyFile = import('../lib/formats/daily.ts').DailyFile;
+    const raw = JSON.parse(
+        new TextDecoder().decode(await fixtureBytes('xpcshell-2026-08-03.json'))
+    ) as DailyFile;
+    const decoded = decodeDaily(raw);
+
+    const path = 'toolkit/components/extensions/test/xpcshell/test_ext_dnr_download.js';
+    const { stdout } = await invoke(['test', path, '--coverage'], {
+        loadTimingFile: () => Promise.resolve({ raw, decoded }),
+    });
+    assert.match(stdout, /^States: [^\n]*\b\d+ not applicable \(run-if\)/m);
+
+    // And the count is the rows in that state, not a repeat of the skip count.
+    const { coverageOf } = await import('../lib/query/coverage.ts');
+    const identity = decoded.findTest(path)!;
+    const expected = coverageOf(decoded, identity.testId).configs.filter(
+        (config) => config.state === 'not-applicable'
+    ).length;
+    assert.ok(expected > 0, 'the fixture test must have run-if configs');
+    assert.match(stdout, new RegExp(`${expected} not applicable \\(run-if\\)`));
+});
+
 test('--coverage distinguishes skipped-everywhere from not being scheduled', async () => {
     // The distinction that survives, and must: a platform where the test is
     // scheduled and disabled on every config is a `skip-if` someone owes, and

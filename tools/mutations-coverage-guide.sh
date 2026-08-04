@@ -106,7 +106,29 @@ mutate lib/query/coverage.ts \
     '        if (true) {' \
     'a job name that does not parse becomes a platform called "unknown"'
 
+# The rollup is sorted, so the platform with the most configs leads. An
+# unsorted map is insertion order, which is whatever the file happened to hold.
+mutate lib/query/coverage.ts \
+    '            b.ranCount + b.skippedCount - (a.ranCount + a.skippedCount) ||' \
+    '            0 ||' \
+    'the rollup sort order is dropped'
+
+# `skipped` outranks `not-applicable` on a config carrying both annotations: a
+# reportable skip is work someone owes, and a run-if must not mask it.
+mutate lib/query/coverage.ts \
+    '        if (r.skipCount === 0 && r.runIfSkipCount > 0) {' \
+    '        if (r.runIfSkipCount > 0) {' \
+    'a config with both a skip-if and a run-if is called not-applicable'
+
 # --- cli/commands/test.ts: the rendered answer --------------------------
+
+# The run-if state only exists on a daily file, so this clause is unreachable
+# from the command's usual bucket path and needs the loadTimingFile seam.
+mutate cli/commands/test.ts \
+    '        notApplicable > 0 ? `${notApplicable} not applicable (run-if)` : null,' \
+    '        null,' \
+    'the run-if count vanishes from the States line'
+
 
 # The requirement: usable at a glance, without --limit 0.
 mutate cli/commands/test.ts \
