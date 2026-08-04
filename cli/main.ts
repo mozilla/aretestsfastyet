@@ -105,6 +105,12 @@ export interface RunOptions {
     treeherder?: CommandContext['treeherder'];
     /** Overrides per-URL artifact fetching, for `fx-tests try` tests. */
     fetchUrl?: CommandContext['fetchUrl'];
+    /**
+     * Test-only: overrides how `fx-tests test` loads a timing file.
+     *
+     * See `LoadedTimingFile` in `cli/context.ts`. Production leaves it unset.
+     */
+    loadTimingFile?: CommandContext['loadTimingFile'];
     /** The version reported by `--version`. */
     version?: string | undefined;
 }
@@ -234,6 +240,9 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         ...(options.fetchUrl === undefined
             ? { fetchUrl: nodeFetchBytes }
             : { fetchUrl: options.fetchUrl }),
+        ...(options.loadTimingFile === undefined
+            ? {}
+            : { loadTimingFile: options.loadTimingFile }),
     };
 
     if (command.name === 'cache') {
