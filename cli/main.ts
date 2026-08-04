@@ -18,6 +18,16 @@ import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
 import { CRASH_OPTIONS, runCrash } from './commands/crash.ts';
 import { runDates } from './commands/dates.ts';
 import { ERRORS_OPTIONS, runErrors } from './commands/errors.ts';
+import {
+    CRASHES_OPTIONS,
+    FAILURES_OPTIONS,
+    ISSUES_OPTIONS,
+    SKIPS_OPTIONS,
+    runCrashes,
+    runFailures,
+    runIssues,
+    runSkips,
+} from './commands/issues.ts';
 import { MANIFESTS_OPTIONS, runManifests } from './commands/manifests.ts';
 import { SUMMARY_OPTIONS, runSummary } from './commands/summary.ts';
 import { TEST_OPTIONS, runTest } from './commands/test.ts';
@@ -54,6 +64,34 @@ const COMMANDS: CommandSpec[] = [
         usage: 'fx-tests try <revision> [options]',
         options: TRY_OPTIONS,
         run: runTry,
+    },
+    {
+        name: 'issues',
+        summary: 'What is failing right now, across the tree.',
+        usage: 'fx-tests issues [options]',
+        options: ISSUES_OPTIONS,
+        run: runIssues,
+    },
+    {
+        name: 'failures',
+        summary: 'Failing runs grouped by message — the one-bug-many-tests view.',
+        usage: 'fx-tests failures [options]',
+        options: FAILURES_OPTIONS,
+        run: runFailures,
+    },
+    {
+        name: 'crashes',
+        summary: 'Crashes grouped by signature, with the minidumps to read them.',
+        usage: 'fx-tests crashes [options]',
+        options: CRASHES_OPTIONS,
+        run: runCrashes,
+    },
+    {
+        name: 'skips',
+        summary: 'What is disabled and where. Excludes run-if by default.',
+        usage: 'fx-tests skips [options]',
+        options: SKIPS_OPTIONS,
+        run: runSkips,
     },
     {
         name: 'errors',
@@ -112,10 +150,6 @@ const COMMANDS: CommandSpec[] = [
  * reviewed.
  */
 export const PLANNED_COMMANDS: Record<string, string> = {
-    issues: 'what is failing right now, across the tree',
-    failures: 'failing runs grouped by message',
-    crashes: 'crashes grouped by signature',
-    skips: 'what is disabled and where',
     guide: 'orientation for an agent',
 };
 

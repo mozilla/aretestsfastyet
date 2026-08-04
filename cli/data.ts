@@ -30,6 +30,7 @@
 
 import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
+import { type IssuesFile, decodeIssues } from '../lib/formats/issues.ts';
 import type { IndexFile } from '../lib/formats/stats.ts';
 import {
     type DataFileName,
@@ -88,6 +89,35 @@ export async function loadBucketForTest(
         throw error;
     }
     return { file, decoded: decodeBucket(file), name };
+}
+
+/** The 21-day aggregate, and the decoded view of it. */
+export interface LoadedIssues {
+    file: DecodedTimingFile;
+    raw: IssuesFile;
+    name: DataFileName;
+}
+
+/**
+ * Loads `{harness}-issues.json`, the tree-wide 21-day aggregate.
+ *
+ * The small one: 2.8 MB for xpcshell, against 15.7 MB for
+ * `issues-with-taskids` and ~3.5 MB × 64 for the buckets. It buys that by
+ * discarding **all** attribution — no `taskInfo`, no `jobNameIds` — so every
+ * per-configuration question over it has the answer "this file cannot say".
+ * `canAttributeConfigs()` is how a caller finds that out before asking, and the
+ * tree-wide commands refuse `--config` rather than returning nothing.
+ */
+export async function loadIssues(
+    context: CommandContext,
+    harness: Harness
+): Promise<LoadedIssues> {
+    const name: DataFileName = {
+        index: timingsIndex(harness),
+        filename: `${harness}-issues.json`,
+    };
+    const raw = await fetchJson<IssuesFile>(context.source, name);
+    return { file: decodeIssues(raw), raw, name };
 }
 
 /** Reads a harness's `index.json`. */
