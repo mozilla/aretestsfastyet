@@ -376,32 +376,51 @@ Compared against 21 days of mozilla-central history.
 PERMA-FAILS (3) — failed in every run of at least one configuration here.
                   Each row says what central shows on that same configuration.
 
-  dom/base/test/test_selection.html
-    fails on test-linux1804-64/debug-mochitest-plain (3/3 runs)
-    Never failed on central in 21 days (0/412 runs)
-    Assertion failed: selection.rangeCount == 1
-
   browser/base/content/test/browser_tabs.js
-    fails on 4 configs (7/7 runs)
+    9 failures on 4 configs (7/7 runs)
     Never failed on central in 21 days (0/1608 runs)
     uncaught exception: TypeError: tab is null
 
   browser/base/content/test/sync/browser_sync.js
-    fails on test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks-2 (4/4 runs)
+    8 failures on test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks-2 (4/4 runs)
     4.7% on central (259/5493), 4.6% with the same message (250)
     Pre-existing: central already fails the same way on
       test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks-2
       (145 times in 21 days) — probably not yours.
     handleEvent() was unable to perform a11y checks on hidden node: …
 
+  dom/base/test/test_selection.html
+    3 failures on test-linux1804-64/debug-mochitest-plain (3/3 runs)
+    Never failed on central in 21 days (0/412 runs)
+    Assertion failed: selection.rangeCount == 1
+
 KNOWN INTERMITTENTS (14) — also fail on central; likely not yours.
-  test_frecency.js                   8.1% on central (same message)
-  browser_download_panel.js          3.2% on central (same message)
+   #  test                        here  central  same msg
+  12  test_frecency.js            6/12     8.1%      8.1%
+   4  browser_download_panel.js    4/9     3.2%      3.2%
   … 12 more (--limit 0 for all)
 
 NEW INTERMITTENTS (1) — failed once here, never on central. Worth a look.
-  toolkit/xre/test/test_startup.js   1/3 runs, no central failures
+   #  test                        here  central  same msg
+   1  toolkit/xre/test/…start.js   1/3      n/a       n/a
 ```
+
+**Ordering: most failures first.** Every section is sorted by the leading `#`
+— the number of failing *executions* of the test across the push, descending.
+That is the dashboard's default sort (`try.html:744`, on
+`test.instances.length`), so the same push produces the same order in both.
+
+It is executions, not the job runs they happened in: the harness reruns a test
+that fails, so one job run can hold several failing executions, and a test that
+failed twice in a job is a worse failure than one that failed once. The `here`
+column still reports job runs (`6/12` above), which is a different and also
+useful number — that is why both are shown.
+
+Ties break on the test path, which the dashboard does not do. It leaves equal
+counts in arrival order, and its arrival order is the order eight web workers
+finished parsing profiles fetched 64 at a time, so its ties reshuffle on
+reload. Output that gets diffed and pasted into bugs cannot do that, so ties
+here are alphabetical and the output is reproducible.
 
 **Perma-fail is a fact about the push, not a verdict.** A test is in the first
 section when it failed in every run of at least one configuration and the
@@ -442,6 +461,21 @@ including reruns is a perma-fail candidate. `try.html` computes this already
 rather than only using it for sorting, since "it passed on rerun" is often the
 single most useful fact about a Try failure.
 
+That report is **scoped to the configurations it applies to**, for the same
+reason the perma-fail question is. A row can legitimately say both:
+
+```
+    Failed every run on test-windows11-64-25h2/opt-xpcshell
+    Passed when the harness reran it in the same job on
+      test-windows11-32-25h2/opt-xpcshell — intermittent there.
+```
+
+Those are two facts about two configurations, not a contradiction, and naming
+each is what lets them be read together. Unscoped — "passed when the harness
+reran it — intermittent", with no config named — the sentence looks like it
+refutes the section the row is in. The `--json` shape carries the same split as
+`passedOnRerunConfigs[]`, disjoint from `permaFailingConfigs[]`.
+
 Failures are also labelled when they occur only in parallel execution, which
 points at a race with concurrently-running tests rather than a defect in the test
 itself.
@@ -460,6 +494,7 @@ compared against central at all — the output says so rather than printing a
 
 `--json` shape: `{ revision, pushId, jobCount, failedJobCount,
 permaFails[], knownIntermittents[], newIntermittents[] }`. Each failure carries
+`failureCount` — the failing executions the sections are ordered by —
 `permaFailingConfigs[]` — the configurations it failed every run of — and
 `central.sameMessageFailCountOnPermaConfigs`, the same-message count restricted
 to those, which is `null` when central attributed no runs to them.

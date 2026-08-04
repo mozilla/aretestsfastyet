@@ -1447,9 +1447,14 @@ test('the try test column truncates paths from the left', async () => {
     const row = streams.stdout
         .split('\n')
         .map((line) => line.trim())
-        .find((line) => line.startsWith('…/') || line.startsWith(MOCHITEST_PATH));
+        .find((line) => line.includes('…/') || line.includes(MOCHITEST_PATH));
     assert.ok(row !== undefined, 'expected the test to appear as a table row');
-    const cell = row.split(/\s{2,}/)[0] ?? '';
+    // Found by shape rather than by column index: the row leads with the
+    // failure-count column now, and hardcoding "cell 0" would silently start
+    // asserting about a number the moment another column is added.
+    const cell = (row.split(/\s{2,}/).find(
+        (part) => part.startsWith('…/') || part === MOCHITEST_PATH
+    ) ?? '');
     assert.ok(cell.startsWith('…/'), `the 73-character path must be shortened: ${cell}`);
     assert.ok(
         cell.endsWith(basename),
@@ -2246,12 +2251,16 @@ test('the Markdown perma-fail table has a pre-existing column with all three sta
             }),
         });
         assert.match(streams.stdout, /\| Pre-existing\? \|/, 'the column must exist');
-        const row = streams.stdout
-            .split('\n')
-            .find((line) => line.includes(TEST_PATH) && line.startsWith('|'));
+        const lines = streams.stdout.split('\n');
+        const header = lines.find((line) => line.includes('| Pre-existing? |'));
+        assert.ok(header !== undefined, 'expected the header row');
+        const row = lines.find((line) => line.includes(TEST_PATH) && line.startsWith('|'));
         assert.ok(row !== undefined, `expected a row for ${TEST_PATH}`);
-        // Test | Configs | Here | Central | Same message | Pre-existing? | Message
-        return (row.split('|')[6] ?? '').trim();
+        // Located by header text, not by index: this table gained a leading
+        // failure-count column, and a hardcoded index would have kept passing
+        // while reading the wrong cell.
+        const column = header.split('|').findIndex((cell) => cell.trim() === 'Pre-existing?');
+        return (row.split('|')[column] ?? '').trim();
     };
 
     // Central fails this config with this very message, 4 times.
@@ -3147,6 +3156,7 @@ test('try keeps a perma-failing config when the test passed on rerun elsewhere',
     const result = json(streams.stdout);
     const perma = result['permaFails'] as {
         passedOnRerun: boolean;
+        passedOnRerunConfigs: string[];
         permaFailingConfigs: string[];
     }[];
     assert.equal(perma.length, 1, 'the rerun on one config does not excuse the other');
@@ -3154,6 +3164,195 @@ test('try keeps a perma-failing config when the test passed on rerun elsewhere',
     // the push — it just does not decide the section on its own.
     assert.equal(perma[0]!.passedOnRerun, true);
     assert.deepEqual(perma[0]!.permaFailingConfigs, ['test-linux/opt-xpcshell-b']);
+    // And the config the rerun rescued is named, so the row can say where each
+    // of the two facts applies. Disjoint from `permaFailingConfigs`.
+    assert.deepEqual(perma[0]!.passedOnRerunConfigs, ['test-linux/opt-xpcshell-a']);
+});
+
+/**
+ * The order of the sections, which is the thing the owner reported.
+ *
+ * `try.html:744` sets the page's default sort to `{ column: 'count',
+ * ascending: false }`, and its `count` is `test.instances.length`
+ * (`try.html:1869`) — failing *executions*, not the job runs they happened in.
+ * This command ranked on distinct failing job runs, which is a different
+ * number whenever the harness reran a test: on try push 09028ab93fe1 it turned
+ * a leading sequence of 4, 4, 3, 3, 3 into 2, 2, 2, 2, 2 and reordered the
+ * whole section.
+ *
+ * The fixture is the smallest push that distinguishes them: one config, one
+ * job run, two failing executions of test A against one of test B. Ranked on
+ * runs the two tie at 1 and A sorts second on its path; ranked on executions
+ * A leads. Only the second matches the page.
+ */
+test('try ranks failures by failing executions, as the dashboard does', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            TASK1: profileWith([
+                // Two failing executions of the alphabetically-later test…
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'boom', start: 1, end: 2 },
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'boom', start: 3, end: 4 },
+                // …and one of the alphabetically-earlier one.
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'boom',
+                    start: 5,
+                    end: 6,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { path: string; failureCount: number; failedRuns: number }[]),
+        ...(result['knownIntermittents'] as {
+            path: string;
+            failureCount: number;
+            failedRuns: number;
+        }[]),
+        ...(result['newIntermittents'] as {
+            path: string;
+            failureCount: number;
+            failedRuns: number;
+        }[]),
+    ];
+    assert.equal(all.length, 2);
+    // Both failed in exactly one job run, so the old key cannot separate them
+    // and the alphabetical tiebreak would have put MOCHITEST_PATH first.
+    assert.deepEqual(
+        all.map((failure) => failure.failedRuns),
+        [1, 1],
+        'the fixture must tie on job runs, or it tests nothing'
+    );
+    assert.ok(
+        MOCHITEST_PATH.localeCompare(TEST_PATH) < 0,
+        'the fixture must make the busier test sort later alphabetically'
+    );
+    assert.deepEqual(
+        all.map((failure) => failure.failureCount),
+        [2, 1],
+        'the busier test must come first'
+    );
+    assert.equal(all[0]!.path, TEST_PATH);
+});
+
+/**
+ * Ties break on the path, which the page does not do and cannot.
+ *
+ * `try.html` leaves equal counts in insertion order and leans on `sort()`
+ * being stable, so its tie order is the order eight web workers finished
+ * parsing profiles fetched 64 at a time (`try.html:1113`) — a race that
+ * reorders on reload. Output that gets diffed and pasted into bugs has to be
+ * stable instead, so this is a deliberate divergence and it is pinned here.
+ */
+test('try breaks ties on the path, so the output is reproducible', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            // Emitted later-path-first, so insertion order is not path order.
+            TASK1: profileWith([
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'boom', start: 1, end: 2 },
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'boom',
+                    start: 3,
+                    end: 4,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { path: string; failureCount: number }[]),
+        ...(result['knownIntermittents'] as { path: string; failureCount: number }[]),
+        ...(result['newIntermittents'] as { path: string; failureCount: number }[]),
+    ];
+    assert.deepEqual(
+        all.map((failure) => failure.failureCount),
+        [1, 1],
+        'the fixture must tie, or the tiebreak is not what is under test'
+    );
+    assert.deepEqual(all.map((failure) => failure.path), [MOCHITEST_PATH, TEST_PATH]);
+});
+
+/**
+ * The perma-fail row has to say *where* the rerun passed.
+ *
+ * Unscoped, the sentence "Passed when the harness reran it in the same job —
+ * intermittent." on a row in the PERMA-FAILS section reads as a contradiction.
+ * It is not one: the two facts are about different configurations. On try push
+ * 09028ab93fe1, 33 of the 54 perma-fails printed both sentences.
+ */
+test('try scopes the rerun sentence to the configs it applies to', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell-a', 'TASKA1', 'testfailed'),
+            job('test-linux/opt-xpcshell-b', 'TASKB1', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            TASKA1: profileWith([
+                { type: 'Text', text: 'retry', start: 10, end: 20 },
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+                { type: 'Test', test: MOCHITEST_PATH, status: 'PASS', start: 12, end: 14 },
+            ]),
+            TASKB1: profileWith([
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    // Both halves, each naming its own config, so the row does not contradict
+    // itself.
+    assert.match(
+        streams.stdout,
+        /Failed every run on test-linux\/opt-xpcshell-b/,
+        'the permanent config must be named'
+    );
+    assert.match(
+        streams.stdout,
+        /Passed when the harness reran it in the same job on test-linux\/opt-xpcshell-a — intermittent there\./,
+        'the rescued config must be named'
+    );
+    // And not the unscoped sentence, which is the thing that read as a
+    // contradiction.
+    assert.doesNotMatch(
+        streams.stdout,
+        /reran it in the same job — intermittent\./,
+        'the unscoped sentence must be gone'
+    );
 });
 
 test('try treats a green FAIL as an expected failure, not a failure', async () => {

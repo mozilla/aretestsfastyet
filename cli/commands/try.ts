@@ -114,6 +114,20 @@ export interface TryFailure {
     path: string;
     /** Distinct configurations it failed on. */
     jobNames: string[];
+    /**
+     * Failing **executions** — the number this and `try.html` rank on.
+     *
+     * Not the same as `failedRuns`. The harness reruns a test that fails, so
+     * one job run can hold several failing executions of it, and a test that
+     * failed twice in one job is a worse failure than one that failed once.
+     * `try.html`'s `count` column is `test.instances.length`
+     * (`try.html:1869`), one entry per failing marker, and its default sort is
+     * that column descending (`try.html:744`). Ranking on `failedRuns` instead
+     * flattens every such test to its job count: measured on try push
+     * 09028ab93fe1, that turned a top row of 4, 4, 3, 3, 3 into 2, 2, 2, 2, 2
+     * and reordered the whole section.
+     */
+    failureCount: number;
     /** Failing runs, and how many runs of those jobs there were. */
     failedRuns: number;
     totalRuns: number;
@@ -131,6 +145,21 @@ export interface TryFailure {
     permaFailingConfigs: string[];
     /** True when the harness reran it in-job and it passed on some config. */
     passedOnRerun: boolean;
+    /**
+     * The configurations where the harness's in-job rerun turned it green.
+     *
+     * Named rather than reduced to a flag because a test can perma-fail on one
+     * configuration and pass on rerun on another, and the unscoped sentence
+     * read as a contradiction: on try push 09028ab93fe1, 33 of the 54
+     * perma-fails were rows that said both "failed every run" and "passed when
+     * the harness reran it". They are two facts about *different* configs —
+     * `test_nimbus_newtabTrainhopAddon.js` failed both runs of
+     * `test-windows11-64-25h2/opt-xpcshell` and passed on rerun on
+     * `test-windows11-32-25h2/opt-xpcshell` — so the row has to say which.
+     * Disjoint from `permaFailingConfigs` by construction: a config the rerun
+     * turned green is excluded from the latter.
+     */
+    passedOnRerunConfigs: string[];
     /** The distinct failure messages seen, most common first. */
     messages: string[];
     /**
@@ -793,6 +822,8 @@ function aggregateFailures(
 
     interface Accumulator {
         path: string;
+        /** Failing executions, which is what the ranking is on. */
+        failureCount: number;
         /** Per config: the runs of it in which this test failed. */
         failedRunsByJobName: Map<string, Set<string>>;
         /** Per config: whether the harness's in-job rerun ever passed there. */
@@ -811,6 +842,7 @@ function aggregateFailures(
         if (entry === undefined) {
             entry = {
                 path: timing.path,
+                failureCount: 0,
                 failedRunsByJobName: new Map(),
                 passedOnRerunByJobName: new Map(),
                 messages: new Map(),
@@ -819,6 +851,7 @@ function aggregateFailures(
             };
             byTest.set(timing.path, entry);
         }
+        entry.failureCount++;
         let runs = entry.failedRunsByJobName.get(timing.jobName);
         if (runs === undefined) {
             runs = new Set();
@@ -880,14 +913,21 @@ function aggregateFailures(
             return runsOfConfig > 0 && failed >= runsOfConfig;
         });
 
+        const passedOnRerunConfigs = [...entry.passedOnRerunByJobName]
+            .filter(([, passed]) => passed)
+            .map(([jobName]) => jobName)
+            .sort();
+
         failures.push({
             path: entry.path,
             jobNames: jobNames.sort(),
+            failureCount: entry.failureCount,
             failedRuns,
             totalRuns,
             everyRunFailed: permaFailingConfigs.length > 0,
             permaFailingConfigs: permaFailingConfigs.sort(),
-            passedOnRerun: [...entry.passedOnRerunByJobName.values()].some(Boolean),
+            passedOnRerun: passedOnRerunConfigs.length > 0,
+            passedOnRerunConfigs,
             messages: [...entry.messages]
                 .sort((a, b) => b[1] - a[1])
                 .map(([message]) => message),
@@ -905,8 +945,18 @@ function aggregateFailures(
             central: null,
         });
     }
+    // `try.html:744` — the page's default sort, and now this command's.
+    //
+    // The tiebreak is deliberately *not* the page's. The page leaves equal
+    // counts in `Array.from(testMap.values())` order and relies on the
+    // stability of two `sort()` calls, so its order among ties is the order
+    // the timings arrived — which is the order eight web workers finished
+    // parsing profiles fetched 64 at a time (`try.html:1113`). That is a
+    // network and scheduler race: reloading the page reorders the ties. A
+    // command whose output is diffed and pasted into bugs cannot be
+    // non-deterministic, so ties break on the path.
     return failures.sort(
-        (a, b) => b.failedRuns - a.failedRuns || a.path.localeCompare(b.path)
+        (a, b) => b.failureCount - a.failureCount || a.path.localeCompare(b.path)
     );
 }
 
@@ -1144,6 +1194,36 @@ function preExistingLine(failure: TryFailure): string | null {
 }
 
 /**
+ * Where the harness's in-job rerun turned the test green, named.
+ *
+ * The unscoped version of this sentence — "Passed when the harness reran it in
+ * the same job — intermittent." — is what made a perma-fail row contradict
+ * itself. Both facts are true and neither is about the whole test: on try push
+ * 09028ab93fe1, `test_nimbus_newtabTrainhopAddon.js` failed both runs of
+ * `test-windows11-64-25h2/opt-xpcshell` and passed on rerun on
+ * `test-windows11-32-25h2/opt-xpcshell`. 33 of that push's 54 perma-fails read
+ * that way. Naming the configs is what lets the two coexist, and it is also
+ * the more useful form: the config that was *not* rescued by a rerun is the
+ * one to reproduce on.
+ *
+ * Returns `null` when the rerun never passed anywhere.
+ */
+function rerunLine(failure: TryFailure): string | null {
+    const configs = failure.passedOnRerunConfigs;
+    if (configs.length === 0) {
+        return null;
+    }
+    const where =
+        configs.length === 1
+            ? configs[0]
+            : `${configs.length} of them: ${configs.slice(0, 3).join(', ')}` +
+              (configs.length > 3 ? `, +${configs.length - 3} more` : '');
+    // "there" rather than a bare "intermittent": the verdict is scoped to
+    // these configs, and the row may well be permanent on another.
+    return `Passed when the harness reran it in the same job on ${where} — intermittent there.`;
+}
+
+/**
  * The "same message" column, which must not print a rate it does not have.
  *
  * `n/a` when there is no central data; `?` when the push recorded no message,
@@ -1292,7 +1372,8 @@ function section(
         lines.push('');
         lines.push(`  ${failure.path}`);
         lines.push(
-            `    fails on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`}` +
+            `    ${failure.failureCount} ${failure.failureCount === 1 ? 'failure' : 'failures'}` +
+                ` on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`}` +
                 ` (${failure.failedRuns}/${failure.totalRuns} runs)`
         );
         if (failure.jobNames.length > 1) {
@@ -1307,9 +1388,15 @@ function section(
         // section is entered on this fact, so a row that failed on six configs
         // and perma-failed on one has to say which one — that is the config to
         // reproduce on.
+        //
+        // Also printed when the harness's rerun went green somewhere, even if
+        // that leaves nothing else to distinguish: the next line names those
+        // configs, and without this one it would be the only per-config fact
+        // on the row and would read as contradicting the section it is in.
         if (
             failure.permaFailingConfigs.length > 0 &&
-            failure.permaFailingConfigs.length < failure.jobNames.length
+            (failure.permaFailingConfigs.length < failure.jobNames.length ||
+                failure.passedOnRerunConfigs.length > 0)
         ) {
             const every = failure.permaFailingConfigs;
             lines.push(
@@ -1324,8 +1411,9 @@ function section(
         if (preExisting !== null) {
             lines.push(`    ${preExisting}`);
         }
-        if (failure.passedOnRerun) {
-            lines.push('    Passed when the harness reran it in the same job — intermittent.');
+        const rerun = rerunLine(failure);
+        if (rerun !== null) {
+            lines.push(`    ${rerun}`);
         }
         if (failure.parallelOnly) {
             lines.push(
@@ -1372,6 +1460,10 @@ function compactSection(
     lines.push(
         ...table(
             [
+                // The column the rows are ordered by. Without it the ordering
+                // is unexplained — the reader sees a list that is not
+                // alphabetical and has nothing to read it against.
+                { header: '#', align: 'right' },
                 // Path-aware: the basename is what identifies a test and what
                 // `fx-tests test <path>` takes, so the leading directories go
                 // rather than the filename. See `truncatePath()`.
@@ -1381,6 +1473,7 @@ function compactSection(
                 { header: 'same msg', align: 'right' },
             ],
             shown.map((failure) => [
+                String(failure.failureCount),
                 failure.path,
                 `${failure.failedRuns}/${failure.totalRuns}`,
                 failure.central === null ? 'n/a' : percent(failure.central.failRate),
@@ -1462,6 +1555,9 @@ function renderMarkdown(
         lines.push(
             ...md.table(
                 [
+                    // The ranking column, so a table pasted into a bug shows
+                    // what its order means.
+                    { header: '#', align: 'right' },
                     { header: 'Test' },
                     { header: 'Configs', align: 'right' },
                     { header: 'Here', align: 'right' },
@@ -1476,6 +1572,7 @@ function renderMarkdown(
                     { header: 'Message' },
                 ],
                 shown.map((failure) => [
+                    String(failure.failureCount),
                     failure.path,
                     String(failure.jobNames.length),
                     `${failure.failedRuns}/${failure.totalRuns}`,
