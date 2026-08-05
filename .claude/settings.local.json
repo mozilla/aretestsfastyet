@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//private/tmp/**)",
+      "Bash(node -e ' *)"
+    ]
+  }
+}

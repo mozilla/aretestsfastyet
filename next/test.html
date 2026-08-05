@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Info</title>
+    <link rel="icon" href="favicon-orange.svg">
+    <script src="fetch-utils.js"></script>
+    <script src="dashboards.js"></script>
+    <script src="common-ui.js"></script>
+    <script src="common-links.js"></script>
+    <!--
+      common-test-data.js is deliberately NOT loaded. It is the data logic this
+      migration replaces with lib/, and nothing on this page reads it: its
+      seven globals (detectHarness, getChunkIndex, getCountAtIndex, findTest,
+      stripChunkSuffix, computeConfigStats, computeTestStats) have zero
+      consumers in the built page, in the five shared scripts that do load, or
+      through any window.* lookup. The names that DO appear in the built page
+      are this page's own bundled lib/ copies, defined in module scope.
+      Removing the tag drops 15,636 bytes of script the page downloaded and
+      never called.
+    -->
+    <script defer src="shared.js"></script>
+    <link rel="stylesheet" href="shared.css">
+    <style>
+        .test-header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .test-header h1 {
+            margin: 0 0 8px 0;
+            font-family: monospace;
+            font-size: 22px;
+            word-break: break-all;
+        }
+
+        .test-path-line {
+            font-family: monospace;
+            font-size: 13px;
+            color: #555;
+            word-break: break-all;
+            margin-bottom: 6px;
+        }
+
+        .test-path-line a {
+            color: #007bff;
+            text-decoration: none;
+        }
+
+        .test-path-line a:hover {
+            text-decoration: underline;
+        }
+
+        .copy-btn {
+            background: none;
+            border: 1px solid #ddd;
+            cursor: pointer;
+            padding: 2px 6px;
+            margin-left: 8px;
+            font-size: 11px;
+            color: #666;
+            border-radius: 3px;
+            transition: background-color 0.2s;
+            vertical-align: middle;
+        }
+
+        .copy-btn:hover {
+            background-color: #e9ecef;
+            color: #333;
+        }
+
+        .component-line {
+            font-size: 13px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .harness-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+
+        .harness-xpcshell {
+            background-color: #e3f2fd;
+            color: #1565c0;
+        }
+
+        .harness-mochitest {
+            background-color: #f3e5f5;
+            color: #7b1fa2;
+        }
+
+        .summary-stats {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            background: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .summary-stat {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 85px;
+        }
+
+        .summary-stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .summary-stat-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        .summary-stat-value.fail { color: #d00; }
+        .summary-stat-value.timeout { color: #f60; }
+        .summary-stat-value.skip { color: #888; }
+        .summary-stat-value.zero { color: #ccc; }
+        .summary-stat-value.good { color: #28a745; }
+
+        .section {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .section h2 {
+            margin: 0 0 15px 0;
+            font-size: 16px;
+            color: #333;
+            cursor: default;
+        }
+
+        .section h2::before {
+            content: none;
+        }
+
+        .platform-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .platform-table th {
+            text-align: left;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border-bottom: 2px solid #ddd;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #666;
+        }
+
+        .platform-table th.num {
+            text-align: right;
+        }
+
+        .platform-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .platform-table td.num {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .platform-table td.fail { color: #d00; font-weight: bold; }
+        .platform-table td.timeout { color: #f60; font-weight: bold; }
+        .platform-table td.crash { color: #d00; font-weight: bold; }
+
+        .platform-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .platform-table tfoot td {
+            font-weight: bold;
+            background: #f8f9fa;
+            border-top: 2px solid #ddd;
+        }
+
+        .timing-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .timing-value {
+            font-weight: bold;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .timing-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #888;
+        }
+
+        /* Issue details styles (adapted from issues.html) */
+        .issue-section {
+            margin-bottom: 20px;
+        }
+
+        .issue-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .issue-section h4 {
+            margin: 0 0 10px 0;
+            font-size: 13px;
+            color: #333;
+            font-weight: bold;
+        }
+
+        .issue-item {
+            display: flex;
+            align-items: flex-start;
+            padding: 5px 0;
+            border-bottom: 1px solid #e9ecef;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .issue-item:hover {
+            background-color: #e9ecef;
+        }
+
+        .issue-item:hover .action-button {
+            opacity: 1;
+        }
+
+        .issue-item:last-child {
+            border-bottom: none;
+        }
+
+        .issue-runs {
+            margin-left: 50px;
+            margin-top: 8px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+
+        .issue-runs table {
+            border-spacing: 0;
+        }
+
+        .issue-runs td {
+            padding-top: 3px;
+            padding-bottom: 3px;
+        }
+
+        .issue-runs .view-links {
+            padding-left: 20px;
+            white-space: nowrap;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+
+        .issue-runs a {
+            text-decoration: none;
+        }
+
+        .issue-runs a:hover {
+            text-decoration: underline;
+        }
+
+        .issue-count {
+            font-weight: bold;
+            margin-right: 10px;
+            min-width: 30px;
+            text-align: right;
+            flex-shrink: 0;
+            color: #333;
+        }
+
+        .issue-badge {
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: bold;
+            margin-right: 10px;
+            flex-shrink: 0;
+            text-transform: uppercase;
+        }
+
+        .badge-pass { background-color: #28a745; color: #fff; }
+        .badge-skip { background-color: #6c757d; color: #fff; }
+        .badge-fail { background-color: #ff8c00; color: #fff; }
+        .badge-crash { background-color: #dc3545; color: #fff; }
+        .badge-timeout { background-color: #ffc107; color: #000; }
+
+        .issue-message {
+            flex: 1;
+            color: #333;
+            line-height: 1.4;
+            word-break: break-word;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .action-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px 4px;
+            margin-left: 6px;
+            font-size: 11px;
+            color: #666;
+            border-radius: 3px;
+            transition: background-color 0.2s;
+            opacity: 0;
+            vertical-align: middle;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .action-button:hover {
+            background-color: #e9ecef;
+            color: #333;
+        }
+
+        .status-line {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        /* Daily rate chart styles (Chart.js) */
+        .historical-chart {
+            margin: 0;
+            padding: 0;
+            cursor: pointer;
+        }
+
+        .chart-wrap {
+            position: relative;
+            height: 100px;
+        }
+
+        .chart-wrap.skips {
+            height: 70px;
+        }
+
+        .chart-wrap.skips.no-x-axis {
+            height: 60px;
+        }
+
+        .job-table {
+            width: auto;
+        }
+
+        .job-table td {
+            padding: 4px 8px;
+        }
+
+        .job-cell {
+            white-space: nowrap;
+            line-height: 1.4;
+        }
+
+        .cell-stack {
+            display: grid;
+        }
+
+        .cell-layer {
+            grid-area: 1 / 1;
+            align-self: center;
+            justify-self: start;
+        }
+
+        .job-cell .issue-badge {
+            margin-right: 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .badge-pct {
+            display: inline-block;
+            text-align: right;
+        }
+
+        .job-cell br + .issue-badge {
+            margin-top: 1px;
+        }
+
+        .job-na {
+            color: #ccc;
+            display: inline-block;
+            padding: 2px 6px;
+        }
+
+        .histogram {
+            display: flex;
+            align-items: stretch;
+            gap: 2px;
+            height: 120px;
+            padding: 10px 0;
+        }
+
+        .histogram-col {
+            flex: 1;
+            min-width: 4px;
+            position: relative;
+        }
+
+        .histogram-bar-bg {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #ddd;
+            border-radius: 2px 2px 0 0;
+        }
+
+        .histogram-bar-fg {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #4a90d9;
+            border-radius: 2px 2px 0 0;
+        }
+
+        .histogram-col:hover .histogram-bar-fg {
+            background: #2c6fbd;
+        }
+
+        .histogram-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #888;
+            padding-top: 4px;
+        }
+
+        .runtime-layout {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+
+        .runtime-layout > .section:first-child {
+            flex: 0 1 auto;
+            min-width: 0;
+            overflow-x: auto;
+            margin-bottom: 0;
+        }
+
+        .runtime-panel {
+            width: 420px;
+            flex-shrink: 0;
+            position: sticky;
+            top: 20px;
+            margin-bottom: 0;
+        }
+
+        .runtime-panel-title {
+            font-size: 13px;
+            font-family: monospace;
+            color: #333;
+            font-weight: bold;
+            margin-bottom: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .runtime-panel-subtitle {
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+
+        .runtime-panel-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .job-cell[data-variant]:hover:not(.no-hover) {
+            background-color: #e8f0fe;
+        }
+
+        .job-cell.cell-selected {
+            background-color: #d0e4fd !important;
+        }
+
+        .issue-item.issue-hidden,
+        .historical-chart.issue-hidden,
+        .issue-runs.issue-hidden {
+            display: none !important;
+        }
+
+        .issue-filter-notice {
+            font-size: 12px;
+            color: #888;
+            font-style: italic;
+            font-weight: normal;
+            margin-left: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="loading" class="loading" style="display: none;">Loading test data...</div>
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="content" style="display: none;"></div>
+    </div>
+
+    <script type="module" src="./test.ts"></script>
+</body>
+</html>

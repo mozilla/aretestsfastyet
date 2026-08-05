@@ -17,9 +17,18 @@
 import { type ParsedArgs, boolOption, listOption, numberOption, stringOption } from './args.ts';
 import { type OptionSpecs } from './args.ts';
 import { usageError } from './errors.ts';
+// Imported as well as re-exported below: a `export … from` does not bring the
+// name into this module's scope, and `resolveHarness` uses both.
+import { type Harness, detectHarness } from '../lib/model/harness.ts';
 
-/** Which harness's data files to read. */
-export type Harness = 'xpcshell' | 'mochitest';
+/**
+ * Which harness's data files to read.
+ *
+ * Re-exported rather than redeclared: `detectHarness` moved to
+ * `lib/model/harness.ts` so a migrated page could use it, and two structurally
+ * identical declarations of the same union is how they drift apart later.
+ */
+export type { Harness } from '../lib/model/harness.ts';
 
 /** Where data is read from. */
 export type DataSourceChoice = 'central' | 'try' | 'local';
@@ -151,29 +160,16 @@ export function readGlobalOptions(args: ParsedArgs): GlobalOptions {
 }
 
 /**
- * The harness a test path implies, and whether it was inferred.
+ * The harness a test path implies.
  *
- * Reuses `detectHarness()`'s rules verbatim (`common-test-data.js:9`) rather
- * than improving on them, because the CLI and the dashboards disagreeing about
- * which file to read would be worse than the heuristic being imperfect.
- *
- * The rules, and the hole in them: `browser_*.js` and `test_*.html` are
- * mochitest, **everything else is xpcshell** — including `test_*.js`, which a
- * mochitest-plain test is also called. That misclassification is invisible: the
- * CLI reads xpcshell data, finds no such test, and reports the same thing it
- * would for a typo. `harnessMissHint()` is what turns that dead end into a next
- * step, and `inferred` is what tells a command to use it.
+ * Re-exported from `lib/model/harness.ts`, which is where it moved when
+ * `test.html` was migrated: the page needs the same rule to pick its bucket
+ * file and cannot import this module, so the rule had to live somewhere both
+ * could reach. That module's comment carries the rules and the hole in them —
+ * `test_*.js` is classified xpcshell whether or not it is one, and
+ * `harnessMissHint()` is what turns the resulting dead end into a next step.
  */
-export function detectHarness(testPath: string): Harness {
-    const fileName = testPath.split('/').pop() ?? testPath;
-    if (fileName.startsWith('browser_') && fileName.endsWith('.js')) {
-        return 'mochitest';
-    }
-    if (fileName.startsWith('test_') && fileName.endsWith('.html')) {
-        return 'mochitest';
-    }
-    return 'xpcshell';
-}
+export { detectHarness } from '../lib/model/harness.ts';
 
 /** The harness to use for a path, honouring an explicit `--harness`. */
 export function resolveHarness(

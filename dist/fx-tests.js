@@ -159,6 +159,18 @@ function listOption(args, name) {
   return Array.isArray(value) ? value : [];
 }
 
+// lib/model/harness.ts
+function detectHarness(testPath) {
+  const fileName = testPath.split("/").pop() ?? testPath;
+  if (fileName.startsWith("browser_") && fileName.endsWith(".js")) {
+    return "mochitest";
+  }
+  if (fileName.startsWith("test_") && fileName.endsWith(".html")) {
+    return "mochitest";
+  }
+  return "xpcshell";
+}
+
 // cli/options.ts
 var GLOBAL_OPTION_SPECS = {
   harness: {
@@ -248,16 +260,6 @@ function readGlobalOptions(args) {
     noCache: boolOption(args, "no-cache"),
     quiet: boolOption(args, "quiet")
   };
-}
-function detectHarness(testPath) {
-  const fileName = testPath.split("/").pop() ?? testPath;
-  if (fileName.startsWith("browser_") && fileName.endsWith(".js")) {
-    return "mochitest";
-  }
-  if (fileName.startsWith("test_") && fileName.endsWith(".html")) {
-    return "mochitest";
-  }
-  return "xpcshell";
 }
 function resolveHarness(testPath, explicit) {
   if (explicit !== void 0) {
