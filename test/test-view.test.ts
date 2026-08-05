@@ -1554,7 +1554,11 @@ test('the histogram scales both layers to the OVERALL maximum', () => {
     assert.equal(subset.bars[0]!.hasForeground, false);
     assert.equal(subset.bars[1]!.hasForeground, true);
     assert.equal(subset.bars[1]!.foregroundPercent, 25);
-    assert.deepEqual(subset.labels, [formatDurationMs(0), formatDurationMs(5), formatDurationMs(10)]);
+    // Literals, not `formatDurationMs(0)` and friends: an expectation computed
+    // by calling the formatter passes for every possible formatter, including a
+    // broken one, and asserts only that the labels were produced by *some*
+    // function of the bin edges.
+    assert.deepEqual(subset.labels, ['—', '5ms', '10ms']);
 });
 
 test('the histogram gives a non-empty bin at least 1% height', () => {
@@ -2302,7 +2306,11 @@ test('durations come only from passing entries, even when failures carry them', 
 
     const panel = buildRuntimePanel('Overall', durations.all)!;
     assert.equal(panel.subtitle, '2 passing runs');
-    assert.equal(panel.items[5]!.value, formatDurationMs(200), 'Max is 200ms, not 99999ms');
+    // The literal, not `formatDurationMs(200)`: the point of the assertion is
+    // which *duration* reached the panel, and calling the formatter to build
+    // the expectation would pass even if the panel had picked 99,999 ms and the
+    // formatter had been changed to render it as this string.
+    assert.equal(panel.items[5]!.value, '200ms', 'Max is 200ms, not 99999ms');
 });
 
 test('the synthetic placeholders are the exact strings the old page used', () => {

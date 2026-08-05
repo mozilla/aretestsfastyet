@@ -36,6 +36,7 @@ import {
     sortManifests,
     zeroDurationCensus,
 } from '../../lib/query/manifest-stats.ts';
+import { formatDurationPadded } from '../../lib/model/duration.ts';
 import { MANIFEST_TIMINGS_INDEX, fetchJson } from '../../lib/sources/source.ts';
 import { type OptionSpecs, type ParsedArgs, listOption, stringOption } from '../args.ts';
 import { type CommandContext, emit, progress } from '../context.ts';
@@ -455,26 +456,14 @@ function footerLines(): string[] {
  *
  * `—` rather than `0` is the whole point: a skipped config has no runtime, and
  * printing zero would make it the fastest row in the table.
+ *
+ * The implementation moved to `lib/model/duration.ts` when the tree's thirteen
+ * duration formatters were inventoried; this name is kept because the command's
+ * call sites and `test/manifests-parity.test.ts` both use it. The move fixed
+ * the carry bug that made `119,900 ms` print as `1m 60s` — see that module for
+ * the measurement.
  */
-export function duration(ms: number | null | undefined): string {
-    if (ms === null || ms === undefined) {
-        return '—';
-    }
-    if (ms < 1000) {
-        return `${Math.round(ms)}ms`;
-    }
-    const seconds = ms / 1000;
-    if (seconds < 60) {
-        return `${seconds.toFixed(1)}s`;
-    }
-    const minutes = Math.floor(seconds / 60);
-    const rest = Math.round(seconds - minutes * 60);
-    if (minutes < 60) {
-        return `${minutes}m ${String(rest).padStart(2, '0')}s`;
-    }
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h ${String(minutes - hours * 60).padStart(2, '0')}m`;
-}
+export const duration = formatDurationPadded;
 
 /** Markdown, for pasting into a bug. */
 function renderMarkdown(result: ManifestsJson): string {

@@ -12,6 +12,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { formatDurationMs, formatDurationPadded } from '../lib/model/duration.ts';
 import { decodeBucket } from '../lib/formats/buckets.ts';
 import { decodeDaily } from '../lib/formats/daily.ts';
 import { decodeIssues } from '../lib/formats/issues.ts';
@@ -619,4 +620,126 @@ test('the fixtures’ day arrays decode inside their declared range', () => {
         assert.ok(seen.has(0), `${name} covers day 0`);
         assert.ok(seen.has(days - 1), `${name} covers day ${days - 1}`);
     }
+});
+
+// =========================================================================
+// Duration formatting
+// =========================================================================
+
+/**
+ * Every expectation in this section is a **literal**.
+ *
+ * That is deliberate and is the point of the section. The bug these tests were
+ * written for — `119,900 ms` rendering as `1m 60s` — was live in a command that
+ * had tests, and it survived them because nothing asserted a formatted string
+ * against a string a human had read. An expectation computed by calling the
+ * formatter is satisfied by every possible formatter, including the broken one.
+ *
+ * So the question to ask of each assertion below is "what wrong implementation
+ * still passes this?", and the answer is meant to be "none": the boundary rows
+ * are chosen in pairs straddling each carry point, so an implementation that
+ * merely moved a boundary by one millisecond fails.
+ */
+
+test('formatDurationPadded carries instead of printing a field at its modulus', () => {
+    // The two values the bug was reported on.
+    assert.equal(formatDurationPadded(119_900), '2m 00s');
+    assert.equal(formatDurationPadded(3_599_900), '1h 00m');
+
+    // The minute carry, straddled. .4 rounds down, .5 rounds up and carries.
+    assert.equal(formatDurationPadded(119_400), '1m 59s');
+    assert.equal(formatDurationPadded(119_499), '1m 59s');
+    assert.equal(formatDurationPadded(119_500), '2m 00s');
+    assert.equal(formatDurationPadded(119_999), '2m 00s');
+    assert.equal(formatDurationPadded(120_000), '2m 00s');
+
+    // The hour carry, straddled. This is the one the minute carry cascades
+    // into: 59m 60s had to become 1h 00m, not 60m 00s.
+    assert.equal(formatDurationPadded(3_599_400), '59m 59s');
+    assert.equal(formatDurationPadded(3_599_499), '59m 59s');
+    assert.equal(formatDurationPadded(3_599_500), '1h 00m');
+    assert.equal(formatDurationPadded(3_599_999), '1h 00m');
+    assert.equal(formatDurationPadded(3_600_000), '1h 00m');
+
+    // The tier is picked from the rounded total, not the raw milliseconds.
+    // Picking it from the raw value sends 3,599,900 down the minutes branch,
+    // where the rounded total's minute field is 3600/60 % 60 === 0: `0m 00s`.
+    assert.notEqual(formatDurationPadded(3_599_900), '0m 00s');
+
+    // The hour form rounds its minutes too. The original floored them, so
+    // 60.99 minutes lost very nearly a whole minute.
+    assert.equal(formatDurationPadded(3_659_400), '1h 00m');
+    assert.equal(formatDurationPadded(3_659_500), '1h 01m');
+
+    // Below a minute, and the absent cases.
+    assert.equal(formatDurationPadded(null), '—');
+    assert.equal(formatDurationPadded(undefined), '—');
+    assert.equal(formatDurationPadded(0), '0ms');
+    assert.equal(formatDurationPadded(999), '999ms');
+    assert.equal(formatDurationPadded(1000), '1.0s');
+    assert.equal(formatDurationPadded(59_400), '59.4s');
+    assert.equal(formatDurationPadded(59_500), '59.5s');
+    assert.equal(formatDurationPadded(59_900), '59.9s');
+    // Just under a minute stays in the seconds form, so `60.0s` is reachable
+    // and is not a carry: the field is seconds and 60.0 is its true value to
+    // one decimal. Only a *subordinate* field at its modulus is the bug.
+    assert.equal(formatDurationPadded(59_999), '60.0s');
+    assert.equal(formatDurationPadded(60_000), '1m 00s');
+
+    // No day tier, and the hours do not wrap at 24. The largest value the
+    // published manifests file holds is a per-manifest total of 106,663,719 ms.
+    assert.equal(formatDurationPadded(86_400_000), '24h 00m');
+    assert.equal(formatDurationPadded(106_663_719), '29h 37m');
+});
+
+test('no input to formatDurationPadded renders a subordinate field as 60', () => {
+    // Exhaustive over every integer millisecond of the first two hours, which
+    // contains both carry points. This is the assertion the bug would have
+    // failed; the literals above are what say the replacements are *right*.
+    for (let ms = 0; ms < 7_200_000; ms++) {
+        const out = formatDurationPadded(ms);
+        assert.doesNotMatch(out, /\b60s$/, `${ms} ms rendered ${out}`);
+        assert.doesNotMatch(out, /\b60m$/, `${ms} ms rendered ${out}`);
+    }
+});
+
+test('formatDurationMs floors, omits a zero field, and em-dashes no data', () => {
+    // The four pages this came from all floor, and it is left flooring: the
+    // form omits a zero subordinate field, so flooring only ever renders a
+    // value slightly short and never produces a field at its own modulus.
+    assert.equal(formatDurationMs(60_500), '1m', 'floored, not rounded to 1m 1s');
+    assert.equal(formatDurationMs(119_900), '1m 59s');
+    assert.equal(formatDurationMs(3_599_900), '59m 59s');
+
+    // No data, which is two different inputs meaning the same thing.
+    assert.equal(formatDurationMs(0), '—', 'a zero-millisecond run did not happen');
+    assert.equal(formatDurationMs(100, false), '—');
+
+    // The tiers, and the omitted-zero-field rule at each one.
+    assert.equal(formatDurationMs(1), '1ms');
+    assert.equal(formatDurationMs(999), '999ms');
+    assert.equal(formatDurationMs(1000), '1.0s');
+    assert.equal(formatDurationMs(59_999), '60.0s');
+    assert.equal(formatDurationMs(60_000), '1m');
+    assert.equal(formatDurationMs(93_000), '1m 33s');
+    assert.equal(formatDurationMs(3_600_000), '1h');
+    assert.equal(formatDurationMs(3_660_000), '1h 1m');
+    assert.equal(formatDurationMs(86_400_000), '1d');
+    assert.equal(formatDurationMs(90_000_000), '1d 1h');
+});
+
+test('the two formatters disagree on purpose, and the disagreement is the reason they are two', () => {
+    // Same input, four differences, none of which a flag would make better:
+    // the zero case, whether a zero field prints, the padding, and the ladder.
+    assert.equal(formatDurationMs(0), '—');
+    assert.equal(formatDurationPadded(0), '0ms');
+
+    assert.equal(formatDurationMs(60_000), '1m');
+    assert.equal(formatDurationPadded(60_000), '1m 00s');
+
+    assert.equal(formatDurationMs(65_000), '1m 5s');
+    assert.equal(formatDurationPadded(65_000), '1m 05s');
+
+    assert.equal(formatDurationMs(86_400_000), '1d');
+    assert.equal(formatDurationPadded(86_400_000), '24h 00m');
 });

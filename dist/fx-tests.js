@@ -5163,6 +5163,25 @@ function configurationFilter(include, exclude) {
   };
 }
 
+// lib/model/duration.ts
+function formatDurationPadded(ms) {
+  if (ms === null || ms === void 0) {
+    return "\u2014";
+  }
+  if (ms < 1e3) {
+    return `${Math.round(ms)}ms`;
+  }
+  if (ms < 6e4) {
+    return `${(ms / 1e3).toFixed(1)}s`;
+  }
+  const total = Math.round(ms / 1e3);
+  if (total < 3600) {
+    return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
+  }
+  const minutes = Math.floor(total / 60) % 60;
+  return `${Math.floor(total / 3600)}h ${String(minutes).padStart(2, "0")}m`;
+}
+
 // cli/commands/manifests.ts
 var MANIFESTS_OPTIONS = {
   job: {
@@ -5430,25 +5449,7 @@ function footerLines2() {
     "cheap ones. Use `fx-tests test <path> --durations` on the tests in the manifest for that."
   ];
 }
-function duration(ms) {
-  if (ms === null || ms === void 0) {
-    return "\u2014";
-  }
-  if (ms < 1e3) {
-    return `${Math.round(ms)}ms`;
-  }
-  const seconds = ms / 1e3;
-  if (seconds < 60) {
-    return `${seconds.toFixed(1)}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds - minutes * 60);
-  if (minutes < 60) {
-    return `${minutes}m ${String(rest).padStart(2, "0")}s`;
-  }
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${String(minutes - hours * 60).padStart(2, "0")}m`;
-}
+var duration = formatDurationPadded;
 function renderMarkdown5(result) {
   const lines = [];
   lines.push(heading(`Manifest timings \u2014 ${dateWithWeekday(result.metadata.date)}`, 1));

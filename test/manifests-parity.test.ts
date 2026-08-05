@@ -526,7 +526,10 @@ test('every declared divergence still diverges', () => {
                 '7,200,000 ms is "120m 0s"; the CLI rounds, pads to two digits and has an hour ' +
                 'form, giving "2h 00m". Presentation only — every value comparison in this file ' +
                 'is on the milliseconds — and the page keeps its own because changing it changes ' +
-                'every cell on a page in daily use.',
+                'every cell on a page in daily use. The CLI side is now ' +
+                'lib/model/duration.ts formatDurationPadded, shared with nothing else; the ' +
+                'page keeps its own copy in next/manifests-view.ts precisely because this ' +
+                'divergence is what the difference between them is.',
             page: '120m 0s',
             cli: '2h 00m',
         },
@@ -535,28 +538,42 @@ test('every declared divergence still diverges', () => {
 });
 
 /**
- * A CLI defect this comparison found, pinned so it cannot be lost.
+ * A CLI defect this comparison found, **now fixed**, pinned so it cannot return.
  *
- * `cli/commands/manifests.ts:471` computes the seconds part of a `Xm YYs` value
- * with `Math.round(seconds - minutes * 60)`, which reaches **60** whenever the
- * fractional part is at least .5 — so `119,900 ms` prints as **`1m 60s`** and
- * `3,599,900 ms` as **`59m 60s`**. Neither is a duration.
+ * `cli/commands/manifests.ts:471` used to compute the seconds part of a
+ * `Xm YYs` value with `Math.round(seconds - minutes * 60)`, which reaches
+ * **60** whenever the fractional part is at least .5 — so `119,900 ms` printed
+ * as `1m 60s` and `3,599,900 ms` as `59m 60s`. Neither is a duration.
  *
  * `formatDuration` on the page floors instead and gives `1m 59s`, which is why
  * this surfaced here rather than in the CLI's own tests: the two sides format
- * the same milliseconds and only one of them can be read aloud.
+ * the same milliseconds and only one of them could be read aloud.
  *
- * It is **not fixed here**: `cli/commands/manifests.ts` is outside this
- * migration's write scope. The test asserts the current, wrong behaviour so
- * that the fix — `Math.floor`, or carrying the minute — makes this fail and be
- * noticed rather than silently changing a pinned string.
+ * The implementation now lives in `lib/model/duration.ts` as
+ * `formatDurationPadded`, which rounds the total to whole seconds *before*
+ * splitting it, so no field can reach its own modulus. `cliDuration` is that
+ * function under the CLI's name.
+ *
+ * The expectations below are literals rather than anything derived from the
+ * formatter: an implementation that still carried would satisfy a computed
+ * expectation, which is the whole failure mode this file guards against.
  */
-test('the CLI renders 1m 60s, which the page does not — a CLI bug, pinned', () => {
-    assert.equal(cliDuration(119_900), '1m 60s', 'if this changed, the CLI bug was fixed');
-    assert.equal(cliDuration(3_599_900), '59m 60s');
-    // The page's own rule never produces a 60 in the seconds place, because it
-    // floors. Checked across the range where a rounding rule would.
-    for (let ms = 60_000; ms < 3_600_000; ms += 499) {
-        assert.doesNotMatch(pageDuration(ms), /\b60s$/, `${ms} ms`);
+test('neither side renders a 60 in a subordinate field', () => {
+    // The two values that were wrong, with what they must now say.
+    assert.equal(cliDuration(119_900), '2m 00s');
+    assert.equal(cliDuration(3_599_900), '1h 00m');
+    // And the neighbours that were already right, so a fix that simply shifted
+    // the boundary by one does not pass.
+    assert.equal(cliDuration(119_400), '1m 59s');
+    assert.equal(cliDuration(119_500), '2m 00s');
+    assert.equal(cliDuration(3_599_400), '59m 59s');
+    assert.equal(cliDuration(3_599_500), '1h 00m');
+
+    // Exhaustive over every integer millisecond of the first two hours, which
+    // covers both carry points. `pageDuration` floors and never produced a 60;
+    // `cliDuration` rounds and used to.
+    for (let ms = 0; ms < 7_200_000; ms++) {
+        assert.doesNotMatch(cliDuration(ms), /\b60s$|\b60m$/, `cli, ${ms} ms`);
+        assert.doesNotMatch(pageDuration(ms), /\b60s$|\b60m$/, `page, ${ms} ms`);
     }
 });

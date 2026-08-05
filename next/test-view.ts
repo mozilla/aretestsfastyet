@@ -76,6 +76,7 @@
  */
 
 import { type DecodedTimingFile, type RunEntry } from '../lib/formats/decode.ts';
+import { formatDurationMs } from '../lib/model/duration.ts';
 import { classifyStatus } from '../lib/model/status.ts';
 import { displaySkipMessage, skipReason } from '../lib/model/skips.ts';
 import { type ConfigCoverage, coverageOf } from '../lib/query/coverage.ts';
@@ -1862,31 +1863,14 @@ export function computeHistogramBins(
  * change with magnitude so a 4-hour run does not read as `14400000ms`. The
  * `ms === 0` case is an em-dash too, which is upstream's — a run recorded as
  * taking zero milliseconds is a measurement that did not happen.
+ *
+ * The body moved to `lib/model/duration.ts`, which `issues.html`,
+ * `xpcshell-timings.html` and this page's original all held byte-identical
+ * copies of. It is re-exported here rather than imported at each use site
+ * because this module's own callers refer to it by this name; the behaviour is
+ * unchanged, checked over every integer millisecond from `0` to three days.
  */
-export function formatDurationMs(ms: number, hasData = true): string {
-    if (!hasData || ms === 0) {
-        return '—';
-    }
-    if (ms < 1000) {
-        return `${Math.round(ms)}ms`;
-    }
-    if (ms < 60000) {
-        return `${(ms / 1000).toFixed(1)}s`;
-    }
-    if (ms < 3600000) {
-        const minutes = Math.floor(ms / 60000);
-        const seconds = Math.floor((ms % 60000) / 1000);
-        return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
-    }
-    if (ms < 86400000) {
-        const hours = Math.floor(ms / 3600000);
-        const minutes = Math.floor((ms % 3600000) / 60000);
-        return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
-    }
-    const days = Math.floor(ms / 86400000);
-    const hours = Math.floor((ms % 86400000) / 3600000);
-    return hours === 0 ? `${days}d` : `${days}d ${hours}h`;
-}
+export { formatDurationMs };
 
 /** One bar of the runtime histogram. */
 export interface HistogramBar {
