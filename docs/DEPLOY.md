@@ -49,20 +49,23 @@ no rewriting.
 This was checked rather than assumed: `grep` for `.html` in `next/*.ts` and
 `lib/` returns only comment citations, never a constructed link.
 
-One consequence to accept deliberately: an `old/` page linking to an
+One consequence, and it is already settled: an `old/` page linking to an
 **unmigrated** page (`old/issues.html` → `old/workers.html`) resolves inside
-`old/`, which will not exist unless the seventeen are copied there too. Decide
-one of:
+`old/`, so the seventeen have to be there too or that link 404s.
 
-- copy all twenty-six into `old/` (simple, doubles the deployed tree), or
-- copy only the nine and accept that a link from `old/` to an unmigrated page
-  404s (the unmigrated pages are identical in both trees, so the failure is
-  cosmetic but confusing), or
-- copy the nine into `old/` and the seventeen as well, but only if measurement
-  shows the tree size is not a problem.
+**Decided: copy all twenty-six pages and the shared assets into `old/`**, making
+it a complete, self-consistent snapshot of the site as it is today. Measured
+before choosing:
 
-**Measure the deployed tree size before choosing.** `dist-pages/` is currently
-about 700 kB for nine pages plus assets.
+| | size |
+| --- | --- |
+| `dist-pages/` — nine built pages plus assets | 724 kB |
+| all twenty-six root pages | 1.5 MB |
+| shared assets (`shared.*`, `common-*.js`, `dashboards.js`, favicons) | 128 kB |
+
+About 1.6 MB extra on a static site, which is not worth trading a working
+fallback for. The alternative — copying only the nine — leaves links out of
+`old/` broken for no saving that matters.
 
 ## 2. The workflow
 
@@ -92,9 +95,14 @@ after overwriting a good artifact, so the deploy ships the broken one.
 1. `dist-pages/` already holds the nine built pages and the assets they
    reference (`tools/build-pages.ts` copies those).
 2. Copy the seventeen unmigrated root `*.html` into it.
-3. Copy the nine root `*.html` into `dist-pages/old/`, plus whatever assets
-   they need per the decision in §1.
+3. Copy **all twenty-six** root `*.html` and the shared assets into
+   `dist-pages/old/`, so that tree is a complete snapshot (§1).
 4. Publish `dist-pages/` as the Pages artifact.
+
+Assemble into a **fresh** directory rather than into a `dist-pages/` left over
+from a previous run. A stale file from an earlier build that no longer exists
+in the sources would otherwise be published indefinitely, and nothing would
+report it.
 
 Add a `.nojekyll` file to the published artifact. Without it Pages runs Jekyll,
 which ignores files beginning with `_` — the project has none today, but the
