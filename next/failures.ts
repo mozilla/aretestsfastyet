@@ -854,9 +854,15 @@ function setupClickHandlers(): void {
     });
 }
 
-setupClickHandlers();
-
-await (async () => {
+/**
+ * Wires the page up and loads it. Called by the page, not by importing it.
+ *
+ * See `next/crashes.ts` for why this is exported rather than run at module
+ * scope: importing a controller used to start the page, which is what left the
+ * renderers and controllers untestable.
+ */
+export async function start(): Promise<void> {
+    setupClickHandlers();
     initializeUI();
 
     const hasData = await populateDateSelector({
@@ -875,7 +881,7 @@ await (async () => {
             await loadSelectedDate();
         }
     }
-})();
+}
 
 /** The view model, for the browser parity harness. See `next/crashes.ts`. */
 window.__view = () => ({

@@ -832,9 +832,23 @@ function setupClickHandlers(): void {
     });
 }
 
-setupClickHandlers();
-
-await (async () => {
+/**
+ * Wires the page up and loads it. Called by the page, not by importing it.
+ *
+ * This used to be a bare `setupClickHandlers()` and an awaited IIFE at module
+ * scope, which meant importing this file *started the page* — it attached
+ * listeners, populated the date selector and fetched data. That is why nothing
+ * tested it: `drilldown-render.ts` and the two controllers were 2,598 lines,
+ * 60% of the migration, that no test could import, and inverting the page
+ * branch in `inlineLinksCell` passed both `npm test` and `tsc`.
+ *
+ * Exporting the entry point is the whole fix. Everything above is now
+ * declarations, so a test can import this module for its pure half — the
+ * vocabulary, the hooks, the URL state — without a browser and without
+ * fetching anything.
+ */
+export async function start(): Promise<void> {
+    setupClickHandlers();
     initializeUI();
 
     const hasData = await populateDateSelector({
@@ -853,7 +867,7 @@ await (async () => {
             await loadSelectedDate();
         }
     }
-})();
+}
 
 /**
  * The view model, for the browser parity harness.
