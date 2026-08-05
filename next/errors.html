@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XPCShell Errors &amp; Warnings</title>
+    <link rel="icon" href="favicon-orange.svg">
+    <script src="shared.js"></script>
+    <link rel="stylesheet" href="shared.css">
+    <link rel="stylesheet" href="common-data-view.css">
+    <style>
+        .explanation {
+            background: white;
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px 24px;
+            align-items: flex-start;
+        }
+
+        .marker-kind-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 18px;
+        }
+
+        .filter-checkbox {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            padding: 2px 0;
+            white-space: nowrap;
+        }
+
+        .filter-checkbox input[type="checkbox"] {
+            margin-right: 6px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .filter-checkbox:hover {
+            background-color: #e9ecef;
+            border-radius: 3px;
+            padding-left: 5px;
+            margin-left: -5px;
+        }
+
+        .view-selector {
+            margin-left: auto;
+            font-size: 14px;
+            color: #555;
+        }
+
+        .view-selector select {
+            font-size: 14px;
+            padding: 4px 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        /* Top-level / sub rows share a flexible main area + right-aligned stats. */
+        .marker-main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .marker-message {
+            font-family: monospace;
+            font-size: 13px;
+            font-weight: bold;
+            color: #333;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 40px;
+            flex: 0 1 auto;
+        }
+
+        .marker-loc {
+            font-family: monospace;
+            font-size: 11px;
+            color: #888;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .marker-loc a { color: #888; text-decoration: none; }
+        .marker-loc a:hover { text-decoration: underline; }
+
+        .marker-component {
+            font-size: 11px;
+            color: #aaa;
+            white-space: nowrap;
+            margin-left: auto;
+            padding-left: 10px;
+            flex-shrink: 0;
+        }
+
+        .kind-badge {
+            font-size: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+            padding: 1px 6px;
+            border-radius: 3px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            letter-spacing: 0.02em;
+        }
+
+        .kind-cpp-warning, .kind-console-warn, .kind-js-warning {
+            background: #fff3cd;
+            color: #8a6d00;
+        }
+
+        .kind-cpp-assertion, .kind-console-error, .kind-js-error, .kind-tsan-error {
+            background: #fde0e0;
+            color: #c00;
+        }
+
+        .marker-stats {
+            display: flex;
+            gap: 30px;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .marker-stat {
+            min-width: 70px;
+            text-align: right;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .marker-stat-h {
+            min-width: 70px;
+        }
+
+        .marker-list {
+            width: 100%;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .run-count {
+            color: #888;
+            font-size: 12px;
+            padding: 0 12px;
+            white-space: nowrap;
+        }
+
+        .sub-row.non-clickable { cursor: default; }
+        .inst-block { background: #f5f5f5; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Errors &amp; Warnings</h1>
+    </div>
+
+    <div class="controls">
+        <div class="date-selector">
+            <label for="dateSelect">Select Date: </label>
+            <select id="dateSelect"></select>
+            <span class="status-text" id="statusText">Loading...</span>
+            <button id="historicalButton" class="historical-button">Show Last 21 Days</button>
+            <button id="loadTasksButton" class="historical-button" style="display:none;">Load task details</button>
+        </div>
+        <div class="search-container">
+            <input type="text" id="searchBox" class="search-box" placeholder="Filter by test, message, file, or component...">
+            <button class="search-clear" id="searchClear">×</button>
+        </div>
+    </div>
+
+    <div class="explanation">
+        <div class="marker-kind-filters">
+            <label class="filter-checkbox"><input type="checkbox" id="kind-cpp-warning" checked onchange="onKindFilterChange()"> C++ warning</label>
+            <label class="filter-checkbox"><input type="checkbox" id="kind-cpp-assertion" checked onchange="onKindFilterChange()"> C++ assertion</label>
+            <label class="filter-checkbox"><input type="checkbox" id="kind-console-error" checked onchange="onKindFilterChange()"> console.error</label>
+            <label class="filter-checkbox"><input type="checkbox" id="kind-console-warn" checked onchange="onKindFilterChange()"> console.warn</label>
+            <label class="filter-checkbox"><input type="checkbox" id="kind-js-error" checked onchange="onKindFilterChange()"> JavaScript error</label>
+            <label class="filter-checkbox"><input type="checkbox" id="kind-js-warning" checked onchange="onKindFilterChange()"> JavaScript warning</label>
+            <label class="filter-checkbox"><input type="checkbox" id="kind-tsan-error" checked onchange="onKindFilterChange()"> TSan Error</label>
+        </div>
+        <div class="view-selector">
+            Group by:
+            <select id="viewSelect" onchange="onViewChange()">
+                <option value="message">Message</option>
+                <option value="test">Test</option>
+                <option value="component">Component</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="content">
+        <div class="no-data">Loading error/warning data...</div>
+    </div>
+
+    <script src="fetch-utils.js"></script>
+    <script src="dashboards.js"></script>
+    <script src="common-ui.js"></script>
+    <script src="common-links.js"></script>
+    <script type="module" src="./errors.ts"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</body>
+</html>
