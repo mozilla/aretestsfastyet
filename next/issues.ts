@@ -36,7 +36,32 @@
  * The five shared scripts **stay, loaded by name**: `fetch-utils.js`,
  * `dashboards.js`, `common-ui.js`, `common-links.js` and `shared.js`. They are
  * UI plumbing with no `lib/` equivalent and up to 22 unmigrated pages depend on
- * them; `tools/build-pages.ts` copies them next to the built page.
+ * them; `tools/build-pages.ts` copies them next to the built page. Chart.js
+ * comes from the same CDN tag the old page uses (`issues.html:3820`), moved
+ * ahead of the module script because a `type="module"` script is deferred and
+ * the CDN one is not — so `Chart` is defined before any of this runs, which is
+ * the ordering the old page gets for free from an inline `<script>`.
+ *
+ * ## The two files the 21-day view loads
+ *
+ * `{harness}-issues.json` is 2.8 MB of **counts only**: every status group is
+ * the `counts` shape, there is no `taskInfo` key, and nothing in it says which
+ * job saw a failure. It is what the page renders its numbers from.
+ *
+ * `{harness}-issues-with-taskids.json` is the same 21 days at 15.9 MB, with
+ * `taskIdIds` on the non-passing groups and a `taskInfo` to resolve them
+ * through. `loadDetailedData` fetches it in the background when a component is
+ * opened and swaps it in, which is what upstream does (`issues.html:3403`) and
+ * what three features need: the run list under a failure message, the
+ * per-issue-message chart, and the platform tooltips. Without it those three
+ * have nothing to show.
+ *
+ * **The swap does not move a displayed number.** Measured on the live 21-day
+ * xpcshell pair rather than assumed: `testInfo`, `tables.statuses` and
+ * `tables.messages` are byte-identical between the two files, both describe the
+ * same 4,838 tests, and all **58,056** status groups have identical run totals.
+ * `test/issues-page.test.ts` asserts the rendered rows are unchanged across the
+ * merge on the fixtures, which is what would catch the day the two files drift.
  *
  * ## Declared divergences from `issues.html`
  *
@@ -114,6 +139,11 @@
  *     The 8 at first paint are the sort buttons; the 786 added by one expansion
  *     are two per test row.
  *
+ *     Re-measured on the 2026-08-04 pinned snapshot after the detailed file was
+ *     restored, in case emitting the tooltip cells had brought an attribute
+ *     back: first paint **8 → 0**, `Core :: Networking` expanded (628 test
+ *     rows) **1,264 → 0**. The tooltip cells carry `data-*` and no `on*`.
+ *
  *  3. **`data-path` is no longer how a row is found again.** Upstream writes
  *     `data-path="${escapeHtml(componentName)}"` on each component row
  *     (`:2094`) and the raw test path on each test row (`:2166`), then resolves
@@ -139,61 +169,55 @@
  *     what the old page shows. (Contrast `crashes.html` and `failures.html`,
  *     whose total rows *are* rendered and are ported.)
  *
- *  5. **The lazy platform-breakdown tooltips are not ported.** Upstream
- *     attaches `mouseenter`/`mouseleave` to every `.lazy-tooltip` stat cell
- *     (`:2210-2213`) and builds a per-platform breakdown on hover
- *     (`:1621-1830`), reading `currentData.taskInfo.jobNameIds` to name the
- *     platform of each run.
+ *  5. **A component's chart is drawn from its *listed* tests, and the id it
+ *     carries can collide.** The daily-rate charts, the platform tooltips and
+ *     the run lists are all ported; what remains is two details of how the
+ *     component chart is keyed and fed.
  *
- *     **They cannot work in the page's own default view, and that is measured
- *     rather than argued.** The breakdown needs `taskIdIds` on the status group
- *     (`:1352`, `:1219`) and `taskInfo` on the file. `{harness}-issues.json` —
- *     the 21-day file, which divergence 1 makes the default — has **neither**:
- *     it is the `counts` shape throughout and carries no `taskInfo` key at all
- *     (`lib/formats/issues.ts` documents this; `Object.keys(file)` on the
- *     pinned file is `metadata, tables, testInfo, testRuns`). Hovering a stat
- *     cell in 21-day mode on the old page therefore produces a tooltip listing
- *     **0 platforms** — an empty dark box — which is what `:1638`'s
- *     `Object.keys(platforms).length === 0` branch renders as
- *     `No platform data available`.
+ *     `calculateComponentDailyFailureRates` is handed `group.tests`
+ *     (`:2192`) — the tests the search kept **and** that have an issue
+ *     (`:2016`) — so a component's chart is not its whole population: the
+ *     passes of its clean tests are not in the denominator, and typing in the
+ *     search box narrows the chart as well as the rows. Both are reproduced
+ *     rather than corrected, because the chart sits directly above the list of
+ *     exactly those tests and charting a different set would not match it.
  *
- *     Upstream's answer is `loadDetailedData()` (`:3403`), which fetches
- *     `{harness}-issues-with-taskids.json` in the background when a component
- *     is expanded and swaps its `testRuns` into `currentData` (`:3428-3444`).
- *     That is a 15.7 MB fetch (against 2.8 MB for the file already loaded) to
- *     populate a hover, and it mutates the object every displayed number was
- *     computed from while the reader is looking at it.
+ *     The chart's DOM id is `component-chart-${name.replace(/[^a-zA-Z0-9]/g,
+ *     '-')}` (`:2136`), which maps `Core :: DOM` and `Core - DOM` to one id.
+ *     Reproduced, and harmless on both pages for different reasons: upstream
+ *     resolves the canvas by `getElementById` and would draw two components'
+ *     charts into one canvas, while this page holds the canvas element and
+ *     never looks it up by id. Measured on the pinned 21-day xpcshell file:
+ *     **0 collisions among the 136 component names**, so neither page is
+ *     currently wrong — the id is emitted because a reader's devtools sees it.
  *
- *     Omitted rather than emitted-and-inert, per the rule an earlier migration
- *     learned the hard way: a control that cannot work satisfies a DOM diff and
- *     turns a known gap into a hidden one. The `.lazy-tooltip` class is
- *     therefore **not** emitted either — emitting it would leave a cell that
- *     looks interactive and is not. A reader loses a hover that showed an empty
- *     box by default; the per-test expansion, which shows the same information
- *     as real rows with real counts, is unaffected.
+ *  6. **The per-issue-message chart counts every matching status, not just the
+ *     first.** This is the one place the migrated page deliberately computes a
+ *     different number from `issues.html`, and it is a bug fix.
  *
- *  6. **The daily-rate charts are not ported.** Upstream draws three kinds in
- *     21-day mode: a per-component chart (`:2136-2140`, `:2191-2194`), a
- *     per-test chart (`:2957-2961`, `:2364-2367`) and a per-issue-message chart
- *     (`:3095-3098`, `:3133-3136`). All three go through
- *     `calculateDailyFailureRates` and friends (`:2373-2698`), 325 lines that
- *     walk the raw file's `days` arrays.
+ *     `calculateIssueMessageDailyRates` resolves an issue type to a single
+ *     `targetStatusId` and `break`s (`:2574-2590`), then charts only that one
+ *     group. `tables.statuses` on the pinned file is ordered `PASS-PARALLEL,
+ *     SKIP, PASS-SEQUENTIAL, PASS, TIMEOUT-PARALLEL, FAIL-PARALLEL,
+ *     EXPECTED-FAIL, CRASH, FAIL-SEQUENTIAL, TIMEOUT, FAIL,
+ *     TIMEOUT-SEQUENTIAL` — so every FAIL line charts `FAIL-PARALLEL` alone and
+ *     every TIMEOUT line charts `TIMEOUT-PARALLEL` alone.
  *
- *     They are omitted for the same reason as 5 and with the same discipline:
- *     the two that a reader reaches first — the per-component and per-test
- *     charts — need only `counts`/`days` and **would** work on the aggregate,
- *     but the per-issue-message chart needs the same task attribution
- *     `{harness}-issues.json` lacks. Rather than ship two of three and leave
- *     the third drawing an empty canvas, none is emitted and the Chart.js CDN
- *     tag is dropped with them.
+ *     **Measured on the live 21-day xpcshell aggregate**: 2,792 of the 3,788
+ *     tests with any failure have more than one `FAIL*` group, and 214 have
+ *     more than one `TIMEOUT*` group.
+ *     `toolkit/components/backgroundtasks/tests/xpcshell/test_backgroundtask_automaticrestart.js`
+ *     saw `[test_backgroundtask_automatic_restart : 23] 0 == 3` 48 times under
+ *     `FAIL-PARALLEL` and 3 times under `FAIL`; upstream's chart accounts for
+ *     48 of the 51.
  *
- *     **This is the largest omission on the list and it is a real loss**, not a
- *     dead control: the per-component and per-test charts do render on the old
- *     page today. It is called out here rather than buried because a reviewer
- *     comparing the two pages in 21-day mode will see them missing. Restoring
- *     them is a self-contained follow-up — `common-charts.js`'s
- *     `countDailyRunsForTests` and `createRateChart` are still loaded by the
- *     page and are what `next/crashes.ts` uses for the same job.
+ *     Upstream is not *choosing* the first status here — it contradicts itself.
+ *     The count printed on the issue line sums every `FAIL*` group, and the run
+ *     list the same click opens explicitly collects **all** `FAIL*` status ids
+ *     (`:3168-3172`). Only the chart uses one. Reproducing it would put a bar
+ *     totalling 48 under a line reading 51 above a list of 51 rows, so the
+ *     chart is made to agree with its neighbours instead. See
+ *     `messageDailyRates` in `next/issues-view.ts`.
  *
  *  7. **A test row's Runs cell no longer turns red at zero.**
  *     `generateStatsHtml` (`:815`) passes `'fail'` when `runCount === 0`, and
@@ -217,32 +241,45 @@
 
 import { decodeDaily } from '../lib/formats/daily.ts';
 import type { DailyFile } from '../lib/formats/daily.ts';
-import { decodeIssues } from '../lib/formats/issues.ts';
-import type { IssuesFile } from '../lib/formats/issues.ts';
+import { decodeIssues, decodeIssuesWithTaskIds } from '../lib/formats/issues.ts';
+import type { IssuesFile, IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import { parseTaskId } from '../lib/formats/tables.ts';
 import {
     type ComponentRow,
+    type DailyMessageRate,
+    type DailyOutcomes,
     type IssueEntry,
     type IssueFilters,
     type IssueRow,
     type SortField,
     type SortState,
+    type TooltipLine,
+    type TooltipType,
     ALL_FILTERS,
     FILTER_IDS,
     HISTORICAL_DATE,
     INITIAL_SORT,
     STAT_COLUMNS,
+    TOOLTIP_HEADING,
     buildComponentRows,
+    chartVisibility,
+    componentDailyOutcomes,
+    dayLabel,
     failureTooltip,
     headerCounts,
     isHistoricalDate,
     issueEntries,
+    matchesIssueLine,
+    messageDailyRates,
     nextSort,
     percentageDisplay,
+    platformBreakdown,
     readUrlState,
     sortComponents,
     sortTests,
+    testDailyOutcomes,
+    tooltipLines,
 } from './issues-view.ts';
 import {
     type SearchBoxManager,
@@ -250,6 +287,7 @@ import {
     externalLink,
     insertAfter,
     removeFollowing,
+    renderChartSlot,
     searchBox,
 } from './drilldown-render.ts';
 
@@ -265,6 +303,29 @@ declare global {
     function getBugButton(url: string, title: string): string;
     /** `common-ui.js:22` — turns `[path:123]` in a failure message into a link. */
     function linkifyFailureMessage(message: string, testPath: string): string;
+    /** `shared.js:70` — a job name's platform: linux, windows, mac, android. */
+    function extractPlatform(jobName: string): string;
+}
+
+/**
+ * The slice of Chart.js 4.4.0 this page uses.
+ *
+ * Read off `window` rather than declared as a global `const Chart`, which is
+ * what `next/test.ts:218` already does: `tsconfig.next.json` compiles all of
+ * `next/**` as one program, so a second global declaration of the same name is
+ * a redeclaration error however compatible the two shapes are. Reading it off
+ * the window also states the truth about where it comes from — a CDN
+ * `<script>` tag, not an import — and it is what makes the tests able to
+ * substitute it.
+ */
+interface ChartJs {
+    new (canvas: HTMLCanvasElement, config: Record<string, unknown>): unknown;
+    getChart(canvas: HTMLCanvasElement): { destroy(): void } | undefined;
+}
+
+/** Chart.js if the CDN tag loaded, `undefined` if it was blocked. */
+function chartJs(): ChartJs | undefined {
+    return (window as unknown as { Chart?: ChartJs }).Chart;
 }
 
 // --- page state -----------------------------------------------------------
@@ -274,6 +335,36 @@ let decoded: DecodedTimingFile | null = null;
 /** The raw parsed file, which `getDataDateRange` indexes itself. */
 let rawData: unknown = null;
 let isHistoricalMode = false;
+/**
+ * `metadata.startTime`, Unix seconds of the window's first day.
+ *
+ * The charts label their bars with it and nothing else does, which is why it
+ * is a field here rather than on `DecodedTimingFile` — a decoded file is
+ * family-independent and the daily files have no day axis to be relative to.
+ */
+let startTime = 0;
+
+// --- the detailed file ----------------------------------------------------
+
+/**
+ * Whether `{harness}-issues-with-taskids.json` has been merged in.
+ *
+ * `detailedData !== null` upstream (`issues.html:668`). Only the fact is kept:
+ * the object itself is held by `decoded`, so keeping a second reference to a
+ * 15.9 MB parse would double the page's peak footprint for nothing.
+ */
+let detailedLoaded = false;
+/** `isLoadingDetailedData` (`issues.html:669`) — one fetch at a time. */
+let loadingDetailed = false;
+/**
+ * Resolves when the in-flight detailed fetch settles, for the tests.
+ *
+ * The load is deliberately not awaited by anything the reader touches — see
+ * `loadDetailedData` — so without a handle a test would have to poll. Exposed
+ * through `window.__detailedLoad` rather than returned, because the caller
+ * that starts it is a click handler.
+ */
+let detailedLoad: Promise<void> | null = null;
 
 let filters: IssueFilters = { ...ALL_FILTERS };
 let currentSort: SortState = { ...INITIAL_SORT };
@@ -355,19 +446,54 @@ function statItem(
  *
  * - A component header passes no `fail` class on a zero `runCount`; a test row
  *   does (`:815`). That difference is **dropped** — see divergence 7.
- * - Upstream's test rows carry `lazy-tooltip` and `data-tooltip-type` on the
- *   Skips, Failures and Timeouts cells; those are not emitted — see
- *   divergence 5.
+ * - **Only a test row's Skips, Failures and Timeouts cells are hoverable**
+ *   (`:824-833`, where the class is on `generateStatsHtml`'s cells and not on
+ *   the component header's). `test` carries the row when there is one, and the
+ *   component header passes nothing.
+ *
+ * The Crashes cell gets a `data-tooltip-type` upstream (`:837`) and never the
+ * `lazy-tooltip` class that `:2210` binds the handler to, so it has **no hover
+ * on either page**. Measured in Chrome on the pinned 21-day xpcshell file, on
+ * `netwerk/test/unit/test_webtransport_stop_sending.js`, whose Crashes cell
+ * reads 16: the old page's cell has `data-tooltip-type="crashes"`, does *not*
+ * have `lazy-tooltip`, and dispatching `mouseenter` on it adds no
+ * `.dynamic-tooltip` to the document. The attribute is not emitted here,
+ * because emitting it would say "this cell has a tooltip" about a cell that
+ * does not.
  */
-function statCells(stats: {
-    runCount: number;
-    issueCount: number;
-    skipCount: number;
-    failCount: number;
-    timeoutCount: number;
-    crashCount: number;
-}): HTMLElement[] {
+function statCells(
+    stats: {
+        runCount: number;
+        issueCount: number;
+        skipCount: number;
+        failCount: number;
+        timeoutCount: number;
+        crashCount: number;
+    },
+    test?: IssueRow
+): HTMLElement[] {
     const percentage = percentageDisplay(stats, filters);
+    /** A cell that is hoverable when it is non-zero and belongs to a test. */
+    const hoverable = (
+        label: string,
+        value: number,
+        valueClass: string,
+        type: TooltipType
+    ): HTMLElement => {
+        const cell = statItem(
+            label,
+            formatNumber(value),
+            valueClass,
+            value === 0 ? 'hideable-zero' : test === undefined ? '' : 'lazy-tooltip'
+        );
+        if (value > 0 && test !== undefined) {
+            cell.dataset['testPath'] = test.fullPath;
+            cell.dataset['tooltipType'] = type;
+            bindTooltip(cell, test, type);
+        }
+        return cell;
+    };
+
     return [
         statItem('Runs', formatNumber(stats.runCount)),
         statItem('Issue %', percentage.displayValue, percentage.cssClass),
@@ -377,23 +503,13 @@ function statCells(stats: {
             stats.issueCount > 0 ? 'fail' : 'zero',
             stats.issueCount === 0 ? 'hideable-zero' : ''
         ),
-        statItem(
-            'Skips',
-            formatNumber(stats.skipCount),
-            'skip',
-            stats.skipCount === 0 ? 'hideable-zero' : ''
-        ),
-        statItem(
-            'Failures',
-            formatNumber(stats.failCount),
-            stats.failCount > 0 ? 'fail' : 'zero',
-            stats.failCount === 0 ? 'hideable-zero' : ''
-        ),
-        statItem(
+        hoverable('Skips', stats.skipCount, 'skip', 'skips'),
+        hoverable('Failures', stats.failCount, stats.failCount > 0 ? 'fail' : 'zero', 'failures'),
+        hoverable(
             'Timeouts',
-            formatNumber(stats.timeoutCount),
+            stats.timeoutCount,
             stats.timeoutCount > 0 ? 'timeout' : 'zero',
-            stats.timeoutCount === 0 ? 'hideable-zero' : ''
+            'timeouts'
         ),
         statItem(
             'Crashes',
@@ -402,6 +518,139 @@ function statCells(stats: {
             stats.crashCount === 0 ? 'hideable-zero' : ''
         ),
     ];
+}
+
+// --- the platform-breakdown tooltips --------------------------------------
+
+/**
+ * Attaches the hover that builds one cell's platform breakdown.
+ *
+ * `:2210-2213` binds `mouseenter`/`mouseleave` to every `.lazy-tooltip`, and
+ * `handleTooltipMouseEnter` (`:2216-2252`) does the work on hover rather than
+ * on render — which is the whole point of the name: the breakdown walks every
+ * run of the test, and doing that for the 393 rows of an expanded component
+ * would cost the expansion what a reader saves by never hovering most of them.
+ *
+ * **A tooltip with no lines is not shown at all** (`:2249`), which is the
+ * behaviour that matters before the detailed file arrives: the aggregate
+ * attributes no run to a task, `tooltipLines` is empty, and the cell behaves
+ * like a plain one. It becomes hoverable the moment the merge lands, with no
+ * re-render — the handler reads `decoded` when it fires.
+ */
+function bindTooltip(cell: HTMLElement, test: IssueRow, type: TooltipType): void {
+    cell.addEventListener('mouseenter', () => {
+        if (decoded === null) {
+            return;
+        }
+        const lines = tooltipLines(
+            platformBreakdown(decoded, test.testId, extractPlatform),
+            type
+        );
+        if (lines.length === 0) {
+            return;
+        }
+        showTooltip(cell, lines, type, test);
+    });
+    cell.addEventListener('mouseleave', hideTooltip);
+}
+
+/**
+ * Puts one tooltip on the page, positioned above the cell.
+ *
+ * `showTooltip` (`issues.html:2271-2313`) — appended to `<body>` rather than to
+ * the cell so it is not clipped by the row's `overflow`, positioned in page
+ * coordinates, and nudged back inside the viewport on all four edges.
+ */
+function showTooltip(
+    cell: HTMLElement,
+    lines: TooltipLine[],
+    type: TooltipType,
+    test?: IssueRow
+): void {
+    hideTooltip();
+    const tooltip = el('div', { class: 'dynamic-tooltip' });
+    tooltip.append(el('strong', { text: TOOLTIP_HEADING[type] }), el('br'));
+    for (const line of lines) {
+        tooltip.append(
+            el('div', {
+                class: 'tooltip-platform',
+                children: [
+                    el('span', { class: 'tooltip-platform-name', text: `${line.platform}:` }),
+                    el('span', { text: `${line.count} (${line.percentage}%)` }),
+                ],
+            })
+        );
+    }
+    // The second half of a skips or failures tooltip: the messages behind the
+    // count, with their own counts (`issues.html:1670-1702`). Built from
+    // `issueEntries`, which is the same list the test's expansion renders — so
+    // the tooltip and the rows under the row cannot disagree.
+    if (test !== undefined && decoded !== null && type !== 'timeouts') {
+        const wanted = type === 'skips' ? 'SKIP' : 'FAIL';
+        const entries = issueEntries(decoded, test, ALL_FILTERS).filter(
+            (entry) => entry.type === wanted
+        );
+        if (entries.length > 0) {
+            // Styled inline, as upstream is (`:1674`, `:1679-1681`). The
+            // stylesheet is held byte-identical by divergence 2, and these
+            // rules exist nowhere in it — upstream writes them on the elements.
+            const section = el('div');
+            section.style.marginTop = '8px';
+            section.style.paddingTop = '8px';
+            section.style.borderTop = '1px solid #555';
+            section.append(
+                el('strong', { text: type === 'skips' ? 'Skip reasons:' : 'Failure messages:' }),
+                el('br')
+            );
+            for (const entry of entries) {
+                const row = el('div');
+                row.style.fontSize = '11px';
+                row.style.marginTop = '4px';
+                row.style.color = '#ccc';
+                const text = el('span', {
+                    // `truncateMessage(message, 100)` (`:1695`) on the failures
+                    // side; skip reasons are shown whole (`:1678`).
+                    text:
+                        wanted === 'FAIL' && entry.message.length > 100
+                            ? `${entry.message.slice(0, 100)}...`
+                            : entry.message,
+                });
+                text.style.fontFamily = 'monospace';
+                if (wanted === 'FAIL') {
+                    text.style.wordBreak = 'break-word';
+                }
+                const count = el('span', { text: ` (${entry.count})` });
+                count.style.color = '#999';
+                row.append(text, count);
+                section.append(row);
+            }
+            tooltip.append(section);
+        }
+    }
+    document.body.append(tooltip);
+
+    const rect = cell.getBoundingClientRect();
+    const size = tooltip.getBoundingClientRect();
+    const scrollLeft = window.pageXOffset;
+    const scrollTop = window.pageYOffset;
+    let left = rect.left + scrollLeft + rect.width / 2 - size.width / 2;
+    let top = rect.top + scrollTop - size.height - 8;
+    if (left - scrollLeft < 8) {
+        left = scrollLeft + 8;
+    }
+    if (left - scrollLeft + size.width > window.innerWidth - 8) {
+        left = scrollLeft + window.innerWidth - size.width - 8;
+    }
+    if (top - scrollTop < 8) {
+        top = rect.bottom + scrollTop + 8;
+    }
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+}
+
+/** `hideTooltip` (`issues.html:2260-2265`). */
+function hideTooltip(): void {
+    document.querySelector('.dynamic-tooltip')?.remove();
 }
 
 // --- the sort header ------------------------------------------------------
@@ -569,7 +818,7 @@ function testRow(test: IssueRow): HTMLElement {
                     searchfoxButton(test.fullPath),
                 ],
             }),
-            el('div', { class: 'tree-stats', children: statCells(test) }),
+            el('div', { class: 'tree-stats', children: statCells(test, test) }),
         ],
     });
     element.addEventListener('click', () => toggleTestDetails(element, test));
@@ -649,9 +898,13 @@ async function copyTestPath(testPath: string, button: HTMLElement): Promise<void
  * Upstream re-renders the whole table and then restores `window.scrollY`,
  * because its renderer is one `innerHTML` assignment. Here the rows are
  * elements, so an expansion inserts or removes only its own test rows and the
- * scroll position never moves — there is nothing to restore. The
- * `loadDetailedData()` call upstream makes here (`:2330-2332`) has no
- * counterpart; see divergence 5.
+ * scroll position never moves — there is nothing to restore.
+ *
+ * Opening a component starts the detailed fetch in the background
+ * (`:2330-2332`), for the reason upstream's comment gives: it buys the large
+ * file the time between "a reader opened a component" and "a reader clicked a
+ * failure inside it". The call is deliberately **not** awaited — the test rows
+ * and the chart below go in immediately, off the file already loaded.
  */
 function toggleComponent(key: string): void {
     const row = rowsByKey.get(key);
@@ -670,7 +923,24 @@ function toggleComponent(key: string): void {
     expandedComponents.add(key);
     row.classList.add('expanded');
     row.querySelector('.folder-icon')?.classList.add('expanded');
-    insertAfter(row, testRows(model));
+    if (isHistoricalMode) {
+        void loadDetailedData();
+    }
+
+    // The chart slot goes in **before** the test rows (`issues.html:2135-2141`
+    // emits it first), and is drawn into **after** it is in the document
+    // (`:2186-2197` is a second pass over the same components, for the reason
+    // Chart.js needs: a detached canvas has no size to lay a chart out in).
+    const chartId = isHistoricalMode && decoded !== null ? componentChartId(key) : null;
+    const body: HTMLElement[] = [];
+    if (chartId !== null) {
+        body.push(outcomeChartSlot(chartId, '20px'));
+    }
+    body.push(...testRows(model));
+    insertAfter(row, body);
+    if (chartId !== null) {
+        drawOutcomeCharts(chartId, componentDailyOutcomes(decoded!, model.tests, startTime));
+    }
 }
 
 /**
@@ -694,19 +964,35 @@ function toggleTestDetails(row: HTMLElement, test: IssueRow): void {
         return;
     }
     insertAfter(row, [issueDetails(test)]);
+    // After insertion, for the same reason the component chart is: Chart.js
+    // measures the canvas. `issues.html:2361-2368` does it in the same order.
+    if (isHistoricalMode) {
+        drawOutcomeCharts(
+            testChartId(test.testId),
+            testDailyOutcomes(decoded, test.testId, startTime)
+        );
+    }
 }
 
 /**
  * One test's expanded issue list.
  *
- * `generateIssueDetailsHtml` (`issues.html:2951-3108`) minus the charts
- * (divergence 6). The two "nothing to show" messages are upstream's and are
- * distinct on purpose: a test with no issues at all reads differently from one
- * whose issues are all of unchecked types (`:3034` and `:3049`).
+ * `generateIssueDetailsHtml` (`issues.html:2951-3108`). The two "nothing to
+ * show" messages are upstream's and are distinct on purpose: a test with no
+ * issues at all reads differently from one whose issues are all of unchecked
+ * types (`:3034` and `:3049`).
+ *
+ * The chart slot goes first, before the issue list, and **outside** the
+ * `allIssues.length === 0` branch (`:2956-2962` precedes `:3033`) — so a test
+ * whose issues are all filtered out still shows its 21-day history.
  */
 function issueDetails(test: IssueRow): HTMLElement {
     const entries = issueEntries(decoded!, test, filters);
     const content = el('div', { class: 'issue-details-content' });
+
+    if (isHistoricalMode) {
+        content.append(outcomeChartSlot(testChartId(test.testId)));
+    }
 
     if (entries.length === 0) {
         // Distinguishing the two needs the unfiltered list: if it is empty the
@@ -813,41 +1099,65 @@ function issueLine(test: IssueRow, entry: IssueEntry): HTMLElement {
         ],
     });
 
+    // The per-message chart slot and the run table, both hidden until the line
+    // is clicked. `issues.html:3131-3141` toggles the two together.
+    const chartId = isHistoricalMode ? messageChartId(test.testId, entry) : null;
+    const chart = chartId === null ? null : renderChartSlot(`${chartId}-canvas`);
+    if (chart !== null) {
+        chart.style.display = 'none';
+        chart.style.marginLeft = '50px';
+    }
+
     const runs = el('div', { class: 'issue-runs' });
     runs.style.display = 'none';
 
     line.addEventListener('click', (event) => {
         event.stopPropagation();
-        toggleIssueRuns(runs, test, entry);
+        toggleIssueRuns(runs, chart, test, entry);
     });
 
     const wrapper = el('div');
-    wrapper.append(line, runs);
+    wrapper.append(line);
+    if (chart !== null) {
+        wrapper.append(chart);
+    }
+    wrapper.append(runs);
     return wrapper;
 }
 
 /**
- * Opens or closes the per-run table under one issue line.
+ * Opens or closes the per-run table and the per-message chart under one issue
+ * line.
  *
- * `toggleIssueRuns` (`issues.html:3111-3145`) and `getIssueRuns` (`:3148`).
- *
- * **This is empty on the default view, and the page says so rather than
- * showing nothing.** A run row needs a task ID, and `{harness}-issues.json`
- * carries none — it is the `counts` shape throughout. Upstream renders
- * `<span>No run data available</span>` in that case (`:3150`), and reaching a
- * populated table requires the 15.7 MB `-with-taskids` file that divergence 5
- * explains is not fetched. The same message is shown here, which is upstream's
- * own text for upstream's own condition.
+ * `toggleIssueRuns` (`issues.html:3111-3145`). Collapsing hides both without
+ * clearing them, and expanding rebuilds the run table each time — which matters
+ * now that the detailed file can arrive between two clicks: the second click
+ * shows the runs the first could not.
  */
-function toggleIssueRuns(runs: HTMLElement, test: IssueRow, entry: IssueEntry): void {
+function toggleIssueRuns(
+    runs: HTMLElement,
+    chart: HTMLElement | null,
+    test: IssueRow,
+    entry: IssueEntry
+): void {
     if (runs.style.display !== 'none') {
         runs.style.display = 'none';
+        if (chart !== null) {
+            chart.style.display = 'none';
+        }
         return;
     }
     runs.textContent = '';
     const rows = runRows(test, entry);
     if (rows.length === 0) {
-        runs.append(el('span', { text: 'No run data available' }));
+        // Upstream has two texts here and they say different things: no status
+        // group at all for the test (`:3150`), against a group that held no
+        // entry matching this line (`:3229`). This page cannot reach the first
+        // — a line only exists because `issueEntries` found runs behind it —
+        // so the second is what an unattributed file produces, and it is the
+        // one shown. It is reachable exactly while the detailed file has not
+        // been merged; after the merge every line has rows.
+        runs.append(el('span', { text: 'No matching runs found' }));
     } else {
         const table = el('table');
         for (const row of rows) {
@@ -856,23 +1166,55 @@ function toggleIssueRuns(runs: HTMLElement, test: IssueRow, entry: IssueEntry): 
         runs.append(table);
     }
     runs.style.display = 'block';
+
+    if (chart !== null && decoded !== null) {
+        chart.style.display = 'block';
+        const chartId = messageChartId(test.testId, entry);
+        drawMessageChart(
+            `${chartId}-canvas`,
+            messageDailyRates(decoded, test.testId, entry.type, entry.message, startTime),
+            entry.type
+        );
+    }
 }
 
 /**
- * The per-run rows for one issue line, where the file attributes them.
+ * The per-run rows for one issue line.
  *
- * `getIssueRuns` (`issues.html:3148-3261`) reduced to what the shapes this page
- * loads can answer. A daily file has task IDs, so a single-day view can show
- * real rows; the 21-day aggregate has none and yields an empty list, which the
- * caller turns into upstream's own "No run data available".
+ * `getIssueRuns` (`issues.html:3148-3261`). Upstream branches on the issue type
+ * to pick the status groups to walk and then reads `taskIdIds` out of each;
+ * `runsOfTest` has resolved the shape already, so the branch is `matchesEntry`
+ * and the rest is one loop.
+ *
+ * **Which runs have rows.** A row needs a task ID. `{harness}-issues.json` is
+ * the `counts` shape throughout and carries none, so before the detailed file
+ * is merged this returns nothing and the caller says so; after the merge the
+ * non-passing groups are the `task-ids` shape and every issue line has rows.
+ * The daily files are the `flat` shape and have always had them.
+ *
+ * Upstream's row is `date | job name (linked) - duration | View: …`. The
+ * duration is **not** emitted here and that is a property of the data, not a
+ * choice: `run.duration` is `null` at every one of upstream's five
+ * `createRunInfo` call sites (`:3164`, `:3184`, `:3202`, `:3216` — the
+ * parameter defaults to `null` and none passes it), so upstream's
+ * `showDuration` is false on every row of this page. Measured on the pinned
+ * aggregate: the `task-ids` shape carries no `durations` array at all.
  */
 function runRows(test: IssueRow, entry: IssueEntry): HTMLElement[] {
     if (decoded === null) {
         return [];
     }
-    const rows: HTMLElement[] = [];
+    interface Run {
+        date: string | null;
+        jobName: string;
+        profileUrl: string;
+        crashUrl: string | null;
+        jobUrl: string | null;
+    }
+    const runs: Run[] = [];
+
     for (const run of decoded.runsOfTest(test.testId)) {
-        if (!matchesEntry(run, entry)) {
+        if (!matchesIssueLine(run, entry.type, entry.message)) {
             continue;
         }
         const taskIds = run.taskIds;
@@ -887,48 +1229,393 @@ function runRows(test: IssueRow, entry: IssueEntry): HTMLElement[] {
             const { taskId, retryId } = parseTaskId(raw);
             const taskIdIndex = run.taskIdIndexes?.[index];
             const jobName =
-                taskIdIndex === undefined
-                    ? ''
-                    : (decoded.jobNameOfTaskIndex(taskIdIndex) ?? '');
-            const links = el('td', { class: 'view-links' });
-            links.append(
-                externalLink(
-                    getProfilerUrl({ taskId, retryId: String(retryId), jobName }, test.fullPath),
-                    'Profile'
-                )
-            );
-            const jobUrl = getTreeherderJobUrl({ taskId, retryId: String(retryId) }, rawData);
-            if (jobUrl !== null) {
-                links.append(externalLink(jobUrl, 'Job'));
-            }
-            rows.push(el('tr', { children: [el('td', { text: jobName }), links] }));
+                taskIdIndex === undefined ? '' : (decoded.jobNameOfTaskIndex(taskIdIndex) ?? '');
+            // The crash viewer, for a crash whose dump was uploaded
+            // (`:3208-3211`). `minidumps` is parallel to the bucket's task IDs.
+            const minidump = run.minidumps?.[index] ?? null;
+            runs.push({
+                // A daily file's entries have no day (`day === null`), which is
+                // upstream's `dayIndex != null ? … : null` (`:3268`).
+                date: run.day === null ? null : dayLabel(startTime, run.day),
+                jobName,
+                profileUrl: getProfilerUrl(
+                    { taskId, retryId: String(retryId), jobName },
+                    test.fullPath
+                ),
+                // `getCrashViewerUrl` returns `''` with no minidump
+                // (`common-links.js:32`), which is upstream's own guard at
+                // `:3208` written a second way; `|| null` keeps the two cases
+                // one value here.
+                crashUrl:
+                    entry.type === 'CRASH'
+                        ? getCrashViewerUrl({ taskId, retryId: String(retryId), minidump }) ||
+                          null
+                        : null,
+                jobUrl: getTreeherderJobUrl({ taskId, retryId: String(retryId) }, rawData),
+            });
         }
     }
-    return rows;
+
+    // `prepareRunsForDisplay` (`common-ui.js:488`): newest day first, and the
+    // date printed only on the first row of a day. That function builds a
+    // `<td>` as a *string*, which this renderer has no use for, so the two
+    // rules are applied here — the sort is its `localeCompare` on `date ?? ''`
+    // and the blanking its `run.date !== lastDate`, both verbatim, and
+    // `test/issues-page.test.ts` asserts the resulting cells against it.
+    runs.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+
+    let lastDate: string | null = null;
+    return runs.map((run) => {
+        const showDate = run.date !== null && run.date !== lastDate;
+        lastDate = run.date;
+        const dateCell = el('td', { class: 'run-date', text: showDate ? run.date! : '' });
+
+        // The job name links to the crash viewer for a crash and to the
+        // profiler otherwise (`:3236-3237`).
+        const mainUrl = run.crashUrl ?? run.profileUrl;
+        const nameCell = el('td', {
+            class: 'run-job-name',
+            children: [externalLink(mainUrl, run.jobName)],
+        });
+
+        const links = el('td', { class: 'view-links' });
+        links.append('View: ', externalLink(run.profileUrl, 'Profile'));
+        if (run.crashUrl !== null) {
+            links.append(' ', externalLink(run.crashUrl, 'Crash'));
+        }
+        if (run.jobUrl !== null) {
+            links.append(' ', externalLink(run.jobUrl, 'Job'));
+        }
+
+        return el('tr', { children: [dateCell, nameCell, links] });
+    });
 }
 
-/** Whether one decoded run belongs to an issue line. */
-function matchesEntry(
-    run: {
-        status: string;
-        message?: string | null | undefined;
-        crashSignature?: string | null | undefined;
-    },
-    entry: IssueEntry
-): boolean {
-    switch (entry.type) {
-        case 'SKIP':
-            return (
-                run.status === 'SKIP' &&
-                (run.message ?? '').replace(/^skip-if:\s*/, '') === entry.message
-            );
-        case 'FAIL':
-            return run.status.startsWith('FAIL') && (run.message ?? '') === entry.message;
-        case 'CRASH':
-            return run.status === 'CRASH' && (run.crashSignature ?? '') === entry.message;
-        case 'TIMEOUT':
-            return run.status.startsWith('TIMEOUT');
+// --- the charts -----------------------------------------------------------
+
+/**
+ * The DOM id of a component's chart pair. `issues.html:2136`.
+ *
+ * Ids are still built and still collide the same way upstream's do: two
+ * components differing only in punctuation map to the same id, because every
+ * non-alphanumeric character becomes `-`. Nothing here resolves a chart
+ * *through* its id — the canvas elements are held directly — so the id is
+ * cosmetic, and it is reproduced so a reader's devtools sees what the old page
+ * shows.
+ */
+function componentChartId(component: string): string {
+    return `component-chart-${component.replace(/[^a-zA-Z0-9]/g, '-')}`;
+}
+
+/** The DOM id of a test's chart pair. `issues.html:2364`, `:2957`. */
+function testChartId(testId: number): string {
+    return `test-chart-${testId}`;
+}
+
+/**
+ * The DOM id of one issue line's chart. `issues.html:3057`.
+ *
+ * Upstream keys it on the test *path* and the line's index within the rendered
+ * list (`issue-${path…}-${index}`), which changes when a checkbox reorders the
+ * list. This uses the test id and the line's identity, which does not — the id
+ * is not resolved through anyway, for the reason `componentChartId` gives.
+ */
+function messageChartId(testId: number, entry: IssueEntry): string {
+    return `issue-${testId}-${entry.type}-${entry.message.replace(/[^a-zA-Z0-9]/g, '-')}`;
+}
+
+/**
+ * The two-canvas slot a component or test chart draws into.
+ *
+ * `issues.html:2137-2140` and `:2958-2961` — one `.historical-chart` holding
+ * `{id}-canvas` and `{id}-skips-canvas`. `renderChartSlot` builds the one-canvas
+ * version the crashes page uses, so the second canvas is appended to it rather
+ * than the whole thing being rebuilt.
+ */
+function outcomeChartSlot(chartId: string, marginLeft?: string): HTMLElement {
+    const slot = renderChartSlot(`${chartId}-canvas`);
+    slot.append(
+        el('canvas', { id: `${chartId}-skips-canvas`, class: 'historical-chart-canvas' })
+    );
+    if (marginLeft !== undefined) {
+        slot.style.marginLeft = marginLeft;
     }
+    return slot;
+}
+
+/**
+ * Draws a component's or a test's two charts.
+ *
+ * `createFailureRateChart` (`issues.html:2813-2941`). The stacked
+ * failure/timeout/crash chart and the skips chart are independent: each canvas
+ * is shown only if the window holds something for it (`:2827-2828`), and the
+ * skips canvas loses its x-axis when the other one above it already has one
+ * (`:2909-2914`, the `no-x-axis` class).
+ *
+ * **The percentages have two different denominators, and that is upstream's**
+ * (`:2818-2825`): a failure/timeout/crash rate is over the runs that executed,
+ * a skip rate is over the runs that were *scheduled* — executed plus skipped.
+ * A skipped run could not have failed, so putting it in the failure
+ * denominator would depress the rate by however many platforms disabled the
+ * test.
+ */
+function drawOutcomeCharts(chartId: string, series: DailyOutcomes[]): void {
+    const canvas = document.getElementById(`${chartId}-canvas`) as HTMLCanvasElement | null;
+    const skipCanvas = document.getElementById(
+        `${chartId}-skips-canvas`
+    ) as HTMLCanvasElement | null;
+    if (canvas === null) {
+        return;
+    }
+    const visible = chartVisibility(series);
+    const labels = series.map((day) => day.date);
+    const executed = series.map(
+        (day) => day.passes + day.failures + day.timeouts + day.crashes
+    );
+    const rate = (count: number, total: number): number => (total > 0 ? (count / total) * 100 : 0);
+
+    if (visible.issues) {
+        canvas.style.display = 'block';
+        drawChart(canvas, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: 'Failure %',
+                        data: series.map((day, i) => rate(day.failures, executed[i]!)),
+                        backgroundColor: 'rgba(255, 140, 0, 0.7)',
+                        borderColor: '#ff8c00',
+                        borderWidth: 1,
+                    },
+                    {
+                        label: 'Timeout %',
+                        data: series.map((day, i) => rate(day.timeouts, executed[i]!)),
+                        backgroundColor: 'rgba(255, 193, 7, 0.7)',
+                        borderColor: '#ffc107',
+                        borderWidth: 1,
+                    },
+                    {
+                        label: 'Crash %',
+                        data: series.map((day, i) => rate(day.crashes, executed[i]!)),
+                        backgroundColor: 'rgba(220, 53, 69, 0.7)',
+                        borderColor: '#dc3545',
+                        borderWidth: 1,
+                    },
+                ],
+            },
+            options: chartOptions('% failures', {
+                stacked: true,
+                label: (context: ChartTooltipContext): string | null => {
+                    const day = series[context.dataIndex];
+                    if (day === undefined) {
+                        return null;
+                    }
+                    const counts: Record<string, [number, string, string]> = {
+                        'Failure %': [day.failures, 'failure', 'failures'],
+                        'Timeout %': [day.timeouts, 'timeout', 'timeouts'],
+                        'Crash %': [day.crashes, 'crash', 'crashes'],
+                    };
+                    const found = counts[context.dataset.label];
+                    if (found === undefined || found[0] === 0) {
+                        // Upstream returns null for a zero so the tooltip does
+                        // not list two series that did not happen (`:2884`).
+                        return null;
+                    }
+                    const [count, singular, plural] = found;
+                    const total = executed[context.dataIndex] ?? 0;
+                    return `${formatNumber(count)} ${count === 1 ? singular : plural} out of ${formatNumber(total)} runs (${context.parsed.y.toFixed(1)}%)`;
+                },
+                footer: (items: ChartTooltipContext[]): string => {
+                    const day = series[items[0]?.dataIndex ?? 0];
+                    return `Passes: ${formatNumber(day?.passes ?? 0)}`;
+                },
+            }),
+        });
+    } else {
+        canvas.style.display = 'none';
+    }
+
+    if (skipCanvas === null) {
+        return;
+    }
+    if (!visible.skips) {
+        skipCanvas.style.display = 'none';
+        return;
+    }
+    skipCanvas.style.display = 'block';
+    skipCanvas.classList.toggle('no-x-axis', visible.issues);
+    const scheduled = series.map((day, i) => executed[i]! + day.skips);
+    drawChart(skipCanvas, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'Skip %',
+                    data: series.map((day, i) => rate(day.skips, scheduled[i]!)),
+                    backgroundColor: 'rgba(108, 117, 125, 0.7)',
+                    borderColor: '#6c757d',
+                    borderWidth: 1,
+                },
+            ],
+        },
+        options: chartOptions('% skips', {
+            hideXAxis: visible.issues,
+            label: (context: ChartTooltipContext): string | null => {
+                const day = series[context.dataIndex];
+                if (day === undefined || day.skips === 0) {
+                    return null;
+                }
+                const total = scheduled[context.dataIndex] ?? 0;
+                const word = day.skips === 1 ? 'skip' : 'skips';
+                return `${formatNumber(day.skips)} ${word} out of ${formatNumber(total)} scheduled runs (${context.parsed.y.toFixed(1)}%)`;
+            },
+        }),
+    });
+}
+
+/** The colours and the y-axis label for one issue type. `issues.html:2750-2771`. */
+const MESSAGE_CHART_STYLE: Record<IssueEntry['type'], [string, string, string]> = {
+    SKIP: ['rgba(108, 117, 125, 0.7)', '#6c757d', '% skips'],
+    FAIL: ['rgba(255, 140, 0, 0.7)', '#ff8c00', '% failures'],
+    TIMEOUT: ['rgba(255, 193, 7, 0.7)', '#ffc107', '% timeouts'],
+    CRASH: ['rgba(220, 53, 69, 0.7)', '#dc3545', '% crashes'],
+};
+
+/** The plural noun one issue type's tooltip uses. `issues.html:2789-2801`. */
+const MESSAGE_CHART_NOUN: Record<IssueEntry['type'], [string, string]> = {
+    SKIP: ['skip', 'skips'],
+    FAIL: ['failure', 'failures'],
+    TIMEOUT: ['timeout', 'timeouts'],
+    CRASH: ['crash', 'crashes'],
+};
+
+/** Draws one issue line's chart. `createIssueMessageChart` (`issues.html:2743`). */
+function drawMessageChart(
+    canvasId: string,
+    series: DailyMessageRate[],
+    type: IssueEntry['type']
+): void {
+    const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+    if (canvas === null) {
+        return;
+    }
+    const [background, border, axisLabel] = MESSAGE_CHART_STYLE[type];
+    const [singular, plural] = MESSAGE_CHART_NOUN[type];
+    drawChart(canvas, {
+        type: 'bar',
+        data: {
+            labels: series.map((day) => day.date),
+            datasets: [
+                {
+                    label: 'Occurrence Rate',
+                    data: series.map((day) =>
+                        day.totalRuns > 0 ? (day.count / day.totalRuns) * 100 : 0
+                    ),
+                    backgroundColor: background,
+                    borderColor: border,
+                    borderWidth: 1,
+                },
+            ],
+        },
+        options: chartOptions(axisLabel, {
+            label: (context: ChartTooltipContext): string | null => {
+                const day = series[context.dataIndex];
+                if (day === undefined || day.count === 0) {
+                    return null;
+                }
+                const word = day.count === 1 ? singular : plural;
+                return `${formatNumber(day.count)} ${word} out of ${formatNumber(day.totalRuns)} runs (${context.parsed.y.toFixed(1)}%)`;
+            },
+        }),
+    });
+}
+
+/** What a Chart.js tooltip callback is handed. Only the fields read here. */
+interface ChartTooltipContext {
+    dataIndex: number;
+    dataset: { label: string };
+    parsed: { y: number };
+}
+
+/**
+ * The chart options every chart on this page shares.
+ *
+ * `getCommonChartOptions` (`issues.html:2700-2740`), including
+ * `animation: false` on both the chart and the tooltip — the old page turns
+ * animation off so a chart appearing under an expanded row does not shift the
+ * rows below it while it grows.
+ */
+function chartOptions(
+    yAxisLabel: string,
+    callbacks: {
+        label: (context: ChartTooltipContext) => string | null;
+        footer?: (items: ChartTooltipContext[]) => string;
+        stacked?: boolean;
+        hideXAxis?: boolean;
+    }
+): Record<string, unknown> {
+    const x: Record<string, unknown> = {};
+    if (callbacks.stacked === true) {
+        x['stacked'] = true;
+    }
+    if (callbacks.hideXAxis === true) {
+        x['display'] = false;
+    }
+    const tooltipCallbacks: Record<string, unknown> = { label: callbacks.label };
+    if (callbacks.footer !== undefined) {
+        tooltipCallbacks['footer'] = callbacks.footer;
+    }
+    return {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+            title: { display: false },
+            legend: { display: false },
+            tooltip: { animation: false, callbacks: tooltipCallbacks },
+        },
+        scales: {
+            x,
+            y: {
+                beginAtZero: true,
+                stacked: callbacks.stacked === true,
+                title: { display: true, text: yAxisLabel },
+                ticks: { callback: (value: number): string => `${value}%` },
+            },
+        },
+    };
+}
+
+/**
+ * Hands one chart configuration to Chart.js.
+ *
+ * The single point where this page touches Chart.js, and it exists for a
+ * problem upstream has and does not solve: `new Chart(canvas, …)` throws
+ * `Canvas is already in use. Chart with ID '0' must be destroyed` when a chart
+ * is still attached to that canvas. Upstream reaches it by re-expanding a
+ * component — its renderer rebuilds the whole table by `innerHTML`, which
+ * *detaches* the old canvas without destroying its chart, and Chart.js keeps
+ * the registry entry alive. Here the canvas element is genuinely reused, so
+ * `Chart.getChart` is asked for the survivor and it is destroyed first.
+ *
+ * `Chart` is the global the CDN `<script>` defines. It is the seam the tests
+ * substitute — jsdom has no 2D canvas context, so no real chart can be
+ * constructed there and the assertion has to be on *what was handed to it*,
+ * which is the part this page is responsible for.
+ */
+function drawChart(canvas: HTMLCanvasElement, config: Record<string, unknown>): void {
+    const chart = chartJs();
+    if (chart === undefined) {
+        // Chart.js is loaded by a CDN `<script>` with no `defer`, so it is
+        // there before any of this runs. Missing means the CDN is blocked, and
+        // the page is more useful without a chart than blank.
+        return;
+    }
+    chart.getChart(canvas)?.destroy();
+    new chart(canvas, config);
 }
 
 // --- the issue-type checkboxes -------------------------------------------
@@ -973,6 +1660,7 @@ async function loadSelectedDate(): Promise<void> {
         const file = (await response.json()) as DailyFile;
         rawData = file;
         decoded = decodeDaily(file);
+        startTime = file.metadata.startTime;
         expandedComponents.clear();
         render();
         const jobCount = file.metadata.jobCount ?? 0;
@@ -980,6 +1668,90 @@ async function loadSelectedDate(): Promise<void> {
     } catch (error) {
         showError(`Error loading data: ${error instanceof Error ? error.message : String(error)}`, true);
     }
+}
+
+/**
+ * Fetches `{harness}-issues-with-taskids.json` and merges it in.
+ *
+ * `loadDetailedData` (`issues.html:3403-3452`), and the reason this page has it
+ * at all: the 21-day aggregate the page opens on carries **no task
+ * attribution** — `{harness}-issues.json` is the `counts` shape throughout —
+ * so without this file a failure message has no runs to list and the
+ * per-message chart has nothing to bucket. The detailed file is the same 21
+ * days with `taskIdIds` on the non-passing groups.
+ *
+ * ## The four properties this reproduces
+ *
+ * **Historical mode only** (`:3405`). The daily files already carry task IDs.
+ *
+ * **At most one fetch** (`:3408`), guarded by `loadingDetailed` and
+ * `detailedLoaded` — 15.9 MB is not a request to make twice, and expanding a
+ * second component while the first fetch is in flight is the ordinary case.
+ *
+ * **A failure is a warning, not an error** (`:3417`, `:3449`). The page keeps
+ * working on the counts-only file, which is what it was already showing.
+ *
+ * **Nothing waits for it.** The caller does not await; the reader's expansion
+ * has already rendered.
+ *
+ * ## What the merge replaces, and what it cannot
+ *
+ * Upstream swaps four tables and `taskInfo` into the *live* `currentData`
+ * object (`:3428-3444`) — and since `currentData === historicalData` (`:3561`),
+ * the charts see the swap too. Two things follow that this page has to match:
+ *
+ * - **The displayed numbers must not move.** They do not, and that is measured
+ *   rather than assumed: on the live 21-day xpcshell pair, all 58,056 status
+ *   groups across 4,838 tests have identical run totals in the two files, and
+ *   the `testInfo`, `statuses` and `messages` tables are byte-identical. The
+ *   fixtures were checked the same way — `test/issues-page.test.ts` asserts the
+ *   rendered rows are unchanged across the merge, which is what would catch a
+ *   file that had drifted.
+ * - **A partial merge must not be reachable.** Upstream's is: it assigns
+ *   `testRuns` and `taskInfo` unconditionally and each table only
+ *   `if (detailedData.tables.X)`, so a file with `taskIdIds` and no
+ *   `tables.taskIds` leaves the page resolving task indices against the *old*
+ *   table — silently wrong job names rather than an error. Here the file is
+ *   decoded into a new `DecodedTimingFile` and swapped in with one assignment,
+ *   so the page holds either the old file or the new one and never a mixture.
+ *   `decodeIssuesWithTaskIds` is what fails loudly if the tables are missing.
+ *
+ * The re-render at the end is upstream's *absence*: upstream does not re-render
+ * either (`:3446` just logs), because the numbers are the same and the reader
+ * is looking at the page. What has changed is only what a *later* click finds.
+ */
+async function loadDetailedData(): Promise<void> {
+    if (!isHistoricalMode || loadingDetailed || detailedLoaded) {
+        return;
+    }
+    loadingDetailed = true;
+    const load = (async (): Promise<void> => {
+        try {
+            const harness = getHarnessType();
+            const response = await fetchData(`${harness}-issues-with-taskids.json`);
+            if (!response.ok) {
+                console.warn('Detailed data not available');
+                return;
+            }
+            const file = (await response.json()) as IssuesWithTaskIdsFile;
+            // Between the fetch starting and it landing the reader may have
+            // left the 21-day view, in which case `decoded` is a daily file and
+            // overwriting it would replace what they are looking at.
+            if (!isHistoricalMode) {
+                return;
+            }
+            rawData = file;
+            decoded = decodeIssuesWithTaskIds(file);
+            startTime = file.metadata.startTime;
+            detailedLoaded = true;
+        } catch (error) {
+            console.warn('Error loading detailed data:', error);
+        } finally {
+            loadingDetailed = false;
+        }
+    })();
+    detailedLoad = load;
+    await load;
 }
 
 /**
@@ -995,12 +1767,21 @@ async function loadSelectedDate(): Promise<void> {
  * variant `crashes.html` loads. `lib/formats/issues.ts` and
  * `lib/formats/daily.ts` decode them into the same interface, which is what
  * lets everything above this line be shape-independent.
+ *
+ * The detailed file is **not** fetched here. Upstream clears it on both edges
+ * of the toggle (`:3535-3536`, `:3551-3552`) and fetches it only when a
+ * component is opened; both are reproduced, so entering the 21-day view costs
+ * one 2.8 MB request and not 18.7 MB.
  */
 async function onHistoricalToggled(isHistorical: boolean, data: unknown): Promise<void> {
     isHistoricalMode = isHistorical;
+    // Both edges: whatever was merged describes the window being left.
+    detailedLoaded = false;
+    loadingDetailed = false;
     if (isHistorical) {
         rawData = data;
         decoded = decodeIssues(data as IssuesFile);
+        startTime = (data as IssuesFile).metadata.startTime;
         expandedComponents.clear();
         hideError();
         render();
@@ -1034,6 +1815,7 @@ async function loadTryRevision(revision: string): Promise<void> {
         const file = (await response.json()) as DailyFile;
         rawData = file;
         decoded = decodeDaily(file);
+        startTime = file.metadata.startTime;
         dateSelect().value = '';
         const jobCount = file.metadata.jobCount ?? 0;
         setStatusText(`Try: ${revision.substring(0, 12)} (${jobCount.toLocaleString()} jobs)`);
@@ -1199,11 +1981,23 @@ export async function start(): Promise<void> {
 declare global {
     interface Window {
         __view?: () => unknown;
+        /**
+         * The in-flight detailed fetch, or `null`.
+         *
+         * The load is started by a click handler and awaited by nobody, which
+         * is the behaviour under test — so a test that needs to observe the
+         * page *after* the merge has no other handle on it. Exposed as the
+         * promise rather than as a "is it done" flag so a test cannot pass by
+         * checking a flag that was never set.
+         */
+        __detailedLoad?: () => Promise<void> | null;
     }
 }
+window.__detailedLoad = () => detailedLoad;
 window.__view = () => ({
     sort: currentSort,
     historical: isHistoricalMode,
+    detailedLoaded,
     filters: { ...filters },
     search: searchBoxManager?.getValue() ?? '',
     expanded: [...expandedComponents],

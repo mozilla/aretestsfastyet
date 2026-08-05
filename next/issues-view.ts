@@ -836,6 +836,453 @@ export function failureTooltip(count: number, runCount: number): string {
     return `${count} ${occurrenceText} of this message out of ${runCount.toLocaleString()} runs (${percentage}%)`;
 }
 
+// --- the daily-rate series ------------------------------------------------
+
+/**
+ * One day of the per-component and per-test charts.
+ *
+ * `calculateDailyFailureRates` (`issues.html:2373-2464`) and
+ * `calculateComponentDailyFailureRates` (`:2467-2510`) build exactly this
+ * array, one entry per day the file covers, day 0 the oldest.
+ */
+export interface DailyOutcomes {
+    day: number;
+    /** `YYYY-MM-DD`, from `startTime + day * 86400`. `issues.html:2385`. */
+    date: string;
+    passes: number;
+    failures: number;
+    timeouts: number;
+    crashes: number;
+    skips: number;
+}
+
+/** One day of the per-issue-message chart. `issues.html:2513-2698`. */
+export interface DailyMessageRate {
+    day: number;
+    date: string;
+    /** Occurrences of this one message on this day. */
+    count: number;
+    /** The denominator: see `messageDailyRates` for which runs it counts. */
+    totalRuns: number;
+}
+
+/**
+ * The `YYYY-MM-DD` label for a day index.
+ *
+ * `issues.html:2385`, verbatim: `startTime` is Unix **seconds**, a day is
+ * 86,400 of them, and the label is the UTC date. Written once rather than
+ * three times because all three series build it identically.
+ */
+export function dayLabel(startTime: number, day: number): string {
+    return new Date((startTime + day * 86400) * 1000).toISOString().split('T')[0]!;
+}
+
+/** `days` empty buckets, labelled. The head of all three upstream functions. */
+function emptyDays<T>(days: number, startTime: number, fill: (day: number, date: string) => T): T[] {
+    const out: T[] = [];
+    for (let day = 0; day < days; day++) {
+        out.push(fill(day, dayLabel(startTime, day)));
+    }
+    return out;
+}
+
+/**
+ * How many days a decoded aggregate covers, defaulting to 21.
+ *
+ * `historicalData.metadata.days || 21` (`issues.html:2376`). A daily file's
+ * `days` is `null`, and upstream's three functions all return `null` when the
+ * page is not in historical mode — the callers here make the same check by
+ * asking for the series only in 21-day mode.
+ */
+export function chartDays(file: DecodedTimingFile): number {
+    return file.days ?? 21;
+}
+
+/**
+ * The per-test outcome series: passes, failures, timeouts, crashes and skips
+ * by day.
+ *
+ * `calculateDailyFailureRates` (`issues.html:2373`). Upstream branches on the
+ * three status-group shapes it might meet and derives a count from each;
+ * `runsOfTest` has already resolved the shape, and `entry.count` is that count
+ * in every one of them — which is why the three branches collapse to one loop
+ * here rather than being ported three times.
+ *
+ * The classification is upstream's and it has a hole worth naming:
+ * `EXPECTED-FAIL` matches none of `startsWith('PASS')`, `=== 'CRASH'`,
+ * `startsWith('TIMEOUT')`, `=== 'SKIP'`, `startsWith('FAIL')`, so upstream
+ * silently drops it from both the numerator and the denominator.
+ * `classifyStatus` returns `expected-fail` for it, which lands in the same
+ * `default` — so the two agree without this file restating the prefix chain.
+ * Measured on the pinned 21-day xpcshell aggregate: 13 of 4,838 tests carry a
+ * non-zero `EXPECTED-FAIL`, 4,973 runs, all excluded from these charts by both
+ * pages.
+ *
+ * An entry whose `day` is past the end of the window is dropped, as upstream's
+ * `if (day < days)` does (`:2404`).
+ */
+export function testDailyOutcomes(
+    file: DecodedTimingFile,
+    testId: number,
+    startTime: number
+): DailyOutcomes[] {
+    const days = chartDays(file);
+    const series = emptyDays<DailyOutcomes>(days, startTime, (day, date) => ({
+        day,
+        date,
+        passes: 0,
+        failures: 0,
+        timeouts: 0,
+        crashes: 0,
+        skips: 0,
+    }));
+    for (const entry of file.runsOfTest(testId)) {
+        const day = entry.day;
+        if (day === null || day < 0 || day >= days) {
+            continue;
+        }
+        const bucket = series[day]!;
+        switch (classifyStatus(entry.status).kind) {
+            case 'pass':
+                bucket.passes += entry.count;
+                break;
+            case 'crash':
+                bucket.crashes += entry.count;
+                break;
+            case 'timeout':
+                bucket.timeouts += entry.count;
+                break;
+            case 'skip':
+                bucket.skips += entry.count;
+                break;
+            case 'fail':
+                bucket.failures += entry.count;
+                break;
+            default:
+                // `expected-fail` and `unknown`. Upstream's five-branch chain
+                // matches neither, so neither is counted; see above.
+                break;
+        }
+    }
+    return series;
+}
+
+/**
+ * The per-component series: every test in the component, summed day by day.
+ *
+ * `calculateComponentDailyFailureRates` (`issues.html:2467`), which calls the
+ * per-test function once per test and adds the five fields. Reproduced as the
+ * same loop.
+ *
+ * **Which tests.** Upstream passes `group.tests` — the component's tests *after
+ * the search filtered them*, and only those with an issue, because that is what
+ * `renderComponentsView` put in the group (`:2016`). So a search narrows the
+ * chart as well as the row, and a clean test contributes no passes to the
+ * denominator. Both are upstream's and both are reproduced by the caller
+ * passing `row.tests`.
+ */
+export function componentDailyOutcomes(
+    file: DecodedTimingFile,
+    tests: readonly IssueRow[],
+    startTime: number
+): DailyOutcomes[] {
+    const days = chartDays(file);
+    const series = emptyDays<DailyOutcomes>(days, startTime, (day, date) => ({
+        day,
+        date,
+        passes: 0,
+        failures: 0,
+        timeouts: 0,
+        crashes: 0,
+        skips: 0,
+    }));
+    for (const test of tests) {
+        const perTest = testDailyOutcomes(file, test.testId, startTime);
+        for (let day = 0; day < days; day++) {
+            const into = series[day]!;
+            const from = perTest[day]!;
+            into.passes += from.passes;
+            into.failures += from.failures;
+            into.timeouts += from.timeouts;
+            into.crashes += from.crashes;
+            into.skips += from.skips;
+        }
+    }
+    return series;
+}
+
+/**
+ * The per-issue-message series: one message's occurrences by day, over the runs
+ * that could have produced it.
+ *
+ * `calculateIssueMessageDailyRates` (`issues.html:2513-2698`). Two rules are
+ * upstream's and both are reproduced:
+ *
+ * - **The denominator counts every status group**, `EXPECTED-FAIL` included
+ *   (`:2534-2570` has no classification at all, only a SKIP exclusion) — so it
+ *   is *not* the `runCount` the row above it shows, and it is not built from
+ *   `classifyStatus`. Written as the same unconditional walk.
+ * - **SKIP is in the denominator only for a SKIP line** (`:2540-2542`): a skip
+ *   rate is over scheduled runs, every other rate is over runs that executed.
+ *
+ * ## The one divergence: all matching statuses, not the first
+ *
+ * Upstream resolves the issue type to **one** `targetStatusId` and `break`s out
+ * of the search (`:2574-2590`), then counts only that group. With
+ * `tables.statuses` ordered `… TIMEOUT-PARALLEL, FAIL-PARALLEL, … CRASH,
+ * FAIL-SEQUENTIAL, TIMEOUT, FAIL, TIMEOUT-SEQUENTIAL`, that is `FAIL-PARALLEL`
+ * for every FAIL line and `TIMEOUT-PARALLEL` for every TIMEOUT line — the runs
+ * recorded under the other suffixes are dropped from the chart.
+ *
+ * **Measured on the pinned 21-day xpcshell aggregate**: 2,792 of the 3,788
+ * tests with any failure have more than one `FAIL*` group, and 214 have more
+ * than one `TIMEOUT*` group. A concrete case,
+ * `toolkit/components/backgroundtasks/tests/xpcshell/test_backgroundtask_automaticrestart.js`
+ * on `[test_backgroundtask_automatic_restart : 23] 0 == 3` — 48 runs under
+ * `FAIL-PARALLEL` and 3 under `FAIL`, of which upstream charts 48.
+ *
+ * This is reproduced as a **fix**, not as a bug, because upstream contradicts
+ * itself here rather than making a choice: the count rendered on the issue line
+ * (`issueEntries`, from every `FAIL*` group) and the run list under it
+ * (`getIssueRuns`, `:3168-3172`, which explicitly collects **all** `FAIL*`
+ * status ids) both use the full set, and only the chart uses one. Reproducing
+ * the chart's version would put a bar summing to 48 directly beneath a line
+ * reading 51 and a list of 51 rows. Declared as divergence 8 in
+ * `next/issues.ts`.
+ */
+export function messageDailyRates(
+    file: DecodedTimingFile,
+    testId: number,
+    type: IssueEntry['type'],
+    message: string,
+    startTime: number
+): DailyMessageRate[] {
+    const days = chartDays(file);
+    const series = emptyDays<DailyMessageRate>(days, startTime, (day, date) => ({
+        day,
+        date,
+        count: 0,
+        totalRuns: 0,
+    }));
+
+    for (const entry of file.runsOfTest(testId)) {
+        const day = entry.day;
+        if (day === null || day < 0 || day >= days) {
+            continue;
+        }
+        const bucket = series[day]!;
+        const isSkip = entry.status === 'SKIP';
+
+        // The denominator (`:2534-2570`): every group, with SKIP excluded
+        // unless this is a SKIP line.
+        if (type === 'SKIP' || !isSkip) {
+            bucket.totalRuns += entry.count;
+        }
+
+        if (matchesIssueLine(entry, type, message)) {
+            bucket.count += entry.count;
+        }
+    }
+    return series;
+}
+
+/**
+ * Whether one decoded run entry belongs to an issue line.
+ *
+ * The message tests upstream applies inside each of its three shape branches
+ * (`:2604-2626` and its two copies), unified — the shapes differ in how a count
+ * is read, which `runsOfTest` has already resolved, and not in how a message is
+ * matched.
+ *
+ * A TIMEOUT line matches every run of a timeout status (`:2606`), because the
+ * format records no per-timeout message; the synthetic `FAILURE_NO_MESSAGE` and
+ * `CRASH_NO_SIGNATURE` lines match the runs whose message or signature is
+ * absent, which is how the two "not recorded" lines get a chart at all.
+ *
+ * **One function for the chart and for the run list.** `getIssueRuns`
+ * (`issues.html:3148`) applies the same four tests to decide which runs a line
+ * lists, with one difference that is an upstream oversight rather than a
+ * decision: its FAIL branch tests `message === issueMessage ||
+ * (!message && issueMessage === FAILURE_NO_MESSAGE)` (`:3183`) while its CRASH
+ * branch tests the matching pair for `CRASH_NO_SIGNATURE` (`:3199`) — so both
+ * synthetic lines do list their runs upstream. Sharing this predicate is what
+ * keeps the chart's bars summing to the number of rows the same click reveals.
+ */
+export function matchesIssueLine(
+    entry: { status: string; message?: string | null; crashSignature?: string | null },
+    type: IssueEntry['type'],
+    message: string
+): boolean {
+    const kind = classifyStatus(entry.status).kind;
+    switch (type) {
+        case 'TIMEOUT':
+            return kind === 'timeout';
+        case 'SKIP': {
+            if (kind !== 'skip') {
+                return false;
+            }
+            const clean = (entry.message ?? '').replace(/^skip-if:\s*/, '');
+            return clean === message;
+        }
+        case 'FAIL': {
+            if (kind !== 'fail') {
+                return false;
+            }
+            const text = entry.message ?? '';
+            return message === FAILURE_NO_MESSAGE ? text === '' : text === message;
+        }
+        case 'CRASH': {
+            if (kind !== 'crash') {
+                return false;
+            }
+            const signature = entry.crashSignature ?? '';
+            return message === CRASH_NO_SIGNATURE ? signature === '' : signature === message;
+        }
+    }
+}
+
+/**
+ * Whether a component or test chart has anything to draw, and on which canvas.
+ *
+ * `createFailureRateChart` (`issues.html:2813`) draws **two** canvases and hides
+ * either one independently: the stacked failure/timeout/crash chart when the
+ * window holds any of those (`:2827`), and the skips chart when it holds any
+ * skip (`:2828`). A test that was only ever skipped therefore shows one chart,
+ * not two, and a component with neither shows none.
+ *
+ * Returned as data rather than decided inside the renderer so
+ * `test/issues-view.test.ts` can assert it without a canvas.
+ */
+export function chartVisibility(series: readonly DailyOutcomes[]): {
+    issues: boolean;
+    skips: boolean;
+} {
+    return {
+        issues: series.some((d) => d.failures > 0 || d.timeouts > 0 || d.crashes > 0),
+        skips: series.some((d) => d.skips > 0),
+    };
+}
+
+// --- the platform-breakdown tooltips -------------------------------------
+
+/** Which stat cell a hover tooltip describes. `issues.html:825`, `:829`, `:833`. */
+export type TooltipType = 'skips' | 'failures' | 'timeouts';
+
+/** One platform's counts, for a hover tooltip. `issues.html:1210-1216`. */
+export interface PlatformCounts {
+    platform: string;
+    skips: number;
+    failures: number;
+    timeouts: number;
+}
+
+/**
+ * A test's runs broken down by platform, for the hover tooltips.
+ *
+ * `calculateTestPlatformBreakdown` (`issues.html:1204-1290`), reduced to the
+ * three counters the three tooltips display. It counts only runs the file
+ * attributes to a task, which is upstream's `if (!statusGroup.taskIdIds)
+ * continue` (`:1222`) — before the detailed file is merged that is every run,
+ * and the tooltip is empty.
+ *
+ * The `run-if` exclusion is upstream's (`:1231-1233`) and is the same rule the
+ * Skips column already applies: a test scoped to another platform is not a
+ * skip. It is applied through `skipReason` rather than through upstream's
+ * `startsWith('run-if')` because that is where this repository keeps the rule.
+ *
+ * `passes` and `total` are **not** returned. Upstream accumulates both
+ * (`:1249-1251`) and no tooltip type reads either — `generateTooltipContent`
+ * (`:1330`) uses only `counts[type]` for the type it was asked for. Measured on
+ * the live 21-day xpcshell pair, they could not be right if they were: the
+ * `-with-taskids` file attributes all 2,370,307 non-passing runs to a task and
+ * **none** of the 38,725,638 passing ones, which stay `counts`-shaped. A
+ * `passes` counter would therefore read 0 for every platform on every test.
+ */
+export function platformBreakdown(
+    file: DecodedTimingFile,
+    testId: number,
+    platformOf: (jobName: string) => string
+): PlatformCounts[] {
+    const byPlatform = new Map<string, PlatformCounts>();
+    for (const entry of file.runsOfTest(testId)) {
+        const indexes = entry.taskIdIndexes;
+        if (indexes === undefined) {
+            continue;
+        }
+        const kind = classifyStatus(entry.status).kind;
+        let field: keyof Omit<PlatformCounts, 'platform'>;
+        if (kind === 'skip') {
+            if (skipReason(entry.message) === 'run-if') {
+                continue;
+            }
+            field = 'skips';
+        } else if (kind === 'timeout') {
+            field = 'timeouts';
+        } else if (kind === 'fail' || kind === 'crash') {
+            // Upstream's `isFail` is "not in a list of nine" (`:1219`), which
+            // puts CRASH here — the one place on this page that folds crashes
+            // into failures. `classifyStatus` names them apart, so the fold is
+            // written out where a reader can see it.
+            field = 'failures';
+        } else {
+            continue;
+        }
+        for (const index of indexes) {
+            const jobName = file.jobNameOfTaskIndex(index);
+            const platform = jobName === null ? 'unknown' : platformOf(jobName) || 'unknown';
+            let counts = byPlatform.get(platform);
+            if (counts === undefined) {
+                counts = { platform, skips: 0, failures: 0, timeouts: 0 };
+                byPlatform.set(platform, counts);
+            }
+            counts[field] += 1;
+        }
+    }
+    return [...byPlatform.values()];
+}
+
+/** One line of a rendered tooltip: a platform, its count and its share. */
+export interface TooltipLine {
+    platform: string;
+    count: number;
+    /** `count / (the total across platforms) * 100`, to one decimal. */
+    percentage: string;
+}
+
+/**
+ * The platform lines of a tooltip, ranked and with their shares.
+ *
+ * `generateTooltipContent`'s count branch (`issues.html:1348-1372`): platforms
+ * with a zero for this type are dropped (`:1350`), the rest are ranked by count
+ * descending (`:1351`), and each share is over the **sum of the surviving
+ * platforms** and not over the test's runs (`:1356`) — so the shares add to
+ * 100%. Rounded once, with `toFixed(1)`, from the raw ratio.
+ *
+ * An empty array means no tooltip is shown at all (`:1353`), which is upstream's
+ * behaviour and the reason a cell with an unattributed count shows nothing
+ * rather than an empty box.
+ */
+export function tooltipLines(
+    breakdown: readonly PlatformCounts[],
+    type: TooltipType
+): TooltipLine[] {
+    const present = breakdown.filter((counts) => counts[type] > 0);
+    present.sort((a, b) => b[type] - a[type]);
+    const total = present.reduce((sum, counts) => sum + counts[type], 0);
+    return present.map((counts) => ({
+        platform: counts.platform,
+        count: counts[type],
+        percentage: ((counts[type] / total) * 100).toFixed(1),
+    }));
+}
+
+/** The heading above a tooltip's platform lines. `issues.html:1357`. */
+export const TOOLTIP_HEADING: Record<TooltipType, string> = {
+    skips: 'Skips by Platform:',
+    failures: 'Failures by Platform:',
+    timeouts: 'Timeouts by Platform:',
+};
+
 // --- URL state -----------------------------------------------------------
 
 /** The hash state this page carries. */
