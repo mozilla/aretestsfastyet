@@ -655,7 +655,8 @@ function renderGroupRow(currentView: ErrorView, row: ErrorGroupRow, index: numbe
         renderStats(
             cols.map((col) => colValue(data!, row, col.key) as number),
             cols,
-            totals.count
+            totals.count,
+            visibleOccurrences()
         )
     );
     rowOf.set(element, row);
@@ -663,19 +664,47 @@ function renderGroupRow(currentView: ErrorView, row: ErrorGroupRow, index: numbe
 }
 
 /**
+ * The occurrence count across the rows a search left on screen.
+ *
+ * Memoized on the `visible` array itself rather than recomputed per row: rows
+ * are rendered in chunks of `VCHUNK` as the reader scrolls, so summing 35,474
+ * rows inside each row's own render would be quadratic on the mochitest file.
+ * `visible` is replaced wholesale by `applyFilters`, never mutated, so identity
+ * is a sound cache key.
+ */
+let visibleTotalFor: ErrorGroupRow[] | null = null;
+let visibleTotalValue = 0;
+function visibleOccurrences(): number {
+    if (visibleTotalFor !== visible) {
+        visibleTotalValue = visible.reduce((sum, row) => sum + row.count, 0);
+        visibleTotalFor = visible;
+    }
+    return visibleTotalValue;
+}
+
+/**
  * The stats area. `statsHtml` (`errors.html:638-646`).
  *
  * `total` enables the percentage tooltip on the occurrences cell only; passing
  * `null` suppresses it, which is what the Total row does.
+ *
+ * `visibleTotal` is the sum over the rows a search left on screen. Upstream had
+ * no such argument and always divided by the grand total, so a searched row
+ * reported its share of a population the reader could not see — see `pctTitle`
+ * for the measurement.
  */
 function renderStats(
     values: readonly number[],
     cols: readonly ViewColumn[],
-    total: number | null
+    total: number | null,
+    visibleTotal?: number
 ): HTMLElement {
     const stats = el('div', { class: 'marker-stats' });
     for (let i = 0; i < values.length; i++) {
-        const tooltip = cols[i]!.key === 'count' && total !== null ? pctTitle(values[i]!, total) : null;
+        const tooltip =
+            cols[i]!.key === 'count' && total !== null
+                ? pctTitle(values[i]!, total, visibleTotal)
+                : null;
         stats.append(
             el('div', {
                 class: 'marker-stat',

@@ -1191,14 +1191,37 @@ export function instanceRows(
  *   while rows are still on screen (they are filtered out too, so the list is
  *   empty — but the Total row remains and its own cell also loses its tooltip).
  *
- * The `total` a caller passes is the **grand** total, which under a search is
- * not the sum of the visible rows. See divergence 4.
+ * ## Why it shows two numbers where upstream showed one
+ *
+ * Upstream passes the **grand** total always, so under a search a row reads a
+ * share of a population that is not on screen. Measured on the pinned xpcshell
+ * file: searching `NS_ENSURE_TRUE` leaves 100 rows totalling 20,922 visible,
+ * and the top row's tooltip reads `4.85% of all occurrences` when it is 73.04%
+ * of what the reader can see. Both numbers are true; the tooltip named only the
+ * less useful one, and named it in a way that reads as though it were the
+ * obvious one.
+ *
+ * So when a filter is narrowing the list, both are shown and both are labelled.
+ * With no filter the two populations are the same and a second number would be
+ * noise, so the wording stays as it was.
+ *
+ * Rounded once, from the raw ratio, with `toFixed(2)` — never from an
+ * already-rounded intermediate.
  */
-export function pctTitle(count: number, total: number): string | null {
+export function pctTitle(count: number, total: number, visibleTotal?: number): string | null {
     if (!total) {
         return null;
     }
-    return `${((count / total) * 100).toFixed(2)}% of all occurrences`;
+    const share = (value: number): string => ((count / value) * 100).toFixed(2);
+    // `undefined` means the caller has no filtered population to report; equal
+    // totals mean nothing is filtered. Both collapse to the one-number form.
+    if (visibleTotal === undefined || visibleTotal === total || !visibleTotal) {
+        return `${share(total)}% of all ${total.toLocaleString()} occurrences`;
+    }
+    return (
+        `${share(visibleTotal)}% of the ${visibleTotal.toLocaleString()} shown, ` +
+        `${share(total)}% of all ${total.toLocaleString()}`
+    );
 }
 
 // --- URL state ------------------------------------------------------------

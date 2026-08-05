@@ -854,7 +854,7 @@ test('the search never rewrites a row count, but the expansion is filtered', () 
     // And the grand total is untouched by the search, which is what makes the
     // percentage tooltips wrong under one.
     assert.equal(totals.count, 112);
-    assert.equal(pctTitle(testA.count, totals.count), '70.54% of all occurrences');
+    assert.equal(pctTitle(testA.count, totals.count), '70.54% of all 112 occurrences');
     // 79/112 = 70.535…%, and the correct denominator under this search would be
     // the 7+9+... of what matched. Both numbers computed here by hand:
     assert.equal(((79 / 112) * 100).toFixed(2), '70.54');
@@ -1071,22 +1071,60 @@ test('instanceRows shows a date once per day, newest first', () => {
 // Percentages
 // =========================================================================
 
+// The page formats every number with `toLocaleString()`, so the thousands
+// separator depends on the runtime's locale — a comma here, a narrow no-break
+// space under `fr-FR`. Hardcoding one made these tests fail on a French
+// machine, which is a defect in the test and not in the tooltip: the tooltip is
+// consistent with every other number on the page. Expectations are built the
+// same way rather than pinned to a separator.
+const n = (value: number): string => value.toLocaleString();
+
 test('pctTitle rounds once from the raw ratio and suppresses a zero total', () => {
     // Rounded from the ratio, not from a rounded intermediate: 1/3 is 33.33,
     // and a two-step round via 33.3 would give 33.30.
-    assert.equal(pctTitle(1, 3), '33.33% of all occurrences');
-    assert.equal(pctTitle(2, 3), '66.67% of all occurrences');
+    assert.equal(pctTitle(1, 3), '33.33% of all 3 occurrences');
+    assert.equal(pctTitle(2, 3), '66.67% of all 3 occurrences');
     // A value that a percentage-then-round would get wrong: 1/1078 is
     // 0.0927…%, which truncating rather than rounding would render 0.09.
-    assert.equal(pctTitle(1, 1078), '0.09% of all occurrences');
-    assert.equal(pctTitle(6, 1078), '0.56% of all occurrences');
+    assert.equal(pctTitle(1, 1078), `0.09% of all ${n(1078)} occurrences`);
+    assert.equal(pctTitle(6, 1078), `0.56% of all ${n(1078)} occurrences`);
     // 5/8 = 62.5 exactly, so `toFixed(2)` pads rather than rounds.
-    assert.equal(pctTitle(5, 8), '62.50% of all occurrences');
+    assert.equal(pctTitle(5, 8), '62.50% of all 8 occurrences');
     // The whole total is 100.00, not 100.
-    assert.equal(pctTitle(112, 112), '100.00% of all occurrences');
+    assert.equal(pctTitle(112, 112), '100.00% of all 112 occurrences');
     // No total, no tooltip — not `0.00%`, and not `NaN%`.
     assert.equal(pctTitle(5, 0), null);
     assert.equal(pctTitle(0, 0), null);
+});
+
+test('pctTitle names both populations when a search is narrowing the list', () => {
+    // The real case, from the pinned xpcshell file: searching `NS_ENSURE_TRUE`
+    // leaves 100 rows totalling 20,922 of the file's 315,376 occurrences, and
+    // upstream's tooltip reported only the second share — 4.85% — while the row
+    // was 73.04% of what the reader could see. Both numbers are true; naming
+    // one of them "of all occurrences" and omitting the other is what made it
+    // misleading.
+    assert.equal(
+        pctTitle(15_282, 315_376, 20_922),
+        `73.04% of the ${n(20_922)} shown, 4.85% of all ${n(315_376)}`
+    );
+
+    // Each share is computed from its own denominator. Deliberately chosen so
+    // the two percentages differ in both digits: an implementation that divided
+    // twice by the same number would produce the same string twice.
+    assert.equal(pctTitle(1, 8, 2), '50.00% of the 2 shown, 12.50% of all 8');
+
+    // Nothing filtered — the two populations coincide, and a second number
+    // would be noise. Asserted for the equal case and for the absent argument,
+    // because those reach the collapse by different routes.
+    assert.equal(pctTitle(1, 3, 3), '33.33% of all 3 occurrences');
+    assert.equal(pctTitle(1, 3, undefined), '33.33% of all 3 occurrences');
+    // A zero visible total would divide by zero; it collapses rather than
+    // rendering `Infinity%`.
+    assert.equal(pctTitle(1, 3, 0), '33.33% of all 3 occurrences');
+    // And a zero grand total still suppresses the tooltip entirely, whatever
+    // the visible total says.
+    assert.equal(pctTitle(5, 0, 5), null);
 });
 
 // =========================================================================
