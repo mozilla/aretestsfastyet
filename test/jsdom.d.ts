@@ -2,22 +2,56 @@
 /**
  * `jsdom`'s surface, as `test/dom-harness.ts` uses it.
  *
- * jsdom ships no `.d.ts` and `@types/jsdom` is not installed, so without this
- * the import is an implicit `any` and `tsc --noEmit` fails under the root
- * project's `strict`. Adding `@types/jsdom` to `package.json` would be the
- * other way, and is **reported rather than done**: this change is confined to
- * `test/`.
+ * jsdom ships no `.d.ts`, so without this the import is an implicit `any` and
+ * `tsc --noEmit` fails under the root project's `strict`.
+ *
+ * ## `@types/jsdom` was allowed, evaluated, and deliberately not taken
+ *
+ * Adding it as a devDependency is permitted (jsdom is approved for tests, not
+ * for the build), so this is a judgement rather than a restriction. Both were
+ * installed and measured on 2026-08-05:
+ *
+ * | | this file | `@types/jsdom` |
+ * | --- | --- | --- |
+ * | latest version | — | **28.0.3** |
+ * | installed jsdom | 29.1.1 | 29.1.1 — **no `@types/jsdom@29` is published** |
+ * | `window.documentzzz`, a misspelling | **`TS2551`, with a suggestion** | accepted, typed `any` |
+ * | packages added | 0 | 4 (`@types/jsdom`, `@types/tough-cookie`, `parse5`, `undici-types`) |
+ *
+ * The usual argument for the real package is that it is more accurate and does
+ * not drift. Here it inverts on both halves. It *is* drifted — a full major
+ * behind the jsdom actually installed, with no 29.x to move to — and it is less
+ * accurate for this codebase's purpose, because `DOMWindow` is declared with
+ * `[key: string]: any` (`@types/jsdom/index.d.ts:190`). That index signature
+ * turns every property access on `window` into `any`, which is the single thing
+ * this file exists to prevent: `test/dom-harness.ts` hands tests elements off
+ * `window`, and an `any` there means a misspelt property in an assertion
+ * silently passes. Verified both directions rather than assumed — the row above
+ * is the same probe compiled against each.
+ *
+ * Both typecheck clean, so this is not a correctness forced move; it is the
+ * stricter option with no supply-chain cost, and it is re-decidable the moment
+ * `@types/jsdom@29` ships.
+ *
+ * ## What this deliberately does not cover
+ *
+ * Only the surface `test/dom-harness.ts` calls: the `JSDOM` constructor, two of
+ * its options, and `.window`. **Not** covered, and each would be a compile
+ * error rather than a silent `any` if a test reached for it —
+ * `JSDOM.fromFile`/`fromURL`, `serialize()`, `nodeLocation()`, `virtualConsole`,
+ * `CookieJar`/`ResourceLoader`, `runScripts: undefined`'s other modes beyond the
+ * two listed, and every constructor option the harness does not pass
+ * (`referrer`, `contentType`, `pretendToBeVisual`, `storageQuota`, …). Adding
+ * one is a two-line edit here; the point is that the list of what the harness
+ * depends on stays readable.
  *
  * A standalone `.d.ts` rather than a `declare module` inside the harness,
  * because an augmentation cannot be attached to a module TypeScript already
  * resolves as untyped (`TS2665`) — the declaration has to *be* the module's
  * types, which means a global script file with no top-level import or export.
  *
- * Only the surface the harness uses is declared. That is the safer of the two
- * options rather than a shortcut: `window` is typed as the DOM's own
- * `Window & typeof globalThis`, so every element a test receives is a real
- * `HTMLElement` to the compiler instead of an `any` that would silently accept
- * a misspelt property in an assertion.
+ * `window` is typed as the DOM's own `Window & typeof globalThis`, so every
+ * element a test receives is a real `HTMLElement` to the compiler.
  */
 declare module 'jsdom' {
     interface JSDOMOptions {

@@ -170,8 +170,12 @@
             <label for="dateSelect">Select Date: </label>
             <select id="dateSelect"></select>
             <span class="status-text" id="statusText">Loading...</span>
-            <button id="historicalButton" class="historical-button">Show Last 21 Days</button>
-            <button id="loadTasksButton" class="historical-button" style="display:none;">Load task details</button>
+            <!--
+                `errors.html:173-174` has a "Show Last 21 Days" button and a
+                "Load task details" button here. Both are deliberately omitted:
+                the two aggregate files they exist to fetch do not exist. See
+                divergence 6 in `next/errors.ts` for the measurement.
+            -->
         </div>
         <div class="search-container">
             <input type="text" id="searchBox" class="search-box" placeholder="Filter by test, message, file, or component...">
@@ -208,6 +212,10 @@
     <script src="common-ui.js"></script>
     <script src="common-links.js"></script>
     <script type="module" src="./errors.ts"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!--
+        `errors.html:211` loads Chart.js from a CDN. Dropped with the per-day
+        chart, which was the page's only use of it: the chart drew only in
+        21-day mode, and that mode is gone. Divergence 6.
+    -->
 </body>
 </html>

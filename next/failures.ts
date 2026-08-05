@@ -164,6 +164,29 @@ import {
     mostFrequentTestPath,
 } from './failures-view.ts';
 
+// --- the one shared-script global this page uses and `drilldown-render` does
+// not ------------------------------------------------------------------------
+
+declare global {
+    /**
+     * `common-links.js:215` — the 🐛 button's markup.
+     *
+     * Declared here, in the file that calls it, rather than being borrowed from
+     * `next/test.ts`. The two projects disagree about what "the program" is:
+     * `tsconfig.next.json` compiles all of `next/**` at once, so a declaration
+     * anywhere in `next/` satisfies a call anywhere else in it, while the root
+     * `tsconfig.json` pulls in only the files a test actually imports — so a
+     * node test importing this module got `TS2552: Cannot find name
+     * 'getBugButton'` until this block existed. `test/dom-harness.ts` carried
+     * the declaration as a workaround; this is where it belongs.
+     *
+     * `declare global` blocks **merge** rather than shadow, so the identical
+     * declaration in `next/test.ts` is not a conflict — but the two signatures
+     * have to stay identical, which is why both name `common-links.js:215`.
+     */
+    function getBugButton(bugUrl: string, tooltipText?: string): string;
+}
+
 /** The class names and labels this page uses. See `Vocabulary`. */
 const VOCAB: Vocabulary = {
     kind: 'failure',

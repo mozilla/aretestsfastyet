@@ -42,10 +42,14 @@
  * and `ls dist-pages/common-test-data.js` is a miss.
  *
  * The five shared scripts stay, loaded by name: `shared.js`, `fetch-utils.js`,
- * `dashboards.js`, `common-ui.js`, `common-links.js`, plus the Chart.js CDN tag.
- * Note this page does **not** load `common-charts.js` — it draws its own bar
- * chart against Chart.js directly (`errors.html:975-1014`), unlike
- * `crashes.html`, which calls `createRateChart`.
+ * `dashboards.js`, `common-ui.js`, `common-links.js`.
+ *
+ * **The Chart.js CDN tag is gone**, and it is the one script tag this migration
+ * drops. Upstream loads it (`errors.html:211`) for `createDayChart`
+ * (`:975-1014`), its own bar chart — this page never loaded
+ * `common-charts.js` or called `createRateChart`. That chart drew only in
+ * 21-day mode, which is omitted (divergence 6), so the tag was a third-party
+ * request for a library nothing could reach.
  *
  * ## Declared divergences from `errors.html`
  *
@@ -156,20 +160,60 @@
  *     label a reader compares against the old page. Note the sort by name is
  *     affected too: two such rows sort as equal.
  *
- *  6. **The "Show Last 21 Days" and "Load task details" buttons still fail, and
- *     the data they ask for does not exist.** `initHistoricalToggle` fetches
- *     `{harness}-errors.json` (`:1190`) and `loadTaskDetails` fetches
- *     `{harness}-errors-with-taskids.json` (`:1098`). **Measured against the
- *     published artifacts on 2026-08-05: both 404, for both harnesses.** So
- *     `hasDays` is false and `hasTasks` is true on every file either page can
- *     load, the per-day chart at `:871` never draws, and the "Load task details"
- *     button — whose display is driven by `hasTasks` (`:1198`) — is never
- *     shown. Both pages behave identically: clicking the 21-day button writes
- *     `Historical data not available` into `#content` and sets the status to
- *     `Error loading data`. Reproduced exactly, including the button state;
- *     the code paths are kept because they are how the page would read an
- *     aggregate if one were published, and they are *not* claimed to be tested
- *     by anything but a synthetic fixture.
+ *  6. **The "Show Last 21 Days" and "Load task details" buttons are deliberately
+ *     omitted, because the data they ask for does not exist.** This is the one
+ *     entry on this list that is an *intentional departure from the markup*
+ *     rather than a difference in how the same markup is driven, and `PARITY.md`
+ *     §4 requires it be declared with its reason. It is stated here and nowhere
+ *     else.
+ *
+ *     Upstream has both buttons at `errors.html:173-174`. `initHistoricalToggle`
+ *     fetches `{harness}-errors.json` (`:1190`) and `loadTaskDetails` fetches
+ *     `{harness}-errors-with-taskids.json` (`:1098`).
+ *
+ *     **Measured against the published artifacts on 2026-08-05, over the
+ *     Taskcluster index the page's own `fetchData` resolves
+ *     (`test-info-{harness}-timings`):**
+ *
+ *     | file | xpcshell | mochitest |
+ *     | --- | --- | --- |
+ *     | `{harness}-errors.json` | **404** | **404** |
+ *     | `{harness}-errors-with-taskids.json` | **404** | **404** |
+ *     | `{harness}-2026-08-04-errors.json` | 200 | 200 |
+ *
+ *     And over every one of the 21 dates `index.json` offers, fetching each
+ *     daily errors file and reading its `markers`: **6 of 21 exist per harness,
+ *     and `hasDays` is false on all 6 while `hasTasks` is true on all 6.** So
+ *     neither aggregate shape is reachable from either harness, by either page.
+ *
+ *     **What the old page does when the button is clicked**: `common-ui.js:234`
+ *     throws on the non-ok response, and its `catch` writes
+ *     `Historical data not available` into `#content` and sets the status text
+ *     to `Error loading data` — so the control's only effect is to replace the
+ *     list with an error. The "Load task details" button is never even shown:
+ *     its display is driven by `hasTasks` being false (`:1198`), and `hasTasks`
+ *     is true on every file that loads.
+ *
+ *     **Why omitted rather than reproduced.** Emitting a control that cannot
+ *     work satisfies a DOM diff and turns a known gap into a hidden one — the
+ *     mistake `try.html` made with its Reproduce button. A reader cannot tell a
+ *     button that is broken from one that is waiting for data. Removing it says
+ *     what is true: this page shows one day, and there is no aggregate to show.
+ *
+ *     **What went with them**, all of it reachable only from these two buttons:
+ *     `isHistoricalMode`, the `initHistoricalToggle` call and its
+ *     `onHistoricalToggled` callback, `loadTaskDetails`, the per-day chart
+ *     (`createDayChart`, `:975-1014`) with its `historical-chart` wrapper, the
+ *     Chart.js CDN tag that existed only to draw it, and `__view`'s `historical`
+ *     field. `#date=21days` in a bookmarked URL is handled rather than dropped
+ *     — see `loadFromUrlHash`.
+ *
+ *     **What stayed, because it serves the live page**: `hasDays` and
+ *     `numDays` in `next/errors-view.ts` are file-shape probes, and `hasDays`
+ *     still picks which of two sources a task's date comes from in
+ *     `instancesOf`. `buildDetail` still computes `dayCounts`, which is `null`
+ *     on every file above. `isHistoricalDate` stayed and gained a second caller
+ *     — it is now what recognizes a stale `#date=21days`.
  *
  *  7. **A job name the file cannot resolve renders as empty, not `"undefined"`.**
  *     Same class as `crashes.html`'s entry 6. Upstream indexes
@@ -287,16 +331,12 @@ import {
     searchBox,
 } from './drilldown-render.ts';
 
-/** `Chart` comes from the CDN tag at the bottom of the page. */
-declare const Chart: new (canvas: HTMLCanvasElement, config: unknown) => unknown;
-
 // --- page state -----------------------------------------------------------
 
 let data: PreparedErrors | null = null;
 /** Which kinds are on, indexed by the file's `markerNameId`. */
 let kindOn: boolean[] = [];
 let currentSort: SortState = { ...INITIAL_SORT };
-let isHistoricalMode = false;
 
 /** Every row of the current grouping, ranked. */
 let allRows: ErrorGroupRow[] = [];
@@ -307,7 +347,6 @@ let totals: Totals = { count: 0, tests: null, messages: null };
 
 let searchBoxManager: SearchBoxManager;
 let hashManager: ReturnType<typeof initUrlHashManager>;
-let historicalToggleManager: { toggle: () => Promise<void> };
 
 const content = (): HTMLElement => document.getElementById('content')!;
 const statusText = (): HTMLElement => document.getElementById('statusText')!;
@@ -812,29 +851,19 @@ function toggleGroup(row: ErrorGroupRow, element: HTMLElement): void {
 
     const detail = buildDetail(data!, view(), row, kindOn, term());
 
+    // `errors.html:846-871` inserts a per-day bar chart above the sub-rows when
+    // `isHistoricalMode && data.hasDays`. Omitted with the 21-day control — see
+    // divergence 6. `detail.dayCounts` is still built by `buildDetail`, and is
+    // `null` on every file this page can load.
     const inserted: HTMLElement[] = [];
-    const showChart = isHistoricalMode && data!.hasDays;
-    const canvasId = `chart-g-${element.dataset['group']}`;
-    if (showChart) {
-        inserted.push(
-            el('div', {
-                class: 'historical-chart',
-                children: [el('canvas', { id: canvasId, class: 'historical-chart-canvas' })],
-            })
-        );
-    }
     for (let s = 0; s < detail.subs.length; s++) {
         inserted.push(renderSubRow(view(), detail.subs[s]!, s));
     }
     insertAfter(element, inserted);
 
-    // Keep this chunk filled even when scrolled off screen, so the open row and
-    // its chart survive scrolling. `:868`.
+    // Keep this chunk filled even when scrolled off screen, so the open row
+    // survives scrolling. `:868`.
     pinnedChunk = element.closest('.vchunk');
-
-    if (showChart) {
-        drawDayChart(canvasId, detail.dayCounts);
-    }
 }
 
 /** One sub-row. `renderSubRow` (`errors.html:894-909`). */
@@ -981,67 +1010,6 @@ function renderInstances(sub: SubGroup, testName: string | null): HTMLElement {
 }
 
 // =========================================================================
-// The per-day chart (aggregate mode only)
-// =========================================================================
-
-/**
- * `createDayChart` (`errors.html:975-1014`).
- *
- * Never drawn on the published data — no errors file has a day axis, and the
- * 21-day aggregate 404s (divergence 6). Kept because it is how the page would
- * chart an aggregate, and exercised only against a synthetic fixture.
- *
- * Note this page calls `Chart` directly rather than `common-charts.js`'s
- * `createRateChart`, and does not load that script at all.
- */
-function drawDayChart(canvasId: string, dayCounts: Float64Array | null): void {
-    const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
-    if (canvas === null || dayCounts === null || data === null) {
-        return;
-    }
-    const startTime = data.raw.metadata.startTime;
-    const labels: string[] = [];
-    const values: number[] = [];
-    for (let d = 0; d < data.numDays; d++) {
-        labels.push(new Date((startTime + d * 86400) * 1000).toISOString().split('T')[0]!);
-        values.push(dayCounts[d] ?? 0);
-    }
-    new Chart(canvas, {
-        type: 'bar',
-        data: {
-            labels,
-            datasets: [
-                {
-                    data: values,
-                    backgroundColor: 'rgba(255, 140, 0, 0.7)',
-                    borderColor: '#ff8c00',
-                    borderWidth: 1,
-                },
-            ],
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    animation: false,
-                    callbacks: {
-                        label: (c: { parsed: { y: number } }) =>
-                            `${c.parsed.y.toLocaleString()} occurrence${c.parsed.y === 1 ? '' : 's'}`,
-                    },
-                },
-            },
-            scales: {
-                x: {},
-                y: { beginAtZero: true, title: { display: true, text: 'occurrences' } },
-            },
-        },
-    });
-}
-
-// =========================================================================
 // Click handling
 // =========================================================================
 
@@ -1144,53 +1112,6 @@ async function loadSelectedDate(): Promise<void> {
     }
 }
 
-/**
- * `loadTaskDetails` (`errors.html:1092-1109`).
- *
- * Swaps in the with-taskids aggregate so a counts-only aggregate can be drilled
- * into. **The file 404s** (divergence 6), so this always lands in the `catch`
- * and restores the button — and the button itself is only ever shown when
- * `hasTasks` is false, which no published file produces. Kept as the page has
- * it.
- */
-async function loadTaskDetails(): Promise<void> {
-    const button = document.getElementById('loadTasksButton') as HTMLButtonElement;
-    try {
-        button.disabled = true;
-        button.textContent = 'Loading task details...';
-        const harness = getHarnessType();
-        const response = await fetchData(`${harness}-errors-with-taskids.json`);
-        if (!response.ok) {
-            throw new Error('Task detail data not available');
-        }
-        data = prepareErrors((await response.json()) as ErrorsFile);
-        button.style.display = 'none';
-        renderList();
-    } catch (error) {
-        console.error('Error loading task details:', error);
-        button.textContent = 'Load task details';
-        button.disabled = false;
-    }
-}
-
-/** `errors.html:1191-1207`, the data half of the historical toggle. */
-async function onHistoricalToggled(isHistorical: boolean, raw: unknown): Promise<void> {
-    isHistoricalMode = isHistorical;
-    const loadTasksButton = document.getElementById('loadTasksButton') as HTMLButtonElement;
-    if (isHistorical) {
-        data = prepareErrors(raw as ErrorsFile);
-        // Offer the task drill-down only when the aggregate has none.
-        loadTasksButton.style.display = data.hasTasks ? 'none' : '';
-        loadTasksButton.disabled = false;
-        loadTasksButton.textContent = 'Load task details';
-        renderList();
-    } else {
-        loadTasksButton.style.display = 'none';
-        await loadSelectedDate();
-    }
-    updateUrlHash();
-}
-
 // =========================================================================
 // URL state
 // =========================================================================
@@ -1210,6 +1131,17 @@ function updateUrlHash(): void {
  * The date default is the other way round from the crashes/failures pages: an
  * absent `date` means the **most recent single day**, not 21 days. See
  * `isHistoricalDate`.
+ *
+ * ## `#date=21days` in a bookmarked URL
+ *
+ * The 21-day control is not on this page (divergence 6), so there is no mode to
+ * enter. Such a hash is **treated as no date at all** — the selector keeps the
+ * day it is on, which at startup is the most recent — and this function then
+ * calls `updateUrlHash` to rewrite the hash to that day. Chosen over silently
+ * leaving `21days` in the address bar, which would leave the URL naming a view
+ * the page is not in and would be re-read on the next reload. `updateUrlHash`
+ * is called here rather than left to a caller because `loadSelectedDate` does
+ * not update the hash.
  */
 async function loadFromUrlHash(): Promise<void> {
     if (hashManager === undefined) {
@@ -1234,25 +1166,27 @@ async function loadFromUrlHash(): Promise<void> {
         searchBoxManager.setValue(state.q ?? '');
     }
 
-    if (isHistoricalDate(state.date)) {
-        if (!isHistoricalMode) {
-            await historicalToggleManager.toggle();
-        }
-    } else {
-        if (isHistoricalMode) {
-            await historicalToggleManager.toggle();
-        }
-        // Only a date the selector actually offers is applied, so a hash naming
-        // a date outside the window leaves the current selection. `:1149-1152`.
-        const select = dateSelect();
-        if (
-            state.date !== undefined &&
-            state.date !== '' &&
-            select.value !== state.date &&
-            select.querySelector(`option[value="${CSS.escape(state.date)}"]`) !== null
-        ) {
-            select.value = state.date;
-        }
+    // `#date=21days` names a mode this page does not have — see the note above
+    // and divergence 6. It is dropped rather than half-applied: the selector
+    // keeps whatever day it is on (the most recent, at startup) and the hash is
+    // rewritten to that day below, so the URL stops claiming the 21-day view.
+    const staleHistorical = isHistoricalDate(state.date);
+
+    // Only a date the selector actually offers is applied, so a hash naming a
+    // date outside the window leaves the current selection. `:1149-1152`.
+    const select = dateSelect();
+    if (
+        !staleHistorical &&
+        state.date !== undefined &&
+        state.date !== '' &&
+        select.value !== state.date &&
+        select.querySelector(`option[value="${CSS.escape(state.date)}"]`) !== null
+    ) {
+        select.value = state.date;
+    }
+
+    if (staleHistorical) {
+        updateUrlHash();
     }
 }
 
@@ -1271,8 +1205,10 @@ function initializeUI(): void {
     });
 
     hashManager = initUrlHashManager({
+        // `date` is always a day: upstream writes `21days` here while the
+        // toggle is on, and this page has no toggle. Divergence 6.
         getState: () => ({
-            date: isHistoricalMode ? '21days' : dateSelect().value,
+            date: dateSelect().value,
             q: searchBoxManager.getValue().trim(),
             view: view(),
             hide: formatHidden(disabledSlugs()),
@@ -1280,24 +1216,9 @@ function initializeUI(): void {
         onHashChange: async () => {
             searchBoxManager.setNavigating(true);
             await loadFromUrlHash();
-            if (!isHistoricalMode) {
-                await loadSelectedDate();
-            } else {
-                renderList();
-            }
+            await loadSelectedDate();
             searchBoxManager.setNavigating(false);
         },
-    });
-
-    const harness = getHarnessType();
-    historicalToggleManager = initHistoricalToggle({
-        buttonId: 'historicalButton',
-        selectId: 'dateSelect',
-        statusTextId: 'statusText',
-        fetchData,
-        historicalDataFile: `${harness}-errors.json`,
-        onToggle: onHistoricalToggled,
-        updateUrlHash,
     });
 
     // The seven checkboxes' `onchange="onKindFilterChange()"` attributes are in
@@ -1327,9 +1248,6 @@ function initializeUI(): void {
         onKindFilterChange();
     });
 
-    document.getElementById('loadTasksButton')!.addEventListener('click', () => {
-        void loadTaskDetails();
-    });
     dateSelect().addEventListener('change', () => {
         updateUrlHash();
         void loadSelectedDate();
@@ -1353,9 +1271,7 @@ await (async () => {
             select.selectedIndex = 0;
         }
         await loadFromUrlHash();
-        if (!isHistoricalMode) {
-            await loadSelectedDate();
-        }
+        await loadSelectedDate();
     }
 })();
 
@@ -1364,14 +1280,17 @@ await (async () => {
  *
  * `PARITY.md` §4: the new page exposes what it decided so a comparison can be
  * made against values rather than against pixels. Deliberately includes the
- * things a DOM diff cannot see — which sort is active, whether a control is
- * live — and caps the row list, because the mochitest message view has 35,474
- * rows and serializing them all over CDP takes longer than the comparison.
+ * things a DOM diff cannot see — which sort is active — and caps the row list,
+ * because the mochitest message view has 35,474 rows and serializing them all
+ * over CDP takes longer than the comparison.
+ *
+ * No `historical` field: the old page's `__view` reported the toggle's mode,
+ * and this page has no toggle (divergence 6). Reporting a hardcoded `false`
+ * would be asserting a constant rather than observing the page.
  */
 window.__view = () => ({
     view: view(),
     sort: currentSort,
-    historical: isHistoricalMode,
     search: searchBoxManager?.getValue() ?? '',
     hide: formatHidden(disabledSlugs()),
     totals,

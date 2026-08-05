@@ -35,37 +35,25 @@
  */
 
 import { readFileSync } from 'node:fs';
-// jsdom's types are declared by `test/jsdom.d.ts`; see the note there.
+// jsdom's types are declared by `test/jsdom.d.ts` rather than by
+// `@types/jsdom`; that file records the comparison behind the choice.
 import { JSDOM } from 'jsdom';
 
 /**
- * The two ambient declarations importing `next/` from a node test needs.
+ * This file declares no ambient globals, and that is the point.
  *
- * Both exist because the root `tsconfig.json` compiles `test/**` with
- * `types: ["node"]` and no DOM, while `next/` is compiled by
- * `tsconfig.next.json` with the DOM and no node. The `/// <reference lib>`
- * lines at the top of each test file bridge the DOM half; these two are what is
- * left.
+ * It used to declare `getBugButton`, because `next/failures.ts` called it
+ * without declaring it: `tsconfig.next.json` compiles all of `next/**` as one
+ * program, so the declaration in `next/test.ts` covered the call, while the
+ * root project pulls in only the files a test imports and did not. The
+ * declaration now lives in `next/failures.ts`'s own `declare global` block,
+ * where the call is. Every `next/` module was checked for the same shape —
+ * each compiled alone against the DOM lib with no other `next/` file in the
+ * program — and `getBugButton` was the only one.
+ *
+ * What is still needed to import `next/` from a node test is the DOM half,
+ * which the `/// <reference lib>` lines at the top of each test file supply.
  */
-declare global {
-    /**
-     * `common-links.js:216` — the 🐛 button's markup.
-     *
-     * `next/failures.ts:252` calls this, but declares it nowhere: the only
-     * declaration in the tree is inside `next/test.ts`'s `declare global`
-     * block (`:208`). That is enough for `tsconfig.next.json`, which compiles
-     * all of `next/**` as one program, and not enough for the root project,
-     * which pulls in only the files a test imports — so without this line
-     * `tsc --noEmit` fails on `next/failures.ts` as soon as anything under
-     * `test/` imports it.
-     *
-     * Declared here rather than added to `next/failures.ts` because this task
-     * is not to modify `next/`. The signature is `common-links.js`'s.
-     * **Moving it into `next/failures.ts`'s own `declare global` block is the
-     * real fix** and is reported rather than made.
-     */
-    function getBugButton(bugUrl: string, tooltipText?: string): string;
-}
 
 /** The scripts the two pages load, in the order their `<script>` tags do. */
 const SHARED_SCRIPTS = [
