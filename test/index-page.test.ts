@@ -364,6 +364,12 @@ test('the rendered numbers match a tally taken off the fixtures', async () => {
                 `${model.totals.failedTestRuns.toLocaleString()} / ${model.totals.totalTestRuns.toLocaleString()}`
             );
             assert.equal(row.cells[1]![0], `${model.jobFailureRate!.toFixed(2)}%`);
+            // The job cell's second line must be the rate's own two numbers,
+            // not a different numerator over a different denominator.
+            assert.equal(
+                row.cells[1]![1],
+                `${model.totals.failedJobs.toLocaleString()} / ${model.jobPopulation.toLocaleString()}`
+            );
             assert.equal(row.cells[2]![0], `${model.skipRate!.toFixed(2)}%`);
             assert.equal(
                 row.cells[3]![0],
@@ -375,11 +381,11 @@ test('the rendered numbers match a tally taken off the fixtures', async () => {
         // so a change to any of these eight is a deliberate edit here.
         assert.deepEqual(
             rows[0]!.cells.map(([value]) => value),
-            ['0.17%', '11.83%', '4.72%', '0.47%']
+            ['0.17%', '12.24%', '4.72%', '0.47%']
         );
         assert.deepEqual(
             rows[1]!.cells.map(([value]) => value),
-            ['0.09%', '2.66%', '5.28%', '0.33%']
+            ['0.09%', '2.98%', '5.28%', '0.33%']
         );
     } finally {
         harness.restore();
@@ -968,17 +974,33 @@ test('a harness row quotes the CLI rate and the prior period in its tooltip', as
             `xpcshell's test failure rate rounds to 0.17% in both periods: ${testTitle}`
         );
 
-        // On the two columns where page and CLI disagree, the tooltip names the
-        // CLI's metric so it is visibly about a different number than the cell.
+        // The job failure rate used to be a declared divergence and the tooltip
+        // had to name a different number than the cell. Both sides are now
+        // corrected to `failedJobs / (processed + invalid)`, so the tooltip and
+        // the cell must agree — asserted in that direction so a regression on
+        // either side shows up here as well as in the parity file.
         const jobTitle = cells[1]!.getAttribute('title')!;
-        assert.ok(jobTitle.includes('Job failure rate (all failed jobs)'), jobTitle);
+        assert.ok(jobTitle.includes('Job failure rate:'), jobTitle);
         assert.ok(
-            jobTitle.includes(`${summary.current.jobFailureRate!.toFixed(2)}%`),
-            'the tooltip carries the CLI rate'
+            !jobTitle.includes('all failed jobs'),
+            'the disambiguating suffix is stale now that the two agree'
         );
-        assert.ok(
-            !jobTitle.includes(cells[1]!.querySelector('.stat-value')!.textContent!),
-            'and it is not the same number as the cell'
+        const cliJobRate = `${summary.current.jobFailureRate!.toFixed(2)}%`;
+        assert.ok(jobTitle.includes(cliJobRate), 'the tooltip carries the CLI rate');
+        assert.equal(
+            cells[1]!.querySelector('.stat-value')!.textContent,
+            cliJobRate,
+            'and the cell shows the same number'
+        );
+
+        // Same for the skip rate, the other former divergence.
+        const skipTitle = cells[2]!.getAttribute('title')!;
+        assert.ok(skipTitle.includes('Skip rate:'), skipTitle);
+        assert.ok(!skipTitle.includes('of everything scheduled'), skipTitle);
+        assert.equal(
+            cells[2]!.querySelector('.stat-value')!.textContent,
+            `${summary.current.skipRate!.toFixed(2)}%`,
+            'the skip cell and the CLI agree too'
         );
     } finally {
         harness.restore();

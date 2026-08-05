@@ -309,14 +309,16 @@ test('the four rates match a tally computed independently of the view model', ()
     const totalJobs = last7(stats.processedJobCount);
     const failedJobs = last7(stats.failedJobs);
     const invalidJobs = last7(stats.invalidJobs);
-    const testFailedJobs = failedJobs - invalidJobs;
+    // The job-failure denominator: both branches of the generator's fetch, and
+    // the population `failedJobs` is counted over. See `summaryRow`.
+    const jobPopulation = totalJobs + invalidJobs;
 
     const row = summaryRows(stats, null)[0]!;
     assert.equal(row.totals.totalTestRuns, totalTests);
     assert.equal(row.totals.failedTestRuns, totalFailed);
-    assert.equal(row.testFailedJobs, testFailedJobs);
+    assert.equal(row.jobPopulation, jobPopulation);
     assert.equal(row.testFailureRate, (totalFailed / totalTests) * 100);
-    assert.equal(row.jobFailureRate, (testFailedJobs / totalJobs) * 100);
+    assert.equal(row.jobFailureRate, (failedJobs / jobPopulation) * 100);
     assert.equal(row.skipRate, (totalSkipped / totalTests) * 100);
     assert.equal(row.invalidJobRate, (invalidJobs / totalJobs) * 100);
 
@@ -324,9 +326,16 @@ test('the four rates match a tally computed independently of the view model', ()
     // numbers a visitor reads, so they are pinned as literals too — a change to
     // any of them should be a deliberate edit here.
     assert.equal(row.testFailureRate!.toFixed(2), '0.17');
-    assert.equal(row.jobFailureRate!.toFixed(2), '11.83');
+    assert.equal(row.jobFailureRate!.toFixed(2), '12.24');
     assert.equal(row.skipRate!.toFixed(2), '4.72');
     assert.equal(row.invalidJobRate!.toFixed(2), '0.47');
+
+    // The counters behind the job rate, as literals, so a fixture refresh that
+    // moved the rate cannot be mistaken for a formula change.
+    assert.equal(failedJobs, 918);
+    assert.equal(totalJobs, 7464);
+    assert.equal(invalidJobs, 35);
+    assert.equal(jobPopulation, 7499);
 });
 
 test('a rate is carried unrounded so the renderer rounds once', () => {
@@ -342,11 +351,12 @@ test('a rate is carried unrounded so the renderer rounds once', () => {
     assert.equal(typeof row.testFailureRate, 'number');
 });
 
-test('the job failure rate can go negative, and is not clamped', () => {
-    // Divergence 1's tail. Not reachable on the pinned files — measured: 0 of
-    // 199 xpcshell days and 0 of 198 mochitest days have failedJobs <
-    // invalidJobs, and the minimum over any trailing 7-day window is +241 and
-    // +2,791 — so this pins the behaviour on a synthetic file.
+test('more invalid jobs than failed ones no longer produces a negative rate', () => {
+    // Upstream's `(failedJobs − invalidJobs) / processedJobCount` renders
+    // -4.00% on exactly this input, and the port used to pin that. Divergence 1
+    // replaced the subtraction with a wider denominator, so the same counters
+    // now give a rate that is in range and is not a clamp of a negative one:
+    // 10 / (1000 + 50) = 0.952…%, which no `Math.max(0, …)` would produce.
     const file = syntheticFile({
         dates: ['2026-08-03'],
         processedJobCount: [1000],
@@ -354,25 +364,41 @@ test('the job failure rate can go negative, and is not clamped', () => {
         invalidJobs: [50],
     });
     const row = summaryRows(toMerged(file), null)[0]!;
-    assert.equal(row.testFailedJobs, -40);
-    assert.equal(row.jobFailureRate, -4);
-    assert.ok(row.jobFailureRate! < 0, 'a clamp here would hide an impossible result as 0.00%');
+    assert.equal(row.jobPopulation, 1050);
+    assert.equal(row.jobFailureRate, (10 / 1050) * 100);
+    assert.ok(row.jobFailureRate! > 0, 'not clamped to zero: the rate is a real positive value');
 });
 
-test('the negative path is not live on the pinned files', () => {
-    // The measurement behind the decision above, asserted so that a fixture
-    // refresh which *did* introduce a negative week fails here rather than
-    // shipping a negative percentage to the landing page unnoticed.
+test('the job failure rate is in [0, 100] on every window of the pinned files', () => {
+    // The property the corrected numerator buys, checked over real history
+    // rather than asserted: a numerator drawn from the denominator's own
+    // population cannot escape the range, on any window, on either harness.
     for (const stats of [toMerged(xpcshell()), mergedMochitest()]) {
-        for (const [i, failed] of stats.failedJobs.entries()) {
-            const invalid = stats.invalidJobs[i];
-            if (failed !== null && invalid !== null && invalid !== undefined) {
+        // `recentWindow` reads the *tail*, so a prefix of every array is what
+        // moves the window backwards one day at a time.
+        const prefix = (end: number): MergedStats => ({
+            ...stats,
+            dates: stats.dates.slice(0, end),
+            totalTestRuns: stats.totalTestRuns.slice(0, end),
+            failedTestRuns: stats.failedTestRuns.slice(0, end),
+            skippedTestRuns: stats.skippedTestRuns.slice(0, end),
+            processedJobCount: stats.processedJobCount.slice(0, end),
+            failedJobs: stats.failedJobs.slice(0, end),
+            invalidJobs: stats.invalidJobs.slice(0, end),
+        });
+        let checked = 0;
+        for (let end = 1; end <= stats.dates.length; end++) {
+            const row = summaryRow(recentWindow(prefix(end)), 'x', 'xpcshell', false);
+            if (row.jobFailureRate !== null) {
                 assert.ok(
-                    failed >= invalid,
-                    `${stats.dates[i]}: failedJobs=${failed} < invalidJobs=${invalid}`
+                    row.jobFailureRate >= 0 && row.jobFailureRate <= 100,
+                    `${stats.dates[end - 1]}: jobFailureRate=${row.jobFailureRate}`
                 );
+                checked++;
             }
         }
+        // Guard the loop itself: an all-`null` run would make the body vacuous.
+        assert.equal(checked, stats.dates.length);
     }
 });
 
@@ -388,6 +414,38 @@ test('a flavor row has no invalid-job rate, and flavors carry no such series', (
     for (const row of flavorRows) {
         assert.equal(row.invalidJobRate, null);
         assert.equal(row.totals.invalidJobs, 0);
+    }
+});
+
+test('a flavor row divides by processedJobCount alone, not by the wider population', () => {
+    // The generator gives a flavor `processedJobCount = jc.total` and
+    // `failedJobs = jc.failed` from one loop over the raw job list
+    // (`fetch-test-data.js:1826-1844`, `:2767-2770`), so its denominator is
+    // already the population its numerator was drawn from. Distinguishable from
+    // the harness expression only when `invalidJobs` is non-zero — which it
+    // never is on real flavor data — so this drives it with an explicit value.
+    const totals = {
+        dates: ['2026-08-03'],
+        totalTestRuns: 1000,
+        failedTestRuns: 10,
+        skippedTestRuns: 20,
+        processedJobCount: 100,
+        failedJobs: 8,
+        invalidJobs: 50,
+    };
+    const flavor = summaryRow(totals, 'browser-chrome', 'mochitest', true);
+    assert.equal(flavor.jobPopulation, 100, 'a flavor must not widen its denominator');
+    assert.equal(flavor.jobFailureRate, 8);
+
+    const harness = summaryRow(totals, 'Mochitest', 'mochitest', false);
+    assert.equal(harness.jobPopulation, 150);
+    assert.equal(harness.jobFailureRate, (8 / 150) * 100);
+
+    // And on the real file, where `invalidJobs` is 0, the two expressions
+    // coincide — so the branch above is a statement about *why*, not a number
+    // anyone sees today.
+    for (const row of summaryRows(null, mergedMochitest()).filter((r) => r.isFlavor)) {
+        assert.equal(row.jobPopulation, row.totals.processedJobCount);
     }
 });
 

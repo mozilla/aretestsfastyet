@@ -9,21 +9,31 @@
  *
  * On the other migrated pages the shared `lib/` query *is* what the page
  * renders, and parity is close to a tautology broken only by presentation. Here
- * it is not: `lib/query/summary.ts` and the page's table are two different
- * computations of four rates over the same seven dates, and **two of the four
- * disagree by construction**. That is the interesting content of this file.
+ * it is not: `lib/query/summary.ts` and the page's table are two independent
+ * computations of four rates over the same seven dates. They now agree on all
+ * four, and **nothing in the code makes them agree** — no import, no shared
+ * helper — so these assertions are the only thing holding them together.
  *
- * | column | page | CLI | same? |
- * | --- | --- | --- | --- |
- * | Flaky Test Failures | `failed / total` | `failed / total` | **yes** |
- * | Flaky Job Failures | `(failedJobs − invalid) / processed` | `failedJobs / processed` | no |
- * | Skip Rate | `skipped / total` | `skipped / (total + skipped)` | no |
- * | Invalid Jobs | `invalid / processed` | `invalid / processed` | **yes** |
+ * | column | both sides compute | note |
+ * | --- | --- | --- |
+ * | Flaky Test Failures | `failed / total` | agreed from the start |
+ * | Flaky Job Failures | `failedJobs / (processed + invalid)` | both sides corrected |
+ * | Skip Rate | `skipped / total` | the CLI was corrected |
+ * | Invalid Jobs | `invalid / processed` | agreed from the start |
  *
- * The two that agree are asserted to agree **exactly**, so a future drift in
- * those is a failure rather than a fifth divergence quietly appearing. The two
- * that differ are declared, with both sides' measured values, and
- * `assertDeclaredDivergences` fails if they ever converge.
+ * Two of the four used to be declared divergences. They are not any more:
+ *
+ * - the page computed `(failedJobs − invalid) / processed` and the CLI
+ *   `failedJobs / processed`, and **both denominators were wrong** —
+ *   `failedJobs` is counted over the whole day's non-ignored jobs, which is
+ *   `processed + invalid` (`fetch-test-data.js:1821`, `:267-282`);
+ * - the CLI divided skips by `total + skipped`, but the generator adds every
+ *   run to `totalTestRuns` *before* dispatching on status (`:2733`), so the
+ *   skips were counted twice.
+ *
+ * All four are now asserted to agree to full float precision, so a future
+ * divergence in any of them is a failure rather than something appearing
+ * quietly.
  *
  * ## The three classes, and which tests cover which
  *
@@ -61,7 +71,6 @@ import {
     summaryRows,
 } from '../next/index-view.ts';
 import {
-    type Divergence,
     assertDeclaredDivergences,
     assertSameOrder,
     fixtureSource,
@@ -122,7 +131,7 @@ async function cliSummary(): Promise<
 }
 
 // =========================================================================
-// The two rates that must agree
+// All four rates must agree
 // =========================================================================
 
 test('the test failure rate is identical on both sides', async () => {
@@ -155,11 +164,11 @@ test('the invalid job rate is identical on both sides', async () => {
     }
 });
 
-test('the six raw counters agree, so the two rates differ only by formula', async () => {
-    // The load-bearing check behind the two declared divergences: if the
-    // counters agreed and the rates did not, the difference is arithmetic and
-    // is a decision. If the counters disagreed, one side is reading a different
-    // window and the declaration would be excusing a real bug.
+test('the six raw counters agree, so a rate difference could only be a formula', async () => {
+    // The load-bearing check behind the four rate assertions: with the counters
+    // pinned equal, any disagreement above is arithmetic and nothing else. If
+    // the counters disagreed, one side would be reading a different window and
+    // a matching rate could be two errors cancelling.
     const cli = await cliSummary();
     for (const harness of HARNESSES) {
         const entry = cli.find((row) => row.harness === harness)!;
@@ -182,82 +191,105 @@ test('the six raw counters agree, so the two rates differ only by formula', asyn
 });
 
 // =========================================================================
-// The two that differ, declared
+// The two that used to differ
 // =========================================================================
 
-test('the two rate divergences are declared, and still diverge', async () => {
+test('the job failure rate is identical on both sides', async () => {
+    // Formerly a declared divergence: the page computed
+    // `(failedJobs − invalid) / processed` and the CLI `failedJobs / processed`.
+    // Both were wrong in the denominator and both were corrected to
+    // `failedJobs / (processed + invalid)`. Full float precision, so a
+    // divergence too small to survive `toFixed(2)` still fails.
     const cli = await cliSummary();
-    const divergences: Divergence[] = [];
-
     for (const harness of HARNESSES) {
         const entry = cli.find((row) => row.harness === harness)!;
         const page = pageRows(harness).find((row) => !row.isFlavor)!;
-
-        divergences.push({
-            what: `${harness}: Flaky Job Failures numerator`,
-            reason:
-                'The page subtracts invalid jobs from the numerator and leaves the denominator ' +
-                'as processedJobCount (index.html:476, :479), so its column answers "how often ' +
-                'did a job fail because a test was flaky"; the CLI divides failedJobs by ' +
-                'processedJobCount and reports invalid jobs as a separate rate, answering "how ' +
-                'often did a job fail". Both are correct answers to their own question and the ' +
-                "page's column header and tooltip both say it excludes invalid jobs, so the " +
-                'page is internally consistent. Reconciling them changes what one product ' +
-                'means and is not a migration decision.',
-            page: page.jobFailureRate,
-            cli: entry.current['jobFailureRate'],
-        });
-
-        divergences.push({
-            what: `${harness}: Skip Rate denominator`,
-            reason:
-                'The page divides skipped runs by totalTestRuns (index.html:480); the CLI ' +
-                'divides by totalTestRuns + skippedTestRuns because the question it asks is ' +
-                '"what share of everything scheduled did not run", and the page\'s form exceeds ' +
-                '100% whenever more is skipped than run. The page also renders the raw counts ' +
-                'as "skipped / totalTestRuns" directly under the percentage, so changing the ' +
-                'rate without changing that second line would make the cell contradict itself.',
-            page: page.skipRate,
-            cli: entry.current['skipRate'],
-        });
+        assert.equal(
+            page.jobFailureRate,
+            entry.current['jobFailureRate'],
+            `${harness}: the job failure rate must not drift`
+        );
     }
-
-    assertDeclaredDivergences('index vs summary', divergences);
-
-    // And the measured magnitudes, so a change in the *size* of the gap is
-    // visible and not only a change in its existence.
-    const xpcshell = cli.find((row) => row.harness === 'xpcshell')!;
-    const xpcshellPage = pageRows('xpcshell')[0]!;
-    assert.equal(xpcshellPage.jobFailureRate!.toFixed(2), '11.83');
-    assert.equal(xpcshell.current['jobFailureRate']!.toFixed(2), '12.30');
-    assert.equal(xpcshellPage.skipRate!.toFixed(2), '4.72');
-    assert.equal(xpcshell.current['skipRate']!.toFixed(2), '4.51');
-
-    const mochitest = cli.find((row) => row.harness === 'mochitest')!;
-    const mochitestPage = pageRows('mochitest').find((row) => !row.isFlavor)!;
-    assert.equal(mochitestPage.jobFailureRate!.toFixed(2), '2.66');
-    assert.equal(mochitest.current['jobFailureRate']!.toFixed(2), '2.99');
-    assert.equal(mochitestPage.skipRate!.toFixed(2), '5.28');
-    assert.equal(mochitest.current['skipRate']!.toFixed(2), '5.02');
 });
 
-test('the page rate is always the lower of the two, on both counts', async () => {
-    // A direction check rather than a magnitude one, because it follows from
-    // the formulas and would break if either side changed the wrong term: the
-    // page's job numerator is smaller and its skip denominator is smaller — so
-    // the job rate must be lower and the skip rate must be *higher*.
+test('the skip rate is identical on both sides', async () => {
+    // Formerly a declared divergence: the CLI divided by
+    // `totalTestRuns + skippedTestRuns`, double-counting skips that
+    // `totalTestRuns` already contained.
     const cli = await cliSummary();
     for (const harness of HARNESSES) {
         const entry = cli.find((row) => row.harness === harness)!;
         const page = pageRows(harness).find((row) => !row.isFlavor)!;
-        assert.ok(
-            page.jobFailureRate! < entry.current['jobFailureRate']!,
-            `${harness}: subtracting invalid jobs must lower the job failure rate`
+        assert.equal(
+            page.skipRate,
+            entry.current['skipRate'],
+            `${harness}: the skip rate must not drift`
         );
-        assert.ok(
-            page.skipRate! > entry.current['skipRate']!,
-            `${harness}: the smaller denominator must raise the skip rate`
+    }
+});
+
+test('both sides match a third computation read straight off the fixture', async () => {
+    // Neither side is the oracle here. The expected values come from summing
+    // the raw JSON arrays in this file, so "the page and the CLI agree" cannot
+    // be satisfied by two copies of the same wrong formula — which is exactly
+    // what the job failure rate was before, on both sides at once.
+    const cli = await cliSummary();
+    for (const harness of HARNESSES) {
+        const raw = JSON.parse(
+            readFileSync(new URL(`fixtures/${harness}-stats.json`, import.meta.url), 'utf8')
+        ) as Record<string, (number | null)[]>;
+        const last7 = (key: string): number =>
+            raw[key]!.slice(-SUMMARY_DAYS).reduce<number>((sum, v) => sum + (v ?? 0), 0);
+
+        const totalTestRuns = last7('totalTestRuns');
+        const failedTestRuns = last7('failedTestRuns');
+        const skippedTestRuns = last7('skippedTestRuns');
+        const processedJobCount = last7('processedJobCount');
+        const failedJobs = last7('failedJobs');
+        const invalidJobs = last7('invalidJobs');
+
+        const expected = {
+            testFailureRate: (failedTestRuns / totalTestRuns) * 100,
+            jobFailureRate: (failedJobs / (processedJobCount + invalidJobs)) * 100,
+            skipRate: (skippedTestRuns / totalTestRuns) * 100,
+            invalidJobRate: (invalidJobs / processedJobCount) * 100,
+        };
+
+        const entry = cli.find((row) => row.harness === harness)!;
+        const page = pageRows(harness).find((row) => !row.isFlavor)!;
+        for (const [key, value] of Object.entries(expected)) {
+            assert.equal(page[key as keyof typeof expected], value, `${harness}: page ${key}`);
+            assert.equal(entry.current[key], value, `${harness}: CLI ${key}`);
+        }
+    }
+});
+
+test('the corrected job denominator is strictly wider than the old one', async () => {
+    // A direction check, so a regression that reverted only the denominator
+    // fails here even if both sides reverted together and stayed equal: the
+    // window has invalid jobs, so `processed + invalid` is a bigger number and
+    // the rate must be *below* `failedJobs / processed`.
+    const cli = await cliSummary();
+    for (const harness of HARNESSES) {
+        const entry = cli.find((row) => row.harness === harness)!;
+        const page = pageRows(harness).find((row) => !row.isFlavor)!;
+        assert.ok(page.totals.invalidJobs > 0, `${harness}: the window must have invalid jobs`);
+        assert.equal(
+            page.jobPopulation,
+            page.totals.processedJobCount + page.totals.invalidJobs
         );
+        const old = (page.totals.failedJobs / page.totals.processedJobCount) * 100;
+        assert.ok(page.jobFailureRate! < old, `${harness}: page rate must be below the old form`);
+        assert.ok(
+            entry.current['jobFailureRate']! < old,
+            `${harness}: CLI rate must be below the old form`
+        );
+        // And above the page's older still `(failed − invalid) / processed`.
+        const older =
+            ((page.totals.failedJobs - page.totals.invalidJobs) /
+                page.totals.processedJobCount) *
+            100;
+        assert.ok(page.jobFailureRate! > older, `${harness}: and above the subtracting form`);
     }
 });
 

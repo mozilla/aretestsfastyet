@@ -45,16 +45,32 @@ export interface PeriodSummary {
     invalidJobs: number;
     /** `failedTestRuns / totalTestRuns * 100`, or `null` when nothing ran. */
     testFailureRate: number | null;
-    /** `failedJobs / processedJobCount * 100`, or `null`. */
+    /**
+     * `failedJobs / (processedJobCount + invalidJobs) * 100`, or `null`.
+     *
+     * The denominator is both branches of the generator's fetch, because the
+     * numerator is counted over both: `failedJobs` is
+     * `jobs.filter(j => j.state === "failed").length` over every non-ignored
+     * job of the day (`fetch-test-data.js:1821`), while `processedJobCount`
+     * counts only the jobs whose profile was fetched and `invalidJobs` counts
+     * the ones whose fetch failed — disjoint branches of one `if`/`else`
+     * (`:267-282`). So `processedJobCount + invalidJobs` is the population
+     * `failedJobs` was drawn from, and `processedJobCount` alone is short by
+     * the invalid ones.
+     */
     jobFailureRate: number | null;
     /**
-     * `skippedTestRuns / (totalTestRuns + skippedTestRuns) * 100`, or `null`.
+     * `skippedTestRuns / totalTestRuns * 100`, or `null`.
      *
-     * The denominator includes the skips because the question is "what share
-     * of everything scheduled did not run". Dividing by `totalTestRuns` alone
-     * would report the ratio of skips to *runs*, which exceeds 100% whenever
-     * more is skipped than run — possible on a harness with heavy
-     * platform-scoping.
+     * `totalTestRuns` already contains the skips: the generator does
+     * `totalTestRuns += runCount` (`fetch-test-data.js:2733`) *before* the
+     * status dispatch, and `SKIP` is one of the branches below it. Adding
+     * `skippedTestRuns` to the denominator would count them twice.
+     *
+     * The numerator is narrower than the denominator's skips by one measured
+     * category: `run-if` skips are counted in `totalTestRuns` but excluded
+     * from `skippedTestRuns` (`:2742-2752`). So this rate means
+     * "non-conditional skips as a share of all runs".
      */
     skipRate: number | null;
     /** `invalidJobs / processedJobCount * 100`, or `null`. */
@@ -178,11 +194,16 @@ function summarizeRows(rows: readonly StatsRow[]): PeriodSummary {
         period.invalidJobs += row.invalidJobs;
     }
     period.testFailureRate = rate(period.failedTestRuns, period.totalTestRuns);
-    period.jobFailureRate = rate(period.failedJobs, period.processedJobCount);
-    period.skipRate = rate(
-        period.skippedTestRuns,
-        period.totalTestRuns + period.skippedTestRuns
+    // `processedJobCount + invalidJobs`, not `processedJobCount`: the two are
+    // the two disjoint branches the day's jobs are split into, and `failedJobs`
+    // is counted over both. See `PeriodSummary.jobFailureRate`.
+    period.jobFailureRate = rate(
+        period.failedJobs,
+        period.processedJobCount + period.invalidJobs
     );
+    // `totalTestRuns` already includes the skips; adding them would double-count.
+    // See `PeriodSummary.skipRate` for the `run-if` asymmetry.
+    period.skipRate = rate(period.skippedTestRuns, period.totalTestRuns);
     period.invalidJobRate = rate(period.invalidJobs, period.processedJobCount);
     return period;
 }

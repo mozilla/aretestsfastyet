@@ -1501,13 +1501,36 @@ test('computeSummary compares a period against the one before it', () => {
     );
 });
 
-test('the skip rate denominator includes the skips', () => {
-    // Dividing skips by runs alone would exceed 100% whenever more is skipped
-    // than run, which is possible on a heavily platform-scoped harness.
+test('the skip rate divides by totalTestRuns, which already contains the skips', () => {
+    // `fetch-test-data.js:2733` does `totalTestRuns += runCount` *before*
+    // dispatching on status, and `SKIP` is one of the branches below it — so
+    // adding `skippedTestRuns` to the denominator counts every skip twice. The
+    // expected value is computed from the two counters, not from `skipRate`.
     const summary = computeSummary(xpcshellStats);
     const { skippedTestRuns, totalTestRuns, skipRate } = summary.current;
-    assert.equal(skipRate, (skippedTestRuns / (totalTestRuns + skippedTestRuns)) * 100);
+    assert.equal(skipRate, (skippedTestRuns / totalTestRuns) * 100);
+    assert.ok(skippedTestRuns > 0 && skippedTestRuns < totalTestRuns);
+    // The old double-counting form is a strictly smaller number, so this fails
+    // if it ever comes back rather than only if the rate goes out of range.
+    assert.ok(skipRate! > (skippedTestRuns / (totalTestRuns + skippedTestRuns)) * 100);
     assert.ok(skipRate! <= 100);
+});
+
+test('the job failure rate divides by both branches of the fetch', () => {
+    // `failedJobs` is counted over every non-ignored job of the day
+    // (`fetch-test-data.js:1821`), and `processedJobCount` and `invalidJobs`
+    // are the disjoint success/failure branches that population splits into
+    // (`:267-282`). Dividing by `processedJobCount` alone is short by the
+    // invalid jobs.
+    const summary = computeSummary(xpcshellStats);
+    const { failedJobs, processedJobCount, invalidJobs, jobFailureRate } = summary.current;
+    assert.ok(invalidJobs > 0, 'the window must have invalid jobs for this to be a real check');
+    assert.equal(jobFailureRate, (failedJobs / (processedJobCount + invalidJobs)) * 100);
+    // Below the old form, which used the narrower denominator.
+    assert.ok(jobFailureRate! < (failedJobs / processedJobCount) * 100);
+    // The numerator is not a subtraction any more, so the rate cannot go
+    // negative for any counters at all.
+    assert.ok(jobFailureRate! >= 0 && jobFailureRate! <= 100);
 });
 
 test('computeSummary rejects a date the file does not have', () => {

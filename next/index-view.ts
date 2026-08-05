@@ -42,20 +42,16 @@
  *
  * The obvious move — the brief's suggestion, and what a reader of `PARITY.md`
  * §5 would expect — is to render the table straight out of `computeSummary`.
- * It cannot be done without changing two of the four numbers on the page, so
- * the table keeps its own arithmetic and `test/index-parity.test.ts` asserts
- * the difference rather than hiding it. Both differences are measured there and
- * enumerated in `next/index.ts`'s header; in one line each:
+ * The table keeps its own arithmetic instead, because it renders eight flavor
+ * sub-rows and `computeSummary` reads a `StatsFile`, which a flavor is not: it
+ * has no `invalidJobs` and no `markerCounts`.
  *
- * - **the job failure rate** subtracts invalid jobs from the numerator only
- *   (`(failedJobs − invalidJobs) / processedJobCount`, `:476`, `:479`) where
- *   the CLI divides `failedJobs / processedJobCount`;
- * - **the skip rate** divides by `totalTestRuns` (`:480`) where the CLI divides
- *   by `totalTestRuns + skippedTestRuns`.
- *
- * The other two — test failure rate and invalid job rate — agree exactly, and
- * the parity test asserts that they do so a future divergence in *those* is a
- * failure rather than a fourth entry on the list.
+ * All four rates now agree with the CLI to full float precision, and
+ * `test/index-parity.test.ts` asserts each of the four rather than letting a
+ * future divergence appear quietly. Two of them only agree because both sides
+ * were corrected together — see `summaryRow` for the job failure rate and
+ * `lib/query/summary.ts` for the skip rate — so the assertions are the thing
+ * holding them together, not a coincidence of two ports.
  *
  * ## This file must stay DOM-free
  *
@@ -494,14 +490,18 @@ export interface SummaryRow {
     totals: WindowTotals;
     /** `failedTestRuns / totalTestRuns`, as a percentage. */
     testFailureRate: number | null;
-    /** `(failedJobs − invalidJobs) / processedJobCount`. See below. */
+    /** `failedJobs / jobPopulation`. See below. */
     jobFailureRate: number | null;
-    /** `skippedTestRuns / totalTestRuns`. **Not** the CLI's denominator. */
+    /** `skippedTestRuns / totalTestRuns`. */
     skipRate: number | null;
     /** `invalidJobs / processedJobCount`. `null` on a flavor row. */
     invalidJobRate: number | null;
-    /** `failedJobs − invalidJobs`, the job-failure numerator. */
-    testFailedJobs: number;
+    /**
+     * The job-failure denominator: the population `failedJobs` was counted
+     * over. `processedJobCount + invalidJobs` on a harness row, and plain
+     * `processedJobCount` on a flavor row — see below.
+     */
+    jobPopulation: number;
 }
 
 /**
@@ -516,33 +516,48 @@ function rate(numerator: number, denominator: number): number | null {
 }
 
 /**
- * Builds one summary row. A port of `renderSummaryRow`'s arithmetic,
- * `index.html:470-481`.
+ * Builds one summary row. A port of `renderSummaryRow`, `index.html:470-481`,
+ * with the job failure rate corrected — see below.
  *
- * ## The job-failure numerator can go negative, and nothing guards it
+ * ## The job failure rate does not use upstream's expression
  *
- * `testFailedJobs = failedJobs − invalidJobs` (`:476`) subtracts invalid jobs
- * from the numerator while the denominator stays `processedJobCount` (`:479`).
- * Whether that is even the right *set* is a question this port does not
- * reopen — the CLI reads the rate as plain `failedJobs / processedJobCount`,
- * which is divergence 1 — but the arithmetic admits a negative result whenever
- * a period has more invalid jobs than failed ones, and the page would render
- * `-0.42%` with a straight face.
+ * Upstream computes `(failedJobs − invalidJobs) / processedJobCount` (`:476`,
+ * `:479`): it removes the invalid jobs from the numerator while leaving them
+ * out of the denominator too. The generator says the numerator never contained
+ * them to begin with.
  *
- * **Measured, because "unreachable" is not a thing to assert without one.**
- * Over every date in the pinned files — 199 xpcshell, 198 merged mochitest —
- * the count of days where `failedJobs < invalidJobs` is **0 and 0**. Over every
- * trailing 7-day window, the *minimum* value of `failedJobs − invalidJobs` is
- * **+241** (xpcshell, week ending 2026-02-05) and **+2,791** (mochitest, week
- * ending 2026-07-09). So it is comfortably positive throughout ~400 days of
- * real history and is not a live defect.
+ * `failedJobs` is `jobs.filter(j => j.state === "failed").length`
+ * (`fetch-test-data.js:1821`), over every non-ignored job of the day.
+ * `processedJobCount` counts the jobs whose profile was fetched successfully
+ * and `invalidJobs` counts the ones whose fetch failed, and those are the two
+ * disjoint branches of a single `if`/`else` (`:267-282`) — so
+ * `jobs = processedJobCount + invalidJobs`. A job's `state` comes from the job
+ * list, not from the profile fetch, so a failed job whose profile could not be
+ * fetched is in `failedJobs` *and* in `invalidJobs`.
  *
- * It is reproduced rather than clamped, and the reason is that clamping would
- * be the worse failure: a `Math.max(0, …)` turns "this arithmetic produced
- * something impossible" into "0.00%", which is indistinguishable from a clean
- * week. If the invariant ever breaks, a negative percentage on the landing page
- * is the signal. `test/index-view.test.ts` pins the negative case with a
- * synthetic file so the behaviour is a decision with a test, not an oversight.
+ * Upstream's form therefore subtracts a set from the numerator that is not a
+ * subset of it, and divides by a population short of the numerator's. The
+ * corrected form is `failedJobs / (processedJobCount + invalidJobs)`, which is
+ * what this returns and what `lib/query/summary.ts` returns; the two agreeing
+ * is asserted in `test/index-parity.test.ts`. Upstream's `// Only test-related
+ * failures` comment (`:476`) is not carried across: it describes an intent the
+ * arithmetic never achieved.
+ *
+ * This also retires the negative-rate hazard the previous port measured and
+ * pinned. The numerator is no longer a subtraction, so no combination of
+ * counters can produce a negative percentage.
+ *
+ * ## A flavor row's denominator is *not* the same expression
+ *
+ * A flavor carries no `invalidJobs` at all — the generator does not create the
+ * field (`:2833-2838`) — and its two job counters come from a different place
+ * than a harness row's: `processedJobCount = jc.total` and
+ * `failedJobs = jc.failed` (`:2767-2770`), both counted in the same loop over
+ * the raw job list (`:1826-1844`), over exactly the non-ignored jobs of that
+ * flavor. So a flavor's denominator is already the population its numerator was
+ * drawn from, and adding anything to it would be wrong. `totals.invalidJobs` is
+ * 0 on a flavor row, so the shared expression happens to give the right answer,
+ * but it is right for a different reason and the `isFlavor` branch says so.
  */
 export function summaryRow(
     totals: WindowTotals,
@@ -550,16 +565,25 @@ export function summaryRow(
     kind: string,
     isFlavor: boolean
 ): SummaryRow {
-    const testFailedJobs = totals.failedJobs - totals.invalidJobs;
+    // A harness row: the two fetch branches. A flavor row: `processedJobCount`
+    // is already the whole non-ignored job count for the flavor, and there is
+    // no `invalidJobs` series to add.
+    const jobPopulation = isFlavor
+        ? totals.processedJobCount
+        : totals.processedJobCount + totals.invalidJobs;
     return {
         name,
         kind,
         isFlavor,
         totals,
-        testFailedJobs,
+        jobPopulation,
         testFailureRate: rate(totals.failedTestRuns, totals.totalTestRuns),
-        jobFailureRate: rate(testFailedJobs, totals.processedJobCount),
-        // `totalTestRuns`, not `totalTestRuns + skippedTestRuns`. Divergence 2.
+        jobFailureRate: rate(totals.failedJobs, jobPopulation),
+        // `totalTestRuns` already contains the skips (`fetch-test-data.js:2733`
+        // runs before the status dispatch), so this is not short a denominator.
+        // `run-if` skips are in `totalTestRuns` but not in `skippedTestRuns`
+        // (`:2742-2752`), making this "non-conditional skips as a share of all
+        // runs" on both sides.
         skipRate: rate(totals.skippedTestRuns, totals.totalTestRuns),
         // A flavor has no `invalidJobs` series at all, so the column is a dash
         // rather than a 0.00% that would read as "no infrastructure problems".
@@ -696,23 +720,25 @@ export function testFailedJobSeries(stats: MergedStats): (number | null)[] {
  * **This chart uses the other job denominator**, and that is the point of
  * giving it its own function: `processedJobCount + invalidJobs + ignoredJobs`
  * (`:701`), where the summary table's Flaky Job Failures column divides by
- * `processedJobCount` alone. Two incompatible denominators for two numbers a
- * reader will read as the same quantity, on one page, neither labelled.
+ * `processedJobCount + invalidJobs`. The gap is now exactly the *ignored* jobs
+ * — still two denominators for two numbers a reader will read as the same
+ * quantity, on one page, neither labelled, but a smaller and more explicable
+ * gap than before the table's denominator was corrected.
  *
  * Measured over the pinned files' last 7 dates, so the two are directly
  * comparable with the table above them:
  *
  * | | xpcshell | mochitest |
  * | --- | --- | --- |
- * | `processedJobCount` (table) | 7,464 | 169,142 |
- * | `+ invalid + ignored` (chart) | 7,568 | 172,209 |
- * | ratio | 1.0139× | 1.0181× |
+ * | `processedJobCount + invalid` (table) | 7,499 | 169,697 |
+ * | `+ ignored` (chart) | 7,568 | 172,209 |
+ * | ratio | 1.0092× | 1.0148× |
  *
- * So the chart's "Intermittent" band sits 1.4% (xpcshell) and 1.8%
- * (mochitest) lower than the table's Flaky Job Failures figure for the same
- * days and the same numerator. Both are
- * reproduced; the difference is stated here and in `next/index.ts`'s header
- * because a reader comparing the two has no other way to learn it.
+ * So the chart's "Intermittent" band sits 0.9% (xpcshell) and 1.5%
+ * (mochitest) lower than the table's Flaky Job Failures figure would be for the
+ * same days and the same numerator. The chart is reproduced as upstream has it;
+ * the difference is stated here and in `next/index.ts`'s header because a
+ * reader comparing the two has no other way to learn it.
  *
  * Unlike `rateSeries`, this **keeps every date** — a day with no jobs yields a
  * `null` percentage, which Plotly renders as a gap in the stack rather than

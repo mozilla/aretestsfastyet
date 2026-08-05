@@ -51,54 +51,66 @@
  * declared. **This list is the whole set.** One enumerated list; no prose
  * elsewhere carrying a further entry.
  *
- *  1. **The Flaky Job Failures column keeps the page's numerator, which is not
- *     the CLI's.** Reproduced, not changed — listed because it is the largest
- *     number on this page that disagrees with `fx-tests summary`.
+ *  1. **The Flaky Job Failures column divides by a corrected denominator.** A
+ *     bug fix, and the largest number on this page that changes.
  *
- *     The page computes `(failedJobs − invalidJobs) / processedJobCount`
- *     (`index.html:476`, `:479`); `lib/query/summary.ts` computes
- *     `failedJobs / processedJobCount`. Measured on the pinned files, last 7
+ *     Upstream computes `(failedJobs − invalidJobs) / processedJobCount`
+ *     (`index.html:476`, `:479`), removing the invalid jobs from the numerator
+ *     while also leaving them out of the denominator. The generator says the
+ *     numerator never contained them: `failedJobs` is counted over every
+ *     non-ignored job of the day (`fetch-test-data.js:1821`), and
+ *     `processedJobCount` and `invalidJobs` are the two disjoint branches that
+ *     population splits into (`:267-282`). So the numerator was being reduced
+ *     by a set it did not contain, and divided by a population short of its
+ *     own. `next/index-view.ts`'s `summaryRow` carries the full derivation.
+ *
+ *     Both this page and `lib/query/summary.ts` now compute
+ *     `failedJobs / (processedJobCount + invalidJobs)` — the CLI's old form
+ *     had the right numerator and the same short denominator. Measured on the
+ *     pinned files, last 7 dates:
+ *
+ *     | | page before | CLI before | both now |
+ *     | --- | --- | --- | --- |
+ *     | xpcshell | 11.83% (883 / 7,464) | 12.30% (918 / 7,464) | **12.24%** (918 / 7,499) |
+ *     | mochitest | 2.66% (4,494 / 169,142) | 2.99% (5,049 / 169,142) | **2.98%** (5,049 / 169,697) |
+ *
+ *     The cell's second line moves with the rate — it now reads
+ *     `918 / 7,499`, the two numbers the percentage is actually made of.
+ *
+ *     Upstream's `// Only test-related failures` comment (`:476`) is **not**
+ *     carried across: it names an intent the arithmetic never achieved. The
+ *     `.info-text` under the *chart* (`:256`) still says "excludes invalid
+ *     jobs" and that remains accurate — the chart keeps upstream's
+ *     `failedJobs − invalidJobs` series, which this change does not touch.
+ *
+ *     This also retires the negative-rate hazard the port previously measured
+ *     and pinned. With no subtraction in the numerator, no combination of
+ *     counters produces a negative percentage.
+ *
+ *     A **flavor** row is not the same expression and deliberately so: a flavor
+ *     carries no `invalidJobs` field at all (`fetch-test-data.js:2833-2838`)
+ *     and its `processedJobCount` is `jc.total`, the raw non-ignored job count
+ *     for that flavor (`:2769`), which is already the population its
+ *     `failedJobs` was drawn from. See `summaryRow`.
+ *
+ *  2. **The Skip Rate column is unchanged, and the CLI was corrected to
+ *     match.** Listed because a reader diffing `fx-tests summary` against this
+ *     page across this change will see the CLI's number move.
+ *
+ *     Upstream divides by `totalTestRuns` (`index.html:480`) and that is right:
+ *     `totalTestRuns += runCount` runs *before* the status dispatch
+ *     (`fetch-test-data.js:2733`) and `SKIP` is one of the branches below it,
+ *     so the skips are already inside it. The CLI's
+ *     `totalTestRuns + skippedTestRuns` counted them twice. Measured, last 7
  *     dates:
  *
- *     | | page | CLI |
- *     | --- | --- | --- |
- *     | xpcshell | **11.83%** (883 / 7,464) | **12.30%** (918 / 7,464) |
- *     | mochitest | **2.66%** (4,494 / 169,142) | **2.99%** (5,049 / 169,142) |
+ *     | | page (unchanged) | CLI before | CLI now |
+ *     | --- | --- | --- | --- |
+ *     | xpcshell | **4.72%** (743,332 / 15,739,304) | 4.51% (/ 16,482,636) | **4.72%** |
+ *     | mochitest | **5.28%** (3,174,265 / 60,119,846) | 5.02% (/ 63,294,111) | **5.28%** |
  *
- *     Both are defensible and they answer different questions — the page's is
- *     "how often did a job fail *because a test was flaky*", the CLI's is "how
- *     often did a job fail" — and the page's column header says "Flaky Job
- *     Failures" while its tooltip says "excludes invalid jobs", so the page's
- *     wording matches the page's arithmetic. Reconciling them means changing
- *     one product's meaning and belongs in a decision of its own.
- *
- *     **The subtraction can go negative and nothing guards it.** Not a
- *     hypothetical worth leaving unmeasured: over all 199 xpcshell and 198
- *     merged mochitest dates, the number of days with `failedJobs <
- *     invalidJobs` is **0 and 0**, and the minimum over any trailing 7-day
- *     window is **+241** and **+2,791**. So it is not live. It is reproduced
- *     rather than clamped, because a `Math.max(0, …)` would turn an impossible
- *     result into an ordinary-looking 0.00%; `test/index-view.test.ts` pins the
- *     negative case on a synthetic file.
- *
- *  2. **The Skip Rate column keeps the page's denominator, which is not the
- *     CLI's.** Same class as 1, same decision, smaller gap.
- *
- *     The page divides by `totalTestRuns` (`index.html:480`); the CLI divides
- *     by `totalTestRuns + skippedTestRuns`, for the reason its module
- *     documents — the question is "what share of everything scheduled did not
- *     run", and the page's form exceeds 100% whenever more is skipped than run.
- *     Measured, last 7 dates:
- *
- *     | | page | CLI |
- *     | --- | --- | --- |
- *     | xpcshell | **4.72%** | **4.51%** |
- *     | mochitest | **5.28%** | **5.02%** |
- *
- *     The page's raw counts are rendered as `skipped / totalTestRuns`, so the
- *     cell's own second line shows the denominator it used and the two lines
- *     agree with each other. Changing the rate without changing that line would
- *     make the cell self-contradictory.
+ *     The cell's second line already showed `skipped / totalTestRuns`, so it
+ *     and the percentage were consistent all along.
  *
  *  3. **A short file now says how short.** The one place a *label* changed
  *     rather than a number.
@@ -154,11 +166,11 @@
  *     it for the cost of the call.
  *
  *     Each harness row's four cells keep their existing `title` sentence and
- *     gain a second line: `Job failure rate (all failed jobs): 12.30%, prior 7d
- *     7.57% (+4.73 points).` The **CLI's** rate is quoted there, not the page's,
- *     and the line names the metric — so for the two columns where the two
- *     disagree (divergences 1 and 2) the tooltip is visibly about a different
- *     number than the cell, rather than silently contradicting it.
+ *     gain a second line: `Job failure rate: 12.24%, prior 7d 7.54% (+4.70
+ *     points).` The CLI's rate is quoted there, and since divergence 1 it is
+ *     the **same** number as the cell above it — as are the other three. The
+ *     line still names its metric, so the tooltip reads as a comparison of a
+ *     named quantity rather than as a bare second percentage.
  *
  *     A change is reported only when the two *rendered* rates differ. The
  *     browser run caught the alternative: xpcshell's test failure rate went
@@ -372,14 +384,16 @@ const COLUMN_TITLES = [
  * The metric labels the prior-period tooltip uses, in column order.
  * Divergence 6.
  *
- * These name the **CLI's** metric, which for columns 2 and 3 is not the number
- * in the cell — see divergences 1 and 2. Naming it is what keeps the tooltip
- * honest rather than silently contradictory.
+ * These name the CLI's metric, and all four are now the same number as the
+ * cell above them — `test/index-parity.test.ts` asserts each of the four to
+ * full float precision. The two that used to need a disambiguating suffix
+ * ("all failed jobs", "of everything scheduled") no longer do, because the
+ * numbers they were disambiguating from are gone.
  */
 const DELTA_LABELS = [
     'Test failure rate',
-    'Job failure rate (all failed jobs)',
-    'Skip rate (of everything scheduled)',
+    'Job failure rate',
+    'Skip rate',
     'Invalid job rate',
 ] as const;
 
@@ -483,21 +497,24 @@ function renderSummaryRow(row: SummaryRow): HTMLElement {
     );
     tr.append(testCell);
 
-    // 2. Flaky Job Failures — the page's numerator, not the CLI's. Divergence 1.
+    // 2. Flaky Job Failures — `failedJobs / jobPopulation`, matching the CLI.
+    // Divergence 1. The second line shows the same two numbers as the rate, so
+    // the cell does not contradict itself.
     // `green.html` gets no dev params, deliberately. Divergence 8.
     const jobCell = el('td', { title: title(1, row.isFlavor ? '' : ' due to test flakiness') });
     jobCell.append(
         linkedCell(
             statCell(
                 percent(row.jobFailureRate),
-                counts(row.testFailedJobs, row.totals.processedJobCount)
+                counts(row.totals.failedJobs, row.jobPopulation)
             ),
             row.isFlavor ? null : `green.html#${row.kind}`
         )
     );
     tr.append(jobCell);
 
-    // 3. Skip Rate — denominator is `totalTestRuns`, not the CLI's. Divergence 2.
+    // 3. Skip Rate — `skipped / totalTestRuns`, unchanged from upstream and now
+    // also what the CLI computes.
     const skipCell = el('td', { title: title(2) });
     skipCell.append(
         statCell(

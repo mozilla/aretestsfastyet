@@ -5612,11 +5612,11 @@ function summarizeRows(rows2) {
     period.invalidJobs += row.invalidJobs;
   }
   period.testFailureRate = rate(period.failedTestRuns, period.totalTestRuns);
-  period.jobFailureRate = rate(period.failedJobs, period.processedJobCount);
-  period.skipRate = rate(
-    period.skippedTestRuns,
-    period.totalTestRuns + period.skippedTestRuns
+  period.jobFailureRate = rate(
+    period.failedJobs,
+    period.processedJobCount + period.invalidJobs
   );
+  period.skipRate = rate(period.skippedTestRuns, period.totalTestRuns);
   period.invalidJobRate = rate(period.invalidJobs, period.processedJobCount);
   return period;
 }
