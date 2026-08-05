@@ -21,6 +21,7 @@ import type { IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
 import { groupFailuresByMessage } from '../lib/query/failures.ts';
 import { INITIAL_SORT, NO_FAILURE_MESSAGE, rowsOf } from '../next/drilldown-view.ts';
 import type { PathNode, TestNode } from '../next/drilldown-view.ts';
+import { buildCrashGroups } from '../next/crashes-view.ts';
 import {
     FAILURE_NOUN,
     buildFailureGroups,
@@ -335,16 +336,31 @@ test('the components in the fixture are the ones that get a button', () => {
 
 test('a test node carries the component only when the page asked for it', () => {
     // `crashes.html` never reads one, so `buildCrashGroups` does not pay for it.
-    const groups = buildFailureGroups(decoded, startTime);
-    let withComponent = 0;
-    for (const group of groups.values()) {
-        for (const path of group.paths.values()) {
-            for (const testNode of path.tests.values()) {
-                if (testNode.component !== undefined && testNode.component !== null) {
-                    withComponent++;
+    //
+    // Both halves are asserted. An earlier version of this test checked only
+    // the failures side, so the "only" in its name was unbacked: turning
+    // `withComponent` on for crashes changed nothing it could see.
+    const countComponents = (groups: Map<string, { paths: Map<string, PathNode> }>): number => {
+        let seen = 0;
+        for (const group of groups.values()) {
+            for (const path of group.paths.values()) {
+                for (const testNode of path.tests.values()) {
+                    if (testNode.component !== undefined && testNode.component !== null) {
+                        seen++;
+                    }
                 }
             }
         }
-    }
-    assert.ok(withComponent > 0, 'the failures page must see components');
+        return seen;
+    };
+
+    assert.ok(
+        countComponents(buildFailureGroups(decoded, startTime)) > 0,
+        'the failures page must see components'
+    );
+    assert.equal(
+        countComponents(buildCrashGroups(decoded, startTime)),
+        0,
+        'the crashes page reads no component, so building one is work nothing consumes'
+    );
 });

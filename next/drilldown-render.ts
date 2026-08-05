@@ -19,8 +19,15 @@
  * labels a page uses, passed in once. That is the alternative to the thing the
  * brief warned against — a shared helper taking three booleans — because a
  * vocabulary is data the page owns, not a switch inside a function that has to
- * know which page called it. Nothing in this file branches on which page it is
- * serving.
+ * know which page called it.
+ *
+ * There is **one** exception, and it is deliberate: `inlineLinksCell` tests
+ * `vocab.kind` because the two pages emit genuinely different element trees
+ * there — `td > span.view-links` against a bare `td.view-links` — which no
+ * amount of vocabulary can express, since the difference is in the shape and
+ * not in a name. It is documented at that function. One structural branch is
+ * worth more than a hook nothing else would use; the claim to hold onto is that
+ * it is the only one, not that there are none.
  *
  * The genuinely per-page work — what links an occurrence gets, whether a test
  * row carries a bug button, whether the row label is linkified — is a set of
@@ -311,8 +318,10 @@ export function externalLink(href: string, text: string, className?: string): HT
  *
  * Every field is a string the stylesheet or the reader sees, and none of them
  * can be derived from the other page's — `common-data-view.css` has separate
- * rules for each pair. Passing them as one record is what keeps this renderer
- * free of any test for which page it is drawing.
+ * rules for each pair. Passing them as one record is what keeps the *naming*
+ * out of the renderer's control flow; `kind` is read once, by
+ * `inlineLinksCell`, where the two pages differ in element shape rather than in
+ * a name. See the note at the top of this file.
  */
 export interface Vocabulary {
     /** `crash` or `failure`. The prefix of the row and stats classes. */

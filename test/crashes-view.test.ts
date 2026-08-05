@@ -240,4 +240,23 @@ test('the search keeps rows whole', () => {
     assert.ok(found !== undefined, 'a matching test name must keep its row');
     assert.equal(found.count, target.count, 'and the row keeps its full count');
     assert.equal(found.paths.size, target.paths.size, 'and its whole subtree');
+
+    // The other half, and the half that was missing: the non-matching rows must
+    // be *gone*. Asserting only that the match survives with its counts intact
+    // passes against a `crashRows` that does no filtering at all — measured,
+    // deleting `filterGroupsByMatch` from it left all eleven tests in this file
+    // green while the search took 7 rows to 1. "Keeps rows whole" is a claim
+    // about the rows that remain; it says nothing unless the set shrinks.
+    assert.ok(
+        rows.length < all.length,
+        `the search matched every one of the ${all.length} rows, so this asserts nothing`
+    );
+    for (const row of rows) {
+        const matches = [...row.paths.values()].some((p) =>
+            [...p.tests.keys()].some((name) =>
+                name.toLowerCase().includes(testNode!.testName.toLowerCase())
+            )
+        );
+        assert.ok(matches, `${row.key} survived the search without matching it`);
+    }
 });
