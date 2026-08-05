@@ -27,6 +27,7 @@ import {
     checkResources,
     checkStackwalk,
     checkStats,
+    checkTryPush,
     type FileContext,
 } from '../tools/validate/formats.ts';
 
@@ -48,6 +49,12 @@ function checkerFor(name: string): { check: Check; ctx: FileContext } | undefine
     }
     if (name.startsWith('stackwalk-')) {
         return { check: checkStackwalk, ctx };
+    }
+    // Before the bucket pattern: a revision ends in hex, so `try-7d16bff8.json`
+    // matches it too — the same collision the daily/bucket ordering below
+    // guards against.
+    if (name.startsWith('try-')) {
+        return { check: checkTryPush, ctx };
     }
     if (name.endsWith('-stats.json')) {
         return { check: checkStats, ctx };

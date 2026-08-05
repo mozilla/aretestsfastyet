@@ -1587,3 +1587,111 @@ export function observeStatusTable(c: Checker, data: unknown, harness: string): 
         }
     }
 }
+
+/**
+ * A captured Try push: what `try.html` and `fx-tests try` read from Treeherder,
+ * plus the per-task timings pulled from each failing job's profile.
+ *
+ * Unlike every other family here this is not a published artefact — it is a
+ * recording, made so the page and the CLI can be driven over a real push
+ * without the network. It is checked for the same reason the others are: a
+ * fixture is a *subset*, and the interesting invariant survives subsetting only
+ * if something asserts it. Here that invariant is the join — every timing names
+ * a `(taskId, retryId)`, and a capture that kept a timing while dropping its
+ * job would still parse, still look plausible, and quietly change what the
+ * page computes for that row.
+ */
+export function checkTryPush(c: Checker, data: unknown, _ctx: FileContext): void {
+    if (!c.object(data)) {
+        return;
+    }
+    c.noExtraKeys(data, ['push', 'jobs', 'timings']);
+    c.string(data['push'], '.push');
+
+    // `(taskId, retryId)` is the key a timing joins on: a task that was retried
+    // has several runs under one task ID, and the page attributes a failure to
+    // the run rather than the task.
+    const runs = new Set<string>();
+    const jobs = c.array(data['jobs'], '.jobs') ? data['jobs'] : [];
+    for (const [i, job] of jobs.entries()) {
+        const at = `.jobs[${i}]`;
+        if (!c.object(job, at)) {
+            continue;
+        }
+        c.noExtraKeys(job, ['jobId', 'jobName', 'taskId', 'retryId', 'state', 'result'], at);
+        c.integer(job['jobId'], `${at}.jobId`);
+        c.string(job['jobName'], `${at}.jobName`);
+        c.string(job['state'], `${at}.state`);
+        c.string(job['result'], `${at}.result`);
+        const taskId = job['taskId'];
+        const retryId = job['retryId'];
+        if (c.string(taskId, `${at}.taskId`) && c.integer(retryId, `${at}.retryId`)) {
+            runs.add(`${taskId}.${retryId}`);
+        }
+        c.observe('tryJobStates', String(job['state']));
+        c.observe('tryJobResults', String(job['result']));
+    }
+
+    const timings = c.array(data['timings'], '.timings') ? data['timings'] : [];
+    for (const [i, timing] of timings.entries()) {
+        const at = `.timings[${i}]`;
+        if (!c.object(timing, at)) {
+            continue;
+        }
+        c.noExtraKeys(
+            timing,
+            [
+                'path',
+                'duration',
+                'status',
+                'timestamp',
+                'allMessages',
+                'message',
+                'isRetry',
+                'crashSignature',
+                'minidump',
+                'jobName',
+                'taskId',
+                'retryId',
+            ],
+            at
+        );
+        c.string(timing['path'], `${at}.path`);
+        c.number(timing['duration'], `${at}.duration`);
+        c.string(timing['status'], `${at}.status`);
+        c.number(timing['timestamp'], `${at}.timestamp`);
+        c.string(timing['jobName'], `${at}.jobName`);
+        // Absent rather than null when they do not apply, so `optional` and not
+        // `nullable`. Measured on this capture: `message` on 117 of 180
+        // timings, `isRetry` on 82, and the crash pair on exactly the 4 CRASHes.
+        c.string(timing['message'], `${at}.message`, 'optional');
+        c.boolean(timing['isRetry'], `${at}.isRetry`, 'optional');
+        c.string(timing['crashSignature'], `${at}.crashSignature`, 'optional');
+        c.string(timing['minidump'], `${at}.minidump`, 'optional');
+
+        const messages = c.array(timing['allMessages'], `${at}.allMessages`)
+            ? (timing['allMessages'] as unknown[])
+            : [];
+        for (const [j, message] of messages.entries()) {
+            const mAt = `${at}.allMessages[${j}]`;
+            if (!c.object(message, mAt)) {
+                continue;
+            }
+            c.noExtraKeys(message, ['message', 'status', 'stack'], mAt);
+            c.string(message['message'], `${mAt}.message`, 'nullable');
+            c.string(message['status'], `${mAt}.status`);
+            c.string(message['stack'], `${mAt}.stack`, 'optional');
+        }
+
+        // The join. A timing whose run is not in the capture is the subsetting
+        // bug this whole file exists to catch.
+        const taskId = timing['taskId'];
+        const retryId = timing['retryId'];
+        if (c.string(taskId, `${at}.taskId`) && c.integer(retryId, `${at}.retryId`)) {
+            if (!runs.has(`${taskId}.${retryId}`)) {
+                c.error(`names run ${taskId}.${retryId}, which is not in .jobs`, `${at}.taskId`);
+            }
+        }
+        c.observe('tryTimingStatuses', String(timing['status']));
+    }
+}
