@@ -11,8 +11,18 @@
  * | `lib/` | the file formats and the five status-group shapes | node tests, shared with the CLI |
  * | `next/drilldown-view.ts` | the shared view model: tree, ranking, collapse, totals, URL state | `test/drilldown-view.test.ts`, no DOM |
  * | `next/drilldown-render.ts` | the shared renderer | the browser parity run |
+ * | `next/drilldown-controller.ts` | the shared controller: state, clicks, fetches, hash | `test/crashes-page.test.ts` and `test/failures-page.test.ts`, in jsdom |
  * | `next/crashes-view.ts` | what is only true of this page | `test/crashes-view.test.ts`, no DOM |
- * | this file | data loading, this page's hooks, and the interactions | the browser parity run |
+ * | this file | this page's `PageSpec`: its hooks, its chart walks, its URL rule | `test/crashes-page.test.ts` |
+ *
+ * The controller row is the newest. The two controllers were 897 and 922 lines
+ * that a normalized diff put at 82% identical — the state, the four-level
+ * expansion machine, the delegated click handler, `loadSelectedDate`, the
+ * historical toggle and `start()` were the same code with the nouns swapped.
+ * That is now `DrilldownController`, and what is left here is what genuinely
+ * only this page does. **What was deliberately left duplicated** — the
+ * search-box guard in `applyUrlState`, and the chart walk — is marked as such at
+ * each site, with the reason.
  *
  * ## What the migration removes
  *
@@ -128,41 +138,28 @@
  * `next/drilldown-view.ts`.
  */
 
-import { decodeDaily } from '../lib/formats/daily.ts';
-import type { DailyFile } from '../lib/formats/daily.ts';
-import { decodeIssuesWithTaskIds } from '../lib/formats/issues.ts';
-import type { IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import {
     type GroupNode,
     type GroupRow,
     type Occurrence,
     type PathNode,
-    type SortColumn,
     type SortState,
     type TestNode,
-    INITIAL_SORT,
-    expandGroup,
-    expandPath,
-    isHistoricalDate,
-    nextSort,
+    type UrlState,
     occurrenceTooltip,
-    readUrlState,
-    totalsOf,
 } from './drilldown-view.ts';
 import {
+    type ChartRequest,
+    type DailySeries,
+    type PageSpec,
+    type RankedList,
+    DrilldownController,
+} from './drilldown-controller.ts';
+import {
     type RenderHooks,
-    type SearchBoxManager,
     type Vocabulary,
     externalLink,
-    insertAfter,
-    noData,
-    removeFollowing,
-    renderChartSlot,
-    renderList,
-    renderOccurrenceTable,
-    renderSubRows,
-    searchBox,
 } from './drilldown-render.ts';
 import { CRASH_NOUN, buildCrashGroups, crashRows, singleCrashOpensViewer } from './crashes-view.ts';
 
@@ -182,45 +179,52 @@ const VOCAB: Vocabulary = {
     emptyText: 'No crash data available',
 };
 
-// --- page state -----------------------------------------------------------
+/**
+ * This page's state and interactions.
+ *
+ * Everything that used to be a module-scope `let` here — `rawData`, `decoded`,
+ * `groups`, `historicalData`, `isHistoricalMode`, `expandedSignature`, the two
+ * expansion sets, `currentSort`, `rowsByKey`, `renderedRows` — is the
+ * controller's, because the failures page kept the identical set under different
+ * names. What this file reads back off it is `rawData` and `historicalData`, for
+ * the three shared scripts that index into the untyped JSON themselves.
+ *
+ * Declared before `SPEC` and constructed at the bottom of the file: the hooks
+ * and the chart walks below read `page.rawData` and `page.historicalData`, and
+ * `SPEC` names those functions, so one of the two has to come first. A `const`
+ * assigned at the end is the ordering that lets every function below read as
+ * ordinary top-level code.
+ */
+let page: DrilldownController;
+
+// --- ranking --------------------------------------------------------------
 
 /**
- * The raw parsed file, kept because three shared functions need it as-is.
+ * The ranked rows, and the subtree every expansion reads.
  *
- * `getTreeherderJobUrl`, `getTestTotalRuns` and `countDailyRunsForTests` all
- * take the untyped JSON and index into `tables`/`taskInfo`/`testRuns`
- * themselves. They are `common-links.js` and `common-charts.js`, which this
- * migration keeps, so the raw object has to survive alongside the decoded one.
+ * The map is the whole of `groups`, **not** the rows that survived the search.
+ * That is this page's half of the search asymmetry and it reproduces
+ * `crashes.html:858`, which expands out of `currentData.crashData`: a row's
+ * expansion is never narrowed by the search, so a row matched only by a test
+ * name still opens onto its full subtree. `failures.html` returns its
+ * search-rewritten subtrees instead, which is why the shared controller reads
+ * one map rather than branching on a flag.
+ *
+ * Keying off `groups` rather than off `rows` also matters for the re-attach
+ * after a re-render: a row that is open when the search narrows past it keeps
+ * finding its subtree, which is what upstream does.
  */
-let rawData: unknown = null;
-/** The decoded view of `rawData`. */
-let decoded: DecodedTimingFile | null = null;
-/** `metadata.startTime`, which the day indices are relative to. */
-let startTime = 0;
-/** The signature tree. */
-let groups: Map<string, GroupNode> = new Map();
-/** The raw 21-day file, kept for the charts and the run totals. */
-let historicalData: unknown = null;
-let isHistoricalMode = false;
-
-let expandedSignature: string | null = null;
-const expandedPaths = new Set<string>();
-const expandedTests = new Set<string>();
-let currentSort: SortState = { ...INITIAL_SORT };
-
-/** The row elements of the last render, keyed by raw signature. */
-let rowsByKey = new Map<string, HTMLElement>();
-/** The rows of the last render, so an expansion can find its subtree. */
-let renderedRows: GroupRow[] = [];
-
-let searchBoxManager: SearchBoxManager;
-let hashManager: ReturnType<typeof initUrlHashManager>;
-let historicalToggleManager: { toggle: () => Promise<void> };
-
-const content = (): HTMLElement => document.getElementById('content')!;
-const statusText = (): HTMLElement => document.getElementById('statusText')!;
-const dateSelect = (): HTMLSelectElement =>
-    document.getElementById('dateSelect') as HTMLSelectElement;
+function rankSignatures(
+    groups: Map<string, GroupNode>,
+    term: string,
+    sort: SortState
+): RankedList {
+    const expandable = new Map<string, Map<string, PathNode>>();
+    for (const [signature, group] of groups) {
+        expandable.set(signature, group.paths);
+    }
+    return { rows: crashRows(groups, term, sort), expandable };
+}
 
 // --- the page's hooks -----------------------------------------------------
 
@@ -232,10 +236,10 @@ const dateSelect = (): HTMLSelectElement =>
  * answer rather than computing it.
  */
 function treeherderUrl(occurrence: Occurrence): string | null {
-    if (rawData === null) {
+    if (page.rawData === null) {
         return null;
     }
-    return getTreeherderJobUrl(occurrence, rawData);
+    return getTreeherderJobUrl(occurrence, page.rawData);
 }
 
 const hooks: RenderHooks = {
@@ -275,231 +279,12 @@ const hooks: RenderHooks = {
         singleCrashOpensViewer(occurrence) ? getCrashViewerUrl(occurrence) : null,
 
     totalRunsOf: (dirPath, testName) =>
-        historicalData === null ? 0 : getTestTotalRuns(historicalData, dirPath, testName),
+        page.historicalData === null
+            ? 0
+            : getTestTotalRuns(page.historicalData, dirPath, testName),
 
     tooltipOf: (count, totalRuns) => occurrenceTooltip(count, totalRuns, CRASH_NOUN),
 };
-
-// --- rendering ------------------------------------------------------------
-
-/** `renderCrashList` (`crashes.html:484`). */
-function render(): void {
-    const target = content();
-    target.textContent = '';
-
-    if (decoded === null || groups.size === 0) {
-        target.append(noData(VOCAB.emptyText));
-        return;
-    }
-
-    const rows = crashRows(groups, searchBoxManager.getValue().toLowerCase(), currentSort);
-    renderedRows = rows;
-
-    const list = renderList(
-        rows,
-        totalsOf(rows),
-        currentSort,
-        VOCAB,
-        hooks,
-        onSortClicked,
-        expandedSignature
-    );
-    rowsByKey = list.rowsByKey;
-    target.append(list.root);
-
-    // Re-attach the open row's subtree after a full re-render. Upstream does
-    // this by selector (`crashes.html:597`) and this by Map lookup; see
-    // divergence 2.
-    if (expandedSignature !== null) {
-        const row = rowsByKey.get(expandedSignature);
-        const group = groups.get(expandedSignature);
-        if (row !== undefined && group !== undefined) {
-            // Deliberately the *unfiltered* subtree, matching upstream, which
-            // re-reads `currentData.crashData` here (`:599`) rather than the
-            // filtered list. It is the other half of this page's search
-            // semantics: a row's expansion is never narrowed by the search.
-            openSignature(row, expandedSignature, group.paths);
-        }
-    }
-}
-
-function onSortClicked(column: SortColumn): void {
-    currentSort = nextSort(currentSort, column);
-    render();
-}
-
-// --- expansion ------------------------------------------------------------
-
-/**
- * Whether an element ends the run of rows belonging to an expanded signature.
- *
- * `crashes.html:841`. A signature's subtree runs until the next top-level row.
- */
-const endsSignature = (element: Element): boolean =>
-    element.classList.contains('crash-row') ||
-    element.classList.contains('sort-header') ||
-    element.classList.contains('total-row');
-
-/**
- * Whether an element ends the run of rows belonging to an expanded path or test.
- *
- * `crashes.html:888` and `:929`, which stop on *anything that is not* one of
- * these — so the predicate is the negation.
- */
-const endsPath = (element: Element): boolean =>
-    !(
-        element.classList.contains('test-row') ||
-        element.classList.contains('historical-chart') ||
-        element.classList.contains('instance-table')
-    );
-
-const endsTest = (element: Element): boolean =>
-    !(
-        element.classList.contains('historical-chart') ||
-        element.classList.contains('instance-table')
-    );
-
-/** Inserts a signature's subtree and draws its chart. `crashes.html:863`. */
-function openSignature(row: HTMLElement, signature: string, paths: Map<string, PathNode>): void {
-    const elements: HTMLElement[] = [];
-    const chartId = isHistoricalMode ? makeChartId('signature', signature) : null;
-    if (chartId !== null) {
-        elements.push(renderChartSlot(`${chartId}-canvas`));
-    }
-    elements.push(...renderSubRows(expandGroup(paths), signature, VOCAB, hooks));
-    insertAfter(row, elements);
-    wireSubRows(elements, signature);
-    if (chartId !== null) {
-        drawChart(`${chartId}-canvas`, signatureDailyRates(signature), signature);
-    }
-}
-
-/** `toggleCrash` (`crashes.html:828`). */
-function toggleSignature(signature: string, row: HTMLElement): void {
-    const wasExpanded = expandedSignature === signature;
-
-    if (expandedSignature !== null) {
-        const open = wasExpanded ? row : rowsByKey.get(expandedSignature);
-        if (open !== undefined) {
-            open.classList.remove('expanded');
-            removeFollowing(open, endsSignature);
-        }
-        expandedSignature = null;
-        expandedPaths.clear();
-        expandedTests.clear();
-    }
-
-    if (!wasExpanded) {
-        expandedSignature = signature;
-        row.classList.add('expanded');
-        const group = groups.get(signature);
-        if (group !== undefined) {
-            openSignature(row, signature, group.paths);
-        }
-    }
-}
-
-/** `togglePath` (`crashes.html:878`). */
-function togglePath(signature: string, dirPath: string, row: HTMLElement): void {
-    const key = `${signature}|||${dirPath}`;
-    const wasExpanded = expandedPaths.has(key);
-    row.classList.toggle('expanded', !wasExpanded);
-
-    if (wasExpanded) {
-        expandedPaths.delete(key);
-        removeFollowing(row, endsPath);
-        return;
-    }
-
-    expandedPaths.add(key);
-    const path = groups.get(signature)?.paths.get(dirPath);
-    if (path === undefined) {
-        return;
-    }
-
-    const elements: HTMLElement[] = [];
-    const chartId = isHistoricalMode ? makeChartId('path', signature, dirPath) : null;
-    if (chartId !== null) {
-        elements.push(renderChartSlot(`${chartId}-canvas`));
-    }
-    elements.push(...renderSubRows(expandPath(path), signature, VOCAB, hooks));
-    insertAfter(row, elements);
-    wireSubRows(elements, signature);
-    if (chartId !== null) {
-        drawChart(
-            `${chartId}-canvas`,
-            pathDailyRates(signature, dirPath),
-            `${signature} in ${dirPath}`
-        );
-    }
-}
-
-/** `toggleTest` (`crashes.html:919`). */
-function toggleTest(
-    signature: string,
-    dirPath: string,
-    testName: string,
-    row: HTMLElement
-): void {
-    const key = `${signature}|||${dirPath}|||${testName}`;
-    const wasExpanded = expandedTests.has(key);
-    row.classList.toggle('expanded', !wasExpanded);
-
-    if (wasExpanded) {
-        expandedTests.delete(key);
-        removeFollowing(row, endsTest);
-        return;
-    }
-
-    expandedTests.add(key);
-    const test = groups.get(signature)?.paths.get(dirPath)?.tests.get(testName);
-    if (test === undefined) {
-        return;
-    }
-
-    const elements: HTMLElement[] = [];
-    const chartId = isHistoricalMode ? makeChartId('test', signature, dirPath, testName) : null;
-    if (chartId !== null) {
-        elements.push(renderChartSlot(`${chartId}-canvas`));
-    }
-    elements.push(renderOccurrenceTable(test, VOCAB, hooks));
-    insertAfter(row, elements);
-    if (chartId !== null) {
-        drawChart(
-            `${chartId}-canvas`,
-            testDailyRates(signature, dirPath, testName),
-            `${signature} in ${testName}`
-        );
-    }
-}
-
-/**
- * Attaches the click behaviour to freshly inserted path and test rows.
- *
- * Upstream uses one delegated listener on `#content` that walks up from the
- * event target and reads `dataset` (`crashes.html:619-679`). That works because
- * the data it needs is in attributes; here the rows are elements the renderer
- * just built, so the listener closes over the values directly and there is no
- * attribute to read back. The `single-crash` rows already carry their own
- * listener from the renderer.
- */
-function wireSubRows(elements: readonly HTMLElement[], signature: string): void {
-    for (const element of elements) {
-        if (element.classList.contains('path-row')) {
-            const dirPath = element.dataset['path']!;
-            element.addEventListener('click', () => togglePath(signature, dirPath, element));
-        } else if (
-            element.classList.contains('test-row') &&
-            !element.classList.contains('single-crash')
-        ) {
-            const dirPath = element.dataset['path']!;
-            const testName = element.dataset['test']!;
-            element.addEventListener('click', () =>
-                toggleTest(signature, dirPath, testName, element)
-            );
-        }
-    }
-}
 
 // --- the charts -----------------------------------------------------------
 
@@ -513,6 +298,28 @@ function wireSubRows(elements: readonly HTMLElement[], signature: string): void 
  * stays on the raw file too — porting it to the decoded file would mean
  * `lib/` yielding test IDs that then index back into the raw arrays, which is
  * more coupling than the three call sites are worth.
+ *
+ * ## Why this walk is not shared with `next/failures.ts`
+ *
+ * The two are the same shape and not the same code, and unifying them would
+ * cost more than it saves. The differences are four, and every one of them is
+ * load-bearing:
+ *
+ * | | crashes | failures |
+ * | --- | --- | --- |
+ * | value table | `tables.crashSignatures` | `tables.messages` |
+ * | field on a status group | `crashSignatureIds` | `messageIds` |
+ * | status test | `=== 'CRASH'` (`crashes.html:435`) | `startsWith('FAIL')` |
+ * | search-filtered variants | none | two (`failures.html:966`, `:1013`) |
+ *
+ * The status test in particular is *not* a parameter: this page matching a bare
+ * `'CRASH'` and the other page matching a `FAIL` **prefix** is upstream's rule
+ * on each page, `test/crashes-page.test.ts` pins the strict form here and
+ * `test/failures-page.test.ts` pins the prefix form there, and a shared walk
+ * taking a predicate would be a function whose only body is the loop the two
+ * already agree on. The saving would be about 30 lines against two more
+ * parameters and a predicate; that is the trade this codebase's rule says not to
+ * make.
  */
 interface HistoricalRaw {
     metadata: { days?: number; startTime: number };
@@ -526,13 +333,11 @@ function signatureId(historical: HistoricalRaw, signature: string): number {
     return historical.tables.crashSignatures.indexOf(signature);
 }
 
-type DailySeries = ReturnType<typeof countDailyRunsForTests>;
-
 function ratesFor(signature: string, keep: (testId: string) => boolean): DailySeries | null {
-    if (historicalData === null) {
+    if (page.historicalData === null) {
         return null;
     }
-    const historical = historicalData as HistoricalRaw;
+    const historical = page.historicalData as HistoricalRaw;
     const days = historical.metadata.days ?? 21;
     const start = historical.metadata.startTime;
     const targetId = signatureId(historical, signature);
@@ -605,10 +410,10 @@ function testDailyRates(
     dirPath: string,
     testName: string
 ): DailySeries | null {
-    if (historicalData === null) {
+    if (page.historicalData === null) {
         return null;
     }
-    const historical = historicalData as HistoricalRaw;
+    const historical = page.historicalData as HistoricalRaw;
     const days = historical.metadata.days ?? 21;
     const start = historical.metadata.startTime;
     const targetId = signatureId(historical, signature);
@@ -633,98 +438,50 @@ function testDailyRates(
 }
 
 function pathOf(testId: string): string {
-    const historical = historicalData as HistoricalRaw;
+    const historical = page.historicalData as HistoricalRaw;
     return historical.tables.testPaths[
         historical.testInfo.testPathIds[testId as unknown as number]!
     ]!;
 }
 
 function nameOf(testId: string): string {
-    const historical = historicalData as HistoricalRaw;
+    const historical = page.historicalData as HistoricalRaw;
     return historical.tables.testNames[
         historical.testInfo.testNameIds[testId as unknown as number]!
     ]!;
 }
 
 /**
- * Draws one rate chart.
+ * Which series each of the three chart levels gets.
  *
- * `createCrashChart` (`crashes.html:474`) renames `events` to `crashes` before
- * handing the series to `createRateChart`. Nothing reads the renamed field —
- * `createRateChart` uses `events` and `totalRuns` (`common-charts.js:338`,
- * `:367`) — so the rename is dropped and the series goes through as it is.
+ * `request.term` is ignored, and that is the page's rule rather than an
+ * omission: this page's search hides whole rows and leaves the survivors' numbers
+ * alone (divergence 4), so a visible row's chart is always the row's whole
+ * series. `failures.html` rewrites its counts under a search and therefore has
+ * two search-filtered chart variants; that difference is upstream's.
  */
-function drawChart(canvasId: string, series: DailySeries | null, label: string): void {
-    if (series === null) {
-        return;
+function chartSeries(request: ChartRequest): DailySeries | null {
+    switch (request.level) {
+        case 'key':
+            return signatureDailyRates(request.key);
+        case 'path':
+            return pathDailyRates(request.key, request.dirPath!);
+        case 'test':
+            return testDailyRates(request.key, request.dirPath!, request.testName!);
     }
-    createRateChart(canvasId, series, label, 'crash');
-}
-
-// --- data loading ---------------------------------------------------------
-
-/** `loadSelectedDate` (`crashes.html:187`). */
-async function loadSelectedDate(): Promise<void> {
-    const date = dateSelect().value;
-    if (!date) {
-        return;
-    }
-
-    try {
-        statusText().textContent = 'Loading...';
-        const harness = getHarnessType();
-        const response = await fetchData(`${harness}-${date}.json`);
-        if (!response.ok) {
-            throw new Error('Failed to load data');
-        }
-        const file = (await response.json()) as DailyFile;
-        rawData = file;
-        decoded = decodeDaily(file);
-        startTime = file.metadata.startTime;
-        groups = buildCrashGroups(decoded, startTime);
-        render();
-        const jobCount = file.metadata.jobCount ?? 0;
-        statusText().textContent = `${jobCount.toLocaleString()} test jobs`;
-    } catch (error) {
-        console.error('Error loading data:', error);
-        const target = content();
-        target.textContent = '';
-        target.append(noData(error instanceof Error ? error.message : String(error)));
-        statusText().textContent = 'Error loading data';
-    }
-}
-
-/**
- * Enters or leaves the 21-day view.
- *
- * The button, the date selector's disabled state and the status text are
- * `common-ui.js`'s `initHistoricalToggle`; this is only the data side of the
- * callback. `crashes.html:159-178`.
- */
-async function onHistoricalToggled(isHistorical: boolean, data: unknown): Promise<void> {
-    isHistoricalMode = isHistorical;
-    if (isHistorical) {
-        historicalData = data;
-        rawData = data;
-        const file = data as IssuesWithTaskIdsFile;
-        decoded = decodeIssuesWithTaskIds(file);
-        startTime = file.metadata.startTime;
-        groups = buildCrashGroups(decoded, startTime);
-        render();
-    } else {
-        await loadSelectedDate();
-    }
-    updateUrlHash();
 }
 
 // --- URL state ------------------------------------------------------------
 
-function updateUrlHash(): void {
-    hashManager?.updateHash();
-}
-
 /**
  * Applies the hash to the page. `loadFromUrlHash` (`crashes.html:981`).
+ *
+ * **Kept out of the shared controller on purpose.** The only line that differs
+ * from `next/failures.ts`'s copy is the search-box guard, and the difference is
+ * a declared divergence on both pages rather than an accident, so a shared
+ * version would need a flag whose two settings are exactly the two pages. Two
+ * short functions, each next to the paragraph that justifies it, is what this
+ * codebase's rule asks for.
  *
  * Two upstream behaviours are reproduced deliberately:
  *
@@ -735,102 +492,37 @@ function updateUrlHash(): void {
  *   and the list filtered by a term the URL no longer names. That is a bug, and
  *   it is on the divergence list as reproduced — see this file's entry list.
  */
-async function loadFromUrlHash(): Promise<void> {
-    if (hashManager === undefined) {
-        return;
-    }
-    const state = readUrlState(hashManager.getParams());
+async function applyUrlState(state: Partial<UrlState>): Promise<void> {
     const searchBox = document.getElementById('searchBox');
     if (document.activeElement !== searchBox && state.q) {
-        searchBoxManager.setValue(state.q);
+        page.searchBoxManager.setValue(state.q);
     }
-
-    if (isHistoricalDate(state.date)) {
-        if (!isHistoricalMode) {
-            await historicalToggleManager.toggle();
-        }
-    } else {
-        if (isHistoricalMode) {
-            await historicalToggleManager.toggle();
-        }
-        if (dateSelect().value !== state.date) {
-            dateSelect().value = state.date!;
-        }
-    }
+    await page.applyDateState(state.date);
 }
 
 // --- startup --------------------------------------------------------------
 
-function initializeUI(): void {
-    initHarnessSwitcher('Crashes by Signature');
+/** Everything the shared controller cannot decide for this page. */
+const SPEC: PageSpec = {
+    vocab: VOCAB,
+    hooks,
+    heading: 'Crashes by Signature',
+    keyChartPrefix: 'signature',
+    chartEventLabel: 'crash',
+    buildGroups: (file: DecodedTimingFile, startTime: number) =>
+        buildCrashGroups(file, startTime),
+    rank: rankSignatures,
+    chartSeries,
+    applyUrlState,
+    // Upstream re-renders only via `loadSelectedDate`, so a hashchange that only
+    // changes `q` while in the 21-day view updates the box and not the list.
+    // Reproduced: this page does nothing here. `failures.html` had the same
+    // behaviour and it is fixed there, which is that page's divergence 5 — see
+    // `next/failures.ts` for why one page and not the other.
+    onHashChangeInHistorical: () => {},
+};
 
-    searchBoxManager = searchBox({
-        searchBoxId: 'searchBox',
-        searchClearId: 'searchClear',
-        onSearch: render,
-        updateUrlHash,
-    });
-
-    hashManager = initUrlHashManager({
-        getState: () => ({
-            date: isHistoricalMode ? '21days' : dateSelect().value,
-            q: searchBoxManager.getValue().trim(),
-        }),
-        onHashChange: async () => {
-            searchBoxManager.setNavigating(true);
-            await loadFromUrlHash();
-            if (!isHistoricalMode) {
-                await loadSelectedDate();
-            }
-            searchBoxManager.setNavigating(false);
-        },
-    });
-
-    const harness = getHarnessType();
-    historicalToggleManager = initHistoricalToggle({
-        buttonId: 'historicalButton',
-        selectId: 'dateSelect',
-        statusTextId: 'statusText',
-        fetchData,
-        historicalDataFile: `${harness}-issues-with-taskids.json`,
-        onToggle: onHistoricalToggled,
-        updateUrlHash,
-    });
-
-    // The `<select>`'s own `onchange="loadSelectedDate()"` attribute is in the
-    // markup upstream; here both the reload and the hash update are listeners.
-    dateSelect().addEventListener('change', () => {
-        updateUrlHash();
-        void loadSelectedDate();
-    });
-}
-
-/**
- * Delegated clicks on the top-level rows.
- *
- * Only the signature rows need delegation — they are re-created on every render
- * — and the sub-rows get their listeners from `wireSubRows` when they are
- * inserted. Upstream delegates all four levels through one handler
- * (`crashes.html:619`).
- */
-function setupClickHandlers(): void {
-    content().addEventListener('click', (event) => {
-        const target = event.target;
-        if (!(target instanceof Element) || target.tagName === 'A') {
-            return;
-        }
-        const row = target.closest('.crash-row');
-        if (row === null || row.classList.contains('total-row')) {
-            return;
-        }
-        for (const [signature, element] of rowsByKey) {
-            if (element === row) {
-                toggleSignature(signature, element);
-                return;
-            }
-        }
-    });
-}
+page = new DrilldownController(SPEC);
 
 /**
  * Wires the page up and loads it. Called by the page, not by importing it.
@@ -848,25 +540,7 @@ function setupClickHandlers(): void {
  * fetching anything.
  */
 export async function start(): Promise<void> {
-    setupClickHandlers();
-    initializeUI();
-
-    const hasData = await populateDateSelector({
-        selectId: 'dateSelect',
-        statusTextId: 'statusText',
-        fetchData,
-    });
-
-    if (hasData) {
-        const select = dateSelect();
-        if (!select.value && select.options.length > 0) {
-            select.selectedIndex = 0;
-        }
-        await loadFromUrlHash();
-        if (!isHistoricalMode) {
-            await loadSelectedDate();
-        }
-    }
+    await page.start();
 }
 
 /**
@@ -877,21 +551,6 @@ export async function start(): Promise<void> {
  * comparison can assert on decisions rather than on pixels. `try.html` exposes
  * `window.failures` for the same reason.
  */
-declare global {
-    interface Window {
-        __view?: () => unknown;
-    }
-}
-window.__view = () => ({
-    sort: currentSort,
-    historical: isHistoricalMode,
-    search: searchBoxManager?.getValue() ?? '',
-    totals: totalsOf(renderedRows),
-    rows: renderedRows.map((row) => ({
-        key: row.key,
-        testCount: row.testCount,
-        count: row.count,
-    })),
-});
+window.__view = () => page.view();
 
 export type { GroupRow, Occurrence, TestNode };
