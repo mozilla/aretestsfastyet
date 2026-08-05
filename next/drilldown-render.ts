@@ -1,0 +1,822 @@
+/**
+ * The **shared renderer** for `crashes.html` and `failures.html`: turns
+ * `next/drilldown-view.ts`'s decisions into elements.
+ *
+ * The companion to that module. `drilldown-view.ts` answers *what rows exist and
+ * in what order*; this answers *what elements they are*, for the parts of the
+ * two pages whose markup is the same.
+ *
+ * ## What "the same" means here, and how the differences are handled
+ *
+ * The two pages' markup is not identical — the stylesheet distinguishes them.
+ * `common-data-view.css` styles `.single-crash` and `.single-failure`,
+ * `.crash-job-name` and `.failure-job-name`, `.test-crash-count` and
+ * `.test-failure-count`, `.stat-value.crash` and `.stat-value.fail` as separate
+ * rules. The stylesheet is not being modified, so those names have to be emitted
+ * exactly as they are today.
+ *
+ * They are therefore a **`Vocabulary`**: one record of the class names and
+ * labels a page uses, passed in once. That is the alternative to the thing the
+ * brief warned against — a shared helper taking three booleans — because a
+ * vocabulary is data the page owns, not a switch inside a function that has to
+ * know which page called it. Nothing in this file branches on which page it is
+ * serving.
+ *
+ * The genuinely per-page work — what links an occurrence gets, whether a test
+ * row carries a bug button, whether the row label is linkified — is a set of
+ * **callbacks** on `RenderHooks`, for the same reason: this module would
+ * otherwise have to know about minidumps and Bugzilla components, which are not
+ * shared concepts.
+ *
+ * ## Elements, not strings
+ *
+ * Both old pages build HTML by concatenation and assign `innerHTML`, which is
+ * what forces their `escapeHtml`/`escapeAttr` calls — 40-odd of them across the
+ * two files — and their `onclick="…"` attributes, which need global functions.
+ * Building nodes answers the escaping question once, at `el()`, and lets a
+ * listener be attached to the element it belongs to.
+ *
+ * It also removes a real defect rather than a theoretical one, and this one was
+ * measured in Chrome on the old page rather than argued from the source.
+ *
+ * Both pages write their row key into an attribute with `escapeAttr`
+ * (`common-ui.js:14`) and then *find the row again by selector* built with the
+ * same function — `document.querySelector('[data-message="' + escapeAttr(msg) +
+ * '"]')` (`failures.html:683`, `crashes.html:597`). That round-trip is what
+ * re-attaches an expanded row's subtree after a re-render. It does not survive a
+ * quote: `escapeAttr` turns `"` into `&quot;`, the HTML parser decodes that back
+ * to `"` in the attribute *value*, and the CSS selector — which does no entity
+ * decoding — then looks for a value containing the literal text `&quot;`.
+ *
+ * **Measured on the pinned 21-day xpcshell snapshot, in Chrome:**
+ *
+ * ```
+ * failures.html   1848 of 2841 rows cannot find themselves   (65%)
+ * crashes.html       0 of   90 rows                          (0%)
+ * ```
+ *
+ * The crashes page is unaffected because a crash signature is a symbol name and
+ * contains no quotes; the failures page is affected on two rows in three,
+ * because a failure message quotes the values it compared.
+ *
+ * And it is live, not latent. Expanding the row
+ * `Unexpected exception TypeError: can't access property "resumed", …` gives it
+ * 2 sub-rows; clicking a column header to re-sort leaves the same row with the
+ * `expanded` class, `expandedMessage` still set to it, and **0 sub-rows** — a
+ * highlighted row with nothing underneath, which then needs two clicks to
+ * expand. A control row with no quotes behaves correctly under the same steps.
+ *
+ * Here the elements are held in a `Map` keyed by the raw string and there is no
+ * attribute round-trip, so the class of bug is gone rather than reproduced. It
+ * is on both pages' declared-divergence lists.
+ */
+
+import type {
+    GroupRow,
+    Occurrence,
+    SortColumn,
+    SortState,
+    SubRow,
+    TestNode,
+    Totals,
+} from './drilldown-view.ts';
+import { occurrenceRows } from './drilldown-view.ts';
+
+// --- the shared scripts, as they are --------------------------------------
+//
+// Declared rather than imported: these are `<script src=…>` globals from files
+// up to 22 unmigrated pages depend on, which the build copies next to the page.
+
+declare global {
+    /** `common-links.js:15` — the Firefox Profiler URL for a run. */
+    function getProfilerUrl(
+        instance: { taskId?: string; retryId?: string | number; jobName?: string },
+        testName?: string | null
+    ): string;
+    /** `common-links.js:31` — the crash viewer URL, or `''` with no minidump. */
+    function getCrashViewerUrl(crashInstance: {
+        taskId: string;
+        retryId: string | number;
+        minidump?: string | null | undefined;
+    }): string;
+    /** `common-links.js:43` — the Treeherder URL, or `null`. */
+    function getTreeherderJobUrl(
+        instance: { taskId: string; retryId: string | number },
+        currentData: unknown
+    ): string | null;
+    /** `common-links.js:104` — the Searchfox URL for a test path. */
+    function getSearchfoxUrl(testPath: string, message?: string | null): string;
+    /** `common-links.js:126` — the Bugzilla filing URL. */
+    function getBugzillaUrl(options: {
+        testPath: string;
+        summary: string;
+        component: string;
+        stats?: {
+            failureCount?: number;
+            totalRuns?: number;
+            firstDate?: string | null;
+            lastDate?: string | null;
+        };
+    }): string;
+    /** `common-links.js:186` — the file's first and last dates. */
+    function getDataDateRange(data: unknown): {
+        firstDate: string | null;
+        lastDate: string | null;
+    };
+    /** `common-charts.js:98` — a test's non-SKIP runs in the 21-day file. */
+    function getTestTotalRuns(
+        historicalData: unknown,
+        dirPath: string,
+        testName: string
+    ): number;
+    /** `common-charts.js:149` — daily event/run counts for a set of tests. */
+    function countDailyRunsForTests(
+        historicalData: unknown,
+        testIds: Set<string>,
+        targetValueId: number,
+        valueField: string,
+        statusName: string,
+        days: number,
+        startTime: number
+    ): { day: number; date: string; events: number; totalRuns: number }[];
+    /** `common-charts.js:333` — the Chart.js bar chart. */
+    function createRateChart(
+        canvasId: string,
+        dailyData: unknown[],
+        label: string,
+        eventLabel?: string
+    ): unknown;
+    /** `common-charts.js:377` — a DOM-safe id built from strings. */
+    function makeChartId(prefix: string, ...parts: string[]): string;
+    /**
+     * `common-ui.js:44` — wires a search box, its clear button and a debounce.
+     *
+     * Declared as returning `unknown` because `next/try.ts` already declares
+     * this global with that return type, and `declare global` blocks *merge*
+     * across the project rather than shadowing each other — two declarations of
+     * the same function with different signatures is an error. `searchBox()`
+     * below narrows it in one place so the call sites do not each cast.
+     */
+    function initSearchBox(options: {
+        searchBoxId: string;
+        searchClearId: string;
+        onSearch: () => void;
+        updateUrlHash: () => void;
+        debounceMs?: number;
+    }): unknown;
+    /** `common-ui.js:110` — fills the date `<select>` from `index.json`. */
+    function populateDateSelector(options: {
+        selectId: string;
+        statusTextId: string;
+        fetchData: (filename: string) => Promise<Response>;
+    }): Promise<boolean>;
+    /** `common-ui.js:194` — the 21-days/single-day toggle button. */
+    function initHistoricalToggle(options: {
+        buttonId: string;
+        selectId: string;
+        statusTextId: string;
+        fetchData: (filename: string) => Promise<Response>;
+        onToggle: (isHistorical: boolean, data: unknown) => Promise<void>;
+        updateUrlHash: () => void;
+        historicalDataFile?: string;
+    }): { toggle: () => Promise<void> };
+    /** `common-ui.js:298` — reads and writes the `#date=…&q=…` hash. */
+    function initUrlHashManager(options: {
+        getState: () => Record<string, string>;
+        onHashChange?: (state: Record<string, string>) => Promise<void>;
+    }): {
+        updateHash: () => void;
+        loadFromHash: () => Record<string, string>;
+        getParams: () => URLSearchParams;
+    };
+    /** `common-ui.js:508` — replaces the `<h1>` with a harness dropdown. */
+    function initHarnessSwitcher(suffix: string): void;
+    /** `fetch-utils.js:5` — the `?kind=` harness, defaulting to `xpcshell`. */
+    function getHarnessType(): string;
+    /** `fetch-utils.js:172` — fetches a data file, honouring `?data-source=`. */
+    function fetchData(filename: string): Promise<Response>;
+}
+
+/** What `initSearchBox` returns. `common-ui.js:89`. */
+export interface SearchBoxManager {
+    getValue: () => string;
+    setValue: (value: string) => void;
+    setNavigating: (value: boolean) => void;
+    updateClearButton: () => void;
+}
+
+/** `initSearchBox` with its real return type. See the `declare global` above. */
+export function searchBox(options: {
+    searchBoxId: string;
+    searchClearId: string;
+    onSearch: () => void;
+    updateUrlHash: () => void;
+}): SearchBoxManager {
+    return initSearchBox(options) as SearchBoxManager;
+}
+
+// --- small DOM helpers ----------------------------------------------------
+
+/**
+ * Applies the newline normalization the HTML parser would have applied.
+ *
+ * Not a nicety — the parsed-DOM diff found this and it took a browser probe to
+ * explain. The old pages write `title="${escapeAttr(message)}"` into a string
+ * and hand it to `insertAdjacentHTML`, so the **parser** builds the attribute,
+ * and the HTML spec has it normalize a literal CR (and CRLF) in an attribute
+ * value to a single LF. Assigning `element.title` bypasses the parser and keeps
+ * the CR.
+ *
+ * **Measured in Chrome**, the three cases side by side:
+ *
+ * ```
+ * innerHTML with a literal CRLF      -> "a\n b"      (normalized)
+ * innerHTML with &#13;&#10;          -> "a\r\n b"    (entities are not)
+ * element.title = "a\r\nb"           -> "a\r\n b"    (not normalized)
+ * ```
+ *
+ * So the property assignment matches the *entity* form and not the form the old
+ * pages actually emit. Without this the two pages disagree on the `title` of any
+ * row whose message contains a CR.
+ *
+ * **How often that is:** 1 of 2,263 mochitest messages, 0 of 2,888 xpcshell
+ * ones — the single row
+ * `Shouldn't have coalesced the initial touchmove - Structures begin differing
+ * at: …`. One row, on one harness, in a tooltip. It is fixed rather than
+ * declared because the fix is three characters and a declared divergence is a
+ * thing a reviewer has to carry forever.
+ */
+function normalizeAttrNewlines(value: string): string {
+    return value.replace(/\r\n?/g, '\n');
+}
+
+/** `document.createElement` with class, text and attributes in one call. */
+export function el<K extends keyof HTMLElementTagNameMap>(
+    tag: K,
+    options: {
+        class?: string | undefined;
+        text?: string | undefined;
+        title?: string | undefined;
+        id?: string | undefined;
+        href?: string | undefined;
+        attrs?: Record<string, string> | undefined;
+        children?: (Node | string | null)[] | undefined;
+    } = {}
+): HTMLElementTagNameMap[K] {
+    const node = document.createElement(tag);
+    if (options.class !== undefined && options.class !== '') {
+        node.className = options.class;
+    }
+    if (options.text !== undefined) {
+        // `textContent`, never `innerHTML`: a failure message legitimately
+        // contains `<` and `&`, and this answers the escaping question once
+        // rather than at each of the old pages' `escapeHtml` calls.
+        node.textContent = options.text;
+    }
+    if (options.title !== undefined) {
+        node.title = normalizeAttrNewlines(options.title);
+    }
+    if (options.id !== undefined) {
+        node.id = options.id;
+    }
+    if (options.href !== undefined) {
+        node.setAttribute('href', options.href);
+    }
+    for (const [name, value] of Object.entries(options.attrs ?? {})) {
+        node.setAttribute(name, value);
+    }
+    for (const child of options.children ?? []) {
+        if (child === null) {
+            continue;
+        }
+        node.append(child);
+    }
+    return node;
+}
+
+/** An external link that does not bubble its click to the row underneath. */
+export function externalLink(href: string, text: string, className?: string): HTMLAnchorElement {
+    const anchor = el('a', { href, text, ...(className === undefined ? {} : { class: className }) });
+    anchor.target = '_blank';
+    // The old pages write `onclick="event.stopPropagation();"` as an attribute
+    // for exactly this. Attaching it is the same behaviour without the global.
+    anchor.addEventListener('click', (event) => event.stopPropagation());
+    return anchor;
+}
+
+// --- the page's vocabulary ------------------------------------------------
+
+/**
+ * The class names and labels one page uses.
+ *
+ * Every field is a string the stylesheet or the reader sees, and none of them
+ * can be derived from the other page's — `common-data-view.css` has separate
+ * rules for each pair. Passing them as one record is what keeps this renderer
+ * free of any test for which page it is drawing.
+ */
+export interface Vocabulary {
+    /** `crash` or `failure`. The prefix of the row and stats classes. */
+    kind: 'crash' | 'failure';
+    /** `crash-row` / `failure-row`. */
+    rowClass: string;
+    /** `crash-signature` / `failure-message` — the label cell, and the list header. */
+    labelClass: string;
+    /** `crash-stats` / `failure-stats`. */
+    statsClass: string;
+    /** `crash-list` / `failure-list`. */
+    listClass: string;
+    /** The `stat-value` modifier for the count column: `crash` or `fail`. */
+    countClass: string;
+    /** `single-crash` / `single-failure`. */
+    singleClass: string;
+    /** `crash-job-name` / `failure-job-name`. */
+    jobNameClass: string;
+    /** `test-crash-count` / `test-failure-count`. */
+    testCountClass: string;
+    /** The header of the label column: `Crash Signature` / `Failure Message`. */
+    labelHeader: string;
+    /** The header of the count column: `Crashes` / `Failures`. */
+    countHeader: string;
+    /** What the empty state says. */
+    emptyText: string;
+}
+
+/** The per-page decisions this renderer cannot make for itself. */
+export interface RenderHooks {
+    /**
+     * The contents of a row's label cell.
+     *
+     * A crash signature is plain text; a failure message may be part anchor.
+     * Returning nodes rather than a string is what keeps the linkified case from
+     * going through `innerHTML`.
+     */
+    labelNodes(key: string): (Node | string)[];
+    /** The `title` on the label cell, or `undefined` for none. */
+    labelTitle(key: string): string | undefined;
+    /** The links shown for one occurrence, already built. */
+    occurrenceLinks(occurrence: Occurrence, testName: string): HTMLElement[];
+    /** The main link a job name points at. */
+    jobNameHref(occurrence: Occurrence, testName: string): string;
+    /**
+     * Anything appended after a test row's name — the 🐛 button on failures,
+     * nothing on crashes.
+     */
+    testNameSuffix(dirPath: string, test: TestNode, key: string): Node | null;
+    /** What a single-occurrence row does when clicked, or `null` for inert. */
+    singleRowHref(occurrence: Occurrence, testName: string): string | null;
+    /** A test's non-SKIP runs, for the tooltip. 0 outside historical mode. */
+    totalRunsOf(dirPath: string, testName: string): number;
+    /** The tooltip on a test row's count cell. */
+    tooltipOf(count: number, totalRuns: number): string;
+}
+
+// --- the list -------------------------------------------------------------
+
+/** What `renderList` produces, so the caller can find its rows again. */
+export interface RenderedList {
+    root: HTMLElement;
+    /** key → its row element, for expansion without an attribute round-trip. */
+    rowsByKey: Map<string, HTMLElement>;
+}
+
+/**
+ * Renders the whole ranked list: header, total row, one row per group.
+ *
+ * `renderCrashList` (`crashes.html:551-592`) and `renderFailureList`
+ * (`failures.html:624-678`), which are the same markup with different names in
+ * it.
+ */
+export function renderList(
+    rows: readonly GroupRow[],
+    totals: Totals,
+    sort: SortState,
+    vocab: Vocabulary,
+    hooks: RenderHooks,
+    onSort: (column: SortColumn) => void,
+    expandedKey: string | null
+): RenderedList {
+    const root = el('div', { class: vocab.listClass });
+    const rowsByKey = new Map<string, HTMLElement>();
+
+    root.append(renderHeader(sort, vocab, onSort));
+    root.append(renderTotalRow(totals, vocab));
+
+    for (const row of rows) {
+        const element = el('div', {
+            class: `${vocab.rowClass}${row.key === expandedKey ? ' expanded' : ''}`,
+        });
+        element.append(
+            el('div', {
+                class: vocab.labelClass,
+                ...(hooks.labelTitle(row.key) === undefined
+                    ? {}
+                    : { title: hooks.labelTitle(row.key) }),
+                children: hooks.labelNodes(row.key),
+            })
+        );
+        element.append(
+            el('div', {
+                class: vocab.statsClass,
+                children: [
+                    statItem(String(row.testCount)),
+                    statItem(String(row.count), vocab.countClass),
+                ],
+            })
+        );
+        root.append(element);
+        rowsByKey.set(row.key, element);
+    }
+
+    return { root, rowsByKey };
+}
+
+/** The sortable column header. `crashes.html:554-569`. */
+function renderHeader(
+    sort: SortState,
+    vocab: Vocabulary,
+    onSort: (column: SortColumn) => void
+): HTMLElement {
+    const header = el('div', { class: 'sort-header' });
+    header.append(el('div', { class: vocab.labelClass, text: vocab.labelHeader }));
+    header.append(
+        el('div', {
+            class: vocab.statsClass,
+            children: [
+                sortItem('tests', 'Tests', sort, onSort),
+                sortItem('count', vocab.countHeader, sort, onSort),
+            ],
+        })
+    );
+    return header;
+}
+
+/**
+ * One sortable column button.
+ *
+ * The arrow is a `<span class="sort-arrow">` that is **present but empty** on
+ * the inactive column, which is upstream's markup (`crashes.html:559`) and is
+ * what keeps the two columns the same width.
+ *
+ * Upstream's button text is the label preceded by whitespace and a newline, from
+ * the template literal's indentation. Here the arrow and the label are two
+ * children with a space between them; the rendered text differs only in
+ * collapsible whitespace, which HTML collapses to the same single space.
+ */
+function sortItem(
+    column: SortColumn,
+    label: string,
+    sort: SortState,
+    onSort: (column: SortColumn) => void
+): HTMLElement {
+    const active = sort.column === column;
+    const button = el('button', {
+        class: `sort-button${active ? ' active' : ''}`,
+        children: [
+            el('span', { class: 'sort-arrow', text: active ? (sort.ascending ? '▲' : '▼') : '' }),
+            ' ',
+            label,
+        ],
+    });
+    button.addEventListener('click', () => onSort(column));
+    return el('div', { class: 'stat-item', children: [button] });
+}
+
+/** The `📊 Total` row. `crashes.html:572-577`. */
+function renderTotalRow(totals: Totals, vocab: Vocabulary): HTMLElement {
+    return el('div', {
+        class: `${vocab.rowClass} total-row`,
+        children: [
+            el('div', { class: vocab.labelClass, text: '📊 Total' }),
+            el('div', {
+                class: vocab.statsClass,
+                children: [
+                    statItem(String(totals.tests)),
+                    statItem(String(totals.count), vocab.countClass),
+                ],
+            }),
+        ],
+    });
+}
+
+/** One right-aligned number. */
+function statItem(text: string, modifier?: string): HTMLElement {
+    return el('div', {
+        class: 'stat-item',
+        children: [
+            el('span', { class: modifier === undefined ? 'stat-value' : `stat-value ${modifier}`, text }),
+        ],
+    });
+}
+
+// --- the expanded subtree -------------------------------------------------
+
+/**
+ * Renders the rows under an expanded group or path.
+ *
+ * The three `SubRow` kinds map to the three shapes both old pages emit: a
+ * `path-row` with two counts, a `test-row` with an expandable count, and a
+ * `test-row single-*` carrying its one occurrence in an inline table.
+ */
+export function renderSubRows(
+    subRows: readonly SubRow[],
+    key: string,
+    vocab: Vocabulary,
+    hooks: RenderHooks
+): HTMLElement[] {
+    return subRows.map((subRow) => {
+        switch (subRow.kind) {
+            case 'path':
+                return renderPathRow(subRow, vocab);
+            case 'test':
+                return renderTestRow(subRow.dirPath, subRow.test, subRow.direct, key, vocab, hooks);
+            case 'single':
+                return renderSingleRow(
+                    subRow.dirPath,
+                    subRow.test,
+                    subRow.occurrence,
+                    subRow.direct,
+                    key,
+                    vocab,
+                    hooks
+                );
+        }
+    });
+}
+
+/**
+ * A directory row. `crashes.html:730-735`.
+ *
+ * `'(root)'` is what an empty path displays as — a test file directly at the
+ * repository root — and is upstream's (`crashes.html:731`).
+ */
+function renderPathRow(
+    subRow: Extract<SubRow, { kind: 'path' }>,
+    vocab: Vocabulary
+): HTMLElement {
+    const row = el('div', { class: 'path-row' });
+    // Carried so the click handler can find the path again, and so a reader
+    // inspecting the DOM can see which row is which. Unlike upstream these are
+    // not used as a *selector*, so they need no escaping round-trip.
+    row.dataset['path'] = subRow.dirPath;
+    row.append(el('div', { class: vocab.labelClass, text: subRow.dirPath || '(root)' }));
+    row.append(
+        el('div', {
+            class: vocab.statsClass,
+            children: [
+                statItem(String(subRow.testCount)),
+                statItem(String(subRow.count), vocab.countClass),
+            ],
+        })
+    );
+    return row;
+}
+
+/** An expandable test row. `crashes.html:723-726` / `:780-783`. */
+function renderTestRow(
+    dirPath: string,
+    test: TestNode,
+    direct: boolean,
+    key: string,
+    vocab: Vocabulary,
+    hooks: RenderHooks
+): HTMLElement {
+    const row = el('div', { class: `test-row${direct ? ' direct-child' : ''}` });
+    row.dataset['path'] = dirPath;
+    row.dataset['test'] = test.testName;
+
+    // A direct child shows its full path because the directory row that would
+    // have carried it was collapsed away; a row under a path row shows only the
+    // file name. `crashes.html:724` against `:781`.
+    const label = direct ? `${dirPath}/${test.testName}` : test.testName;
+    const suffix = hooks.testNameSuffix(dirPath, test, key);
+    row.append(el('div', { class: 'test-name', children: [label, suffix] }));
+
+    const totalRuns = hooks.totalRunsOf(dirPath, test.testName);
+    const tooltip = hooks.tooltipOf(test.totalCount, totalRuns);
+    row.append(
+        el('div', {
+            class: vocab.statsClass,
+            children: [
+                el('div', { class: 'stat-item' }),
+                el('div', {
+                    class: vocab.testCountClass,
+                    title: tooltip,
+                    text: String(test.totalCount),
+                }),
+            ],
+        })
+    );
+    return row;
+}
+
+/**
+ * A test row whose single occurrence is shown inline.
+ *
+ * `crashes.html:707-715` / `failures.html:799-811`. The two differ in what the
+ * row does when clicked and in which links it carries, both of which are hooks.
+ */
+function renderSingleRow(
+    dirPath: string,
+    test: TestNode,
+    occurrence: Occurrence,
+    direct: boolean,
+    key: string,
+    vocab: Vocabulary,
+    hooks: RenderHooks
+): HTMLElement {
+    const row = el('div', {
+        class: `test-row ${vocab.singleClass}${direct ? ' direct-child' : ''}`,
+    });
+
+    const label = direct ? `${dirPath}/${test.testName}` : test.testName;
+    const suffix = hooks.testNameSuffix(dirPath, test, key);
+    row.append(el('div', { class: 'test-name', children: [label, suffix] }));
+
+    const href = hooks.singleRowHref(occurrence, test.testName);
+    if (href !== null) {
+        // Upstream expresses this two different ways — a `data-crash-url` the
+        // delegated handler reads (`crashes.html:707`) and an inline
+        // `onclick="window.open(…)"` (`failures.html:799`) — for the same
+        // behaviour. One listener does both, and the inert case (a crash with no
+        // dump) is `null` rather than an empty attribute.
+        row.addEventListener('click', () => window.open(href, '_blank'));
+    }
+
+    const jobCell = el('td', { class: vocab.jobNameClass });
+    jobCell.append(
+        externalLink(hooks.jobNameHref(occurrence, test.testName), occurrence.jobName)
+    );
+
+    const links = hooks.occurrenceLinks(occurrence, test.testName);
+    const tr = el('tr', {
+        children: [
+            el('td', { class: 'run-date', text: occurrence.date || '' }),
+            jobCell,
+            inlineLinksCell(links, vocab),
+        ],
+    });
+    row.append(table('inline-instance', [tr]));
+    return row;
+}
+
+/**
+ * The links cell of a single-occurrence row, which the two pages nest
+ * differently.
+ *
+ * Upstream builds this cell from two different helpers and they do not produce
+ * the same tree:
+ *
+ * - **crashes** calls `renderCrashLinks` (`common-links.js:76`), which returns
+ *   `<span class="view-links">View: …</span>`, and drops it into a **bare**
+ *   `<td>` (`crashes.html:713`). So the class is on a `span` inside the cell.
+ * - **failures** builds the links inline and puts them in a
+ *   `<td class="view-links">` (`failures.html:809`), with no `span`.
+ *
+ * `common-data-view.css` styles `.inline-instance .view-links` either way, so
+ * the two render alike — but the trees differ by one element, which a parsed-DOM
+ * diff sees. Reproduced rather than unified, because unifying would mean
+ * changing one page's markup for no reader-visible gain.
+ */
+function inlineLinksCell(links: readonly HTMLElement[], vocab: Vocabulary): HTMLElement {
+    if (vocab.kind === 'crash') {
+        const span = el('span', { class: 'view-links' });
+        span.append('View: ');
+        appendSpaced(span, links);
+        return el('td', { children: [span] });
+    }
+    const cell = el('td', { class: 'view-links' });
+    cell.append('View: ');
+    appendSpaced(cell, links);
+    return cell;
+}
+
+/**
+ * The occurrence table under an expanded test.
+ *
+ * `generateTestExpandedContent` (`crashes.html:804-823`,
+ * `failures.html:908-922`). Identical structure; the links differ.
+ */
+export function renderOccurrenceTable(
+    test: TestNode,
+    vocab: Vocabulary,
+    hooks: RenderHooks
+): HTMLElement {
+    const rows: HTMLElement[] = [];
+    for (const { occurrence, showDate } of occurrenceRows(test)) {
+        const jobCell = el('td', { class: vocab.jobNameClass });
+        // Deliberately *not* an `externalLink`: upstream's job-name anchor in
+        // this table has no `onclick="event.stopPropagation()"`
+        // (`crashes.html:819` against `:712`), and on the crashes page the row
+        // itself is clickable, so the difference is observable — clicking the
+        // job name there both follows the link and opens the crash viewer. It is
+        // reproduced rather than tidied.
+        const anchor = el('a', {
+            href: hooks.jobNameHref(occurrence, test.testName),
+            text: occurrence.jobName,
+        });
+        anchor.target = '_blank';
+        jobCell.append(anchor);
+
+        // Always a `<td class="view-links">` here, on both pages
+        // (`crashes.html:820`, `failures.html:919`) — unlike the inline
+        // single-occurrence cell, which they build differently. See
+        // `inlineLinksCell`.
+        const linksCell = el('td', { class: 'view-links' });
+        linksCell.append('View: ');
+        appendSpaced(linksCell, hooks.occurrenceLinks(occurrence, test.testName));
+
+        rows.push(
+            el('tr', {
+                class: `${vocab.kind}-instance-row`,
+                children: [
+                    el('td', { class: 'run-date', text: showDate ? occurrence.date : '' }),
+                    jobCell,
+                    linksCell,
+                ],
+            })
+        );
+    }
+    return table('instance-table', rows);
+}
+
+/**
+ * A `<table>` with the `<tbody>` the HTML parser would have inserted.
+ *
+ * Not cosmetic, and it was caught by the parsed-DOM diff rather than by
+ * reading. The old pages build their tables as strings and assign them through
+ * `insertAdjacentHTML`, so the parser applies its own tree construction and
+ * **synthesizes a `<tbody>`** around the rows. `document.createElement('table')`
+ * followed by `append(tr)` does not: the `<tr>` becomes a direct child of the
+ * `<table>`.
+ *
+ * The rendered result is the same, but the trees are not, and anything walking
+ * `children` sees a different shape — which is exactly what the parity diff
+ * reported: `TABLE > TBODY > TR > TD` upstream against `TABLE > TR` here, 24
+ * node differences on a single expanded row.
+ */
+function table(className: string, rows: readonly HTMLElement[]): HTMLTableElement {
+    const body = el('tbody', { children: [...rows] });
+    return el('table', { class: className, children: [body] });
+}
+
+/** Appends links with a single space between them, as `links.join(' ')` does. */
+function appendSpaced(into: HTMLElement, links: readonly HTMLElement[]): void {
+    links.forEach((link, index) => {
+        if (index > 0) {
+            into.append(' ');
+        }
+        into.append(link);
+    });
+}
+
+// --- the historical chart -------------------------------------------------
+
+/** The `<div class="historical-chart">` wrapper with its canvas. */
+export function renderChartSlot(canvasId: string): HTMLElement {
+    return el('div', {
+        class: 'historical-chart',
+        children: [el('canvas', { id: canvasId, class: 'historical-chart-canvas' })],
+    });
+}
+
+// --- the empty state ------------------------------------------------------
+
+/** `<div class="no-data">…</div>`, which both pages use for empty and error. */
+export function noData(text: string): HTMLElement {
+    return el('div', { class: 'no-data', text });
+}
+
+// --- expansion bookkeeping ------------------------------------------------
+
+/**
+ * Removes the rows an expansion inserted after a row.
+ *
+ * Both pages walk `nextElementSibling` and delete until they reach a row that
+ * belongs to a higher level, with a slightly different stop condition at each
+ * of the three levels (`crashes.html:841`, `:888`, `:929`). Reproduced as one
+ * function taking the class names that *end* the run, because the walk itself
+ * is the same and getting it subtly wrong at one level is how an expansion
+ * leaks rows.
+ */
+export function removeFollowing(row: Element, stopWhen: (element: Element) => boolean): void {
+    let next = row.nextElementSibling;
+    while (next !== null && !stopWhen(next)) {
+        const toRemove = next;
+        next = next.nextElementSibling;
+        toRemove.remove();
+    }
+}
+
+/**
+ * Inserts elements immediately after a row, keeping their order.
+ *
+ * `insertAdjacentHTML('afterend', …)` with a string of several rows inserts them
+ * in order; doing the same with nodes needs the anchor to move.
+ */
+export function insertAfter(row: Element, elements: readonly Element[]): void {
+    let anchor: Element = row;
+    for (const element of elements) {
+        anchor.after(element);
+        anchor = element;
+    }
+}
