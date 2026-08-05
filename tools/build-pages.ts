@@ -52,6 +52,40 @@ const outDir = process.env['FX_PAGES_BUILD_OUT'] ?? join(root, 'dist-pages');
 const MODULE_SCRIPT = /<script\s+type="module"\s+src="\.\/([\w.-]+\.ts)"\s*><\/script>/g;
 
 /**
+ * A page's Web Worker entry points, declared by the page's own markup.
+ *
+ * A page writes `<!-- worker: ./try-flakiness-worker.ts -->` and the build
+ * bundles that entry separately, then makes the bundled source available to the
+ * page's module as a string on `globalThis.__workers`. The page builds its
+ * `Blob` from that string.
+ *
+ * ## Why a worker cannot simply be imported
+ *
+ * A `new Worker(new URL('./w.ts', import.meta.url))` would be a second request
+ * for a second file, which is exactly the CDN-skew problem the single-file
+ * output exists to prevent (see the note at the top of this file). So the
+ * worker's code has to travel *inside* the page, as text.
+ *
+ * That leaves the question of where the text comes from, and the answer cannot
+ * be `.toString()` on the imported functions — which is what `try.html` does
+ * today (`try.html:2584`) and what forced this build change. `.toString()`
+ * returns the *bundled* source of a function: esbuild has renamed its
+ * identifiers, and its transitive dependencies are other renamed functions that
+ * a `.toString()` of the top one does not include. The concatenated program
+ * would reference names that do not exist in the worker's scope and throw
+ * `ReferenceError` on the first message — silently, because the page's `catch`
+ * treats a worker error as "no history for these tests".
+ *
+ * Giving the worker its own entry point makes esbuild's job the ordinary one:
+ * it follows the imports, inlines the bodies, and emits a self-contained
+ * program. `checkWorkerSelfContained` asserts that it really is.
+ */
+const WORKER_DIRECTIVE = /<!--\s*worker:\s*\.\/([\w.-]+\.ts)\s*-->/g;
+
+/** The global the built page reads its worker sources off. */
+const WORKER_GLOBAL = '__workers';
+
+/**
  * Sibling assets a page pulls in with a plain tag: `shared.js`, `shared.css`,
  * the favicons, and the rest of the scripts the unmigrated pages share.
  *
@@ -75,6 +109,8 @@ interface BuiltPage {
     bytes: number;
     inlined: number;
     assets: string[];
+    /** `name -> bundled bytes`, for the build log. */
+    workers: [string, number][];
 }
 
 /**
@@ -85,11 +121,15 @@ interface BuiltPage {
  * than at page load. Nothing in `lib/model` or `lib/formats` imports one today,
  * which is what makes them shareable at all.
  */
-async function bundleEntry(entry: string): Promise<string> {
+async function bundleEntry(entry: string, format: 'esm' | 'iife' = 'esm'): Promise<string> {
     const result = await build({
         entryPoints: [entry],
         bundle: true,
-        format: 'esm',
+        // Workers are created from a Blob with no `type: 'module'`, so they are
+        // *classic* workers and an `export` at top level is a syntax error in
+        // one. `iife` is what makes the bundle a plain program; the page's own
+        // script stays `esm` because it is inlined into a module script tag.
+        format,
         target: 'es2022',
         platform: 'browser',
         write: false,
@@ -114,6 +154,21 @@ async function bundleEntry(entry: string): Promise<string> {
 async function buildPage(name: string): Promise<BuiltPage> {
     const source = await readFile(join(sourceDir, name), 'utf8');
 
+    // Workers first: their source becomes a string constant the page's own
+    // bundle reads, so it has to exist before that bundle is spliced in.
+    WORKER_DIRECTIVE.lastIndex = 0;
+    const workerNames = [...source.matchAll(WORKER_DIRECTIVE)].map((match) => match[1]!);
+    const workerSources = await Promise.all(
+        workerNames.map((worker) => bundleEntry(join(sourceDir, worker), 'iife'))
+    );
+    for (const [index, worker] of workerNames.entries()) {
+        checkWorkerSelfContained(name, worker, workerSources[index]!);
+    }
+    const workers: [string, number][] = workerNames.map((worker, index) => [
+        worker,
+        workerSources[index]!.length,
+    ]);
+
     let inlined = 0;
     const replacements: Promise<string>[] = [];
     // `String.replace` cannot await, so collect the bundles first and splice
@@ -125,6 +180,23 @@ async function buildPage(name: string): Promise<BuiltPage> {
     }
     const bundles = await Promise.all(replacements);
 
+    // The prelude that carries the worker sources into the page's module scope.
+    // `JSON.stringify` is what makes an arbitrary program safe to embed in a
+    // string literal — it escapes the quotes, the backslashes and the newlines,
+    // and `checkSafe` separately asserts no `</script` survives anywhere in the
+    // emitted script.
+    const workerPrelude =
+        workerNames.length === 0
+            ? ''
+            : `globalThis.${WORKER_GLOBAL} = {\n` +
+              workerNames
+                  .map(
+                      (worker, index) =>
+                          `  ${JSON.stringify(worker)}: ${JSON.stringify(workerSources[index]!)},`
+                  )
+                  .join('\n') +
+              '\n};\n';
+
     let output = source;
     for (const [index, match] of entries.entries()) {
         // No escaping pass here: esbuild already emits `<\/script>` for a
@@ -132,7 +204,10 @@ async function buildPage(name: string): Promise<BuiltPage> {
         // both dead code and — when the round-trip guard below undid it — a
         // build failure on any page whose source contains the literal. What is
         // left is the check that this holds, in `checkSafe`.
-        output = output.replace(match[0], `<script type="module">\n${bundles[index]!}\n</script>`);
+        output = output.replace(
+            match[0],
+            `<script type="module">\n${workerPrelude}${bundles[index]!}\n</script>`
+        );
         inlined++;
     }
 
@@ -149,10 +224,40 @@ async function buildPage(name: string): Promise<BuiltPage> {
     // Validate before writing, not after. Writing first means a build that
     // fails still replaces the previous good artefact with the broken one, so
     // the deploy ships it and the non-zero exit is the only clue.
-    checkSafe(name, bundles);
+    checkSafe(name, [...bundles, ...workerSources]);
     await writeFile(join(outDir, name), output);
     const assets = await copyAssets(name, output);
-    return { name, bytes: output.length, inlined, assets };
+    return { name, bytes: output.length, inlined, assets, workers };
+}
+
+/**
+ * Fails the build if a worker bundle still needs something from outside itself.
+ *
+ * This is the check that the worker problem is actually solved. A worker created
+ * from a `Blob` runs as a classic script with no module loader and no access to
+ * the page's scope, so a surviving `import` is not a slow path — it is a
+ * `SyntaxError` at worker construction, which surfaces as an `error` event the
+ * page turns into "no data for these tests".
+ *
+ * Both directions are checked because they fail differently: an `import` means
+ * esbuild did not bundle (wrong format or an `external`), while an `export`
+ * means it emitted an ES module, which a classic worker also refuses to parse.
+ */
+function checkWorkerSelfContained(page: string, worker: string, bundle: string): void {
+    // Anchored to a line start, so `import(` inside a string or a comment
+    // mentioning the word does not trip it. esbuild emits statements at column
+    // zero of their own line in the `iife` output.
+    const bare = /^(?:import|export)\b/m.exec(bundle);
+    if (bare !== null) {
+        const line = bundle.slice(0, bare.index).split('\n').length;
+        throw new Error(
+            `${page}: the worker bundle ${worker} still has a top-level ` +
+                `'${bare[0]}' at line ${line}. A Blob worker is a classic script — it ` +
+                'cannot resolve an import and cannot parse an export, so this would fail ' +
+                'at worker construction and the page would silently show no data. ' +
+                'Check that the entry point is bundled with format: iife and no externals.'
+        );
+    }
 }
 
 /**
@@ -234,8 +339,11 @@ if (sources.length === 0) {
     for (const page of built) {
         const kb = (page.bytes / 1024).toFixed(1);
         const assets = page.assets.length > 0 ? `, ${page.assets.length} assets copied` : '';
+        const workers = page.workers
+            .map(([worker, bytes]) => `, ${worker} worker ${(bytes / 1024).toFixed(1)} kB`)
+            .join('');
         console.log(
-            `Built ${join(outDir, page.name)} (${kb} kB, ${page.inlined} script inlined${assets})`
+            `Built ${join(outDir, page.name)} (${kb} kB, ${page.inlined} script inlined${workers}${assets})`
         );
     }
 }

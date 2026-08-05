@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Try Push Results</title>
+    <link rel="icon" href="favicon-orange.svg">
+    <link rel="stylesheet" href="shared.css">
+    <style>
+        .revision-input {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .revision-input input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 380px;
+            font-family: monospace;
+        }
+        .revision-input input:focus {
+            outline: none;
+            border-color: #0060df;
+            box-shadow: 0 0 0 2px rgba(0, 96, 223, 0.2);
+        }
+
+        #status {
+            color: #666;
+            font-size: 13px;
+        }
+        #status.error-text {
+            color: #c00;
+        }
+
+        .progress-bar {
+            background: #eee;
+            border-radius: 0 0 8px 8px;
+            height: 6px;
+            margin: 0 -15px -15px;
+            overflow: hidden;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .progress-bar.visible {
+            opacity: 1;
+        }
+        .progress-bar .fill {
+            background: #0060df;
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        #results {
+            margin-top: 20px;
+        }
+
+        .revisions-list {
+            margin: 8px 0 0;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .revisions-list .rev-hash {
+            font-family: monospace;
+            font-size: 12px;
+            color: #666;
+        }
+        .revisions-list .rev-comment {
+            color: #333;
+        }
+        .revisions-list .rev-author {
+            color: #888;
+            font-size: 12px;
+        }
+
+        .summary-cards {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .summary-card {
+            background: white;
+            border-radius: 8px;
+            padding: 15px 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            min-width: 120px;
+        }
+        .summary-card .label {
+            color: #666;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+        .summary-card .value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #333;
+        }
+        .summary-card .value.red { color: #d00; }
+        .summary-card .value.orange { color: #f60; }
+        .summary-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-left: auto;
+        }
+
+        .alljobs-checkbox {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            font-size: 13px;
+            color: #444;
+            white-space: nowrap;
+        }
+        .alljobs-checkbox input[type="checkbox"] {
+            width: auto;
+            margin: 0 5px 0 0;
+            cursor: pointer;
+        }
+
+        .search-container {
+            position: relative;
+            display: inline-block;
+        }
+        .search-container input {
+            padding: 8px 30px 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 300px;
+        }
+        .search-container input:focus {
+            outline: none;
+            border-color: #0060df;
+        }
+        .search-clear {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            cursor: pointer;
+            color: #999;
+            display: none;
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        .failure-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            table-layout: fixed;
+        }
+        .failure-table th {
+            background: #f8f8f8;
+            padding: 8px 6px;
+            text-align: left;
+            font-weight: 600;
+            color: #555;
+            border-bottom: 2px solid #eee;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+        .failure-table th:hover {
+            background: #f0f0f0;
+        }
+        .failure-table th.active {
+            color: #0060df;
+        }
+        .failure-table th.no-sort {
+            cursor: default;
+        }
+        .failure-table th.no-sort:hover {
+            background: #f8f8f8;
+        }
+        .failure-table td {
+            padding: 5px 6px;
+            border-bottom: 1px solid #f0f0f0;
+            vertical-align: top;
+        }
+        .detail-row td:first-child {
+            box-shadow: inset 3px 0 0 #0060df;
+        }
+        .failure-table tr:hover {
+            background: #fafafa;
+        }
+        .failure-table tr.expanded {
+            background: #f0f8ff;
+        }
+        .failure-table tr.expanded:hover {
+            background: #f0f8ff;
+        }
+
+        .count-cell {
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .count-cell.high { color: #d00; }
+        .count-cell.medium { color: #f60; }
+        .count-cell.low { color: #888; }
+
+        .test-info {
+            min-width: 0;
+        }
+        .test-path {
+            font-family: monospace;
+            font-size: 13px;
+            word-break: break-all;
+        }
+        .test-path a {
+            color: #0060df;
+            text-decoration: none;
+        }
+        .test-path a:hover {
+            text-decoration: underline;
+        }
+
+        .inline-message {
+            font-family: monospace;
+            font-size: 11px;
+            color: #888;
+            margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            white-space: nowrap;
+            vertical-align: middle;
+            margin: 1px 0;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .status-FAIL, .status-FAIL-SEQUENTIAL, .status-FAIL-PARALLEL { background: #fee; color: #c00; }
+        .status-TIMEOUT { background: #fff3e0; color: #e65100; }
+        .status-CRASH { background: #fce4ec; color: #b71c1c; }
+        .status-ERROR { background: #fff3e0; color: #e65100; }
+        .status-UNEXPECTED-PASS { background: #e8f5e9; color: #2e7d32; }
+
+        .badges-cell {
+            line-height: 1.6;
+        }
+        .all-configs {
+            color: #bbb;
+            font-size: 11px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .platform-linux { background: #e3f2fd; color: #1565c0; }
+        .platform-windows { background: #e8f5e9; color: #2e7d32; }
+        .platform-mac { background: #f3e5f5; color: #7b1fa2; }
+        .platform-android { background: #fff3e0; color: #e65100; }
+        .platform-unknown { background: #f5f5f5; color: #666; }
+
+        .build-debug { background: #fff8e1; color: #f57f17; }
+        .build-asan { background: #fce4ec; color: #c62828; }
+        .build-tsan { background: #f3e5f5; color: #6a1b9a; }
+        .build-ccov { background: #e0f2f1; color: #00695c; }
+        .build-opt { background: #f5f5f5; color: #666; }
+
+        .detail-row {
+            display: none;
+        }
+        .detail-row.visible {
+            display: table-row;
+        }
+        .detail-row td {
+            background: #fafcff;
+            padding: 4px 6px;
+        }
+        .detail-row:hover td {
+            background: #fafcff;
+        }
+
+        .job-header {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .job-name {
+            font-family: monospace;
+            font-size: 12px;
+            color: #555;
+            word-break: break-all;
+        }
+        .job-links a {
+            color: #0060df;
+            text-decoration: none;
+            font-size: 12px;
+            margin-right: 8px;
+        }
+        .job-links a:hover {
+            text-decoration: underline;
+        }
+
+        .assertion-list {
+            margin: 4px 0 0 0;
+            padding: 0;
+            list-style: none;
+        }
+        .assertion-list li {
+            font-family: monospace;
+            font-size: 11px;
+            color: #666;
+            padding: 2px 0;
+            border-bottom: none;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .assertion-list li .status-badge {
+            font-size: 10px;
+            margin-right: 4px;
+        }
+        .assertion-list li.phase-label {
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin: 8px 0 3px;
+            padding: 0;
+        }
+        .assertion-list li.phase-label:first-child {
+            margin-top: 0;
+        }
+        .assertion-list li.phase-label .chip {
+            padding: 1px 7px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #fff;
+        }
+        .assertion-list li.phase-label .profiler-cmd {
+            width: 14px;
+            height: 14px;
+            margin: 0;
+        }
+        .assertion-list li.phase-body {
+            border-left: 3px solid;
+            padding-left: 8px;
+            margin-left: 1px;
+        }
+        li.phase-label.phase-initial .chip { background: #c77700; }
+        li.phase-body.phase-initial { border-left-color: #c77700; }
+        li.phase-label.phase-retry .chip { background: #8a3ffc; }
+        li.phase-body.phase-retry { border-left-color: #8a3ffc; }
+        .assertion-list .repro-pass { color: #2e7d32; font-weight: 600; }
+        .assertion-stack {
+            margin: 2px 0 4px 12px;
+            padding: 4px 8px;
+            background: #f5f5f5;
+            border-left: 2px solid #ccc;
+            font-size: 10px;
+            color: #555;
+            white-space: pre-wrap;
+            word-break: break-all;
+            line-height: 1.5;
+        }
+        .assertion-stack .stack-func { color: #1a1a1a; font-weight: 600; }
+        .assertion-stack .stack-file { color: #0060df; }
+        .assertion-stack .stack-line { color: #999; }
+        .assertion-stack .stack-sep { color: #999; }
+        .assertion-stack .stack-addr { color: #999; }
+        .assertion-stack .stack-desc { color: #666; }
+        .assertion-stack .stack-prefix { color: #999; }
+        .assertion-stack a { color: inherit; text-decoration: none; }
+        .assertion-stack a:hover { text-decoration: underline; }
+        .show-more-link {
+            font-size: 11px;
+            color: #0060df;
+            cursor: pointer;
+            margin-left: 0;
+        }
+        .show-more-link:hover {
+            text-decoration: underline;
+        }
+        .crash-sig {
+            color: #b71c1c;
+        }
+
+        .clickable-row {
+            cursor: pointer;
+        }
+
+        .treeherder-link {
+            display: inline-block;
+        }
+        .treeherder-link a {
+            color: #0060df;
+            text-decoration: none;
+            font-size: 13px;
+        }
+        .treeherder-link a:hover {
+            text-decoration: underline;
+        }
+
+        .section-header {
+            margin: 20px 0 8px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .no-failures,
+        .failure-table td.no-failures {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        .no-failures .verdict {
+            color: #2e7d32;
+            font-weight: 600;
+        }
+        .no-failures .caveat {
+            display: block;
+            margin-top: 6px;
+            font-size: 12px;
+        }
+        .no-failures .other-failures {
+            color: #b71c1c;
+        }
+
+        .history-link {
+            font-size: 13px;
+            text-decoration: none;
+            color: #888;
+            margin-left: 6px;
+        }
+        .history-link:hover {
+            text-decoration: underline;
+        }
+        .flakiness-cell {
+            text-align: right;
+            white-space: nowrap;
+        }
+        .flakiness-cell.flaky-new {
+            color: #c00;
+        }
+        .flakiness-cell.flaky-msg {
+            color: #e65100;
+        }
+        .flakiness-cell.flaky {
+            color: #c00;
+        }
+        /* Rate computed from only a handful of runs on that configuration. */
+        .flakiness-cell.flaky-few-runs a {
+            border-bottom: 1px dotted currentColor;
+        }
+        .flakiness-cell a {
+            font-family: monospace;
+            font-size: 13px;
+            font-variant-numeric: tabular-nums;
+            color: inherit;
+            text-decoration: none;
+        }
+        .flakiness-cell a:hover {
+            text-decoration: underline;
+        }
+        .failure-table th .mitten::before {
+            vertical-align: 0;
+            margin-right: 0;
+            background-color: #555;
+        }
+        .flakiness-cell .mitten::before {
+            vertical-align: -1px;
+            margin-left: -12px;
+            margin-right: 2px;
+        }
+
+        #extra-args {
+            font-family: monospace;
+            font-size: 12px;
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 200px;
+        }
+        #reproduce-btn {
+            margin-left: 0;
+        }
+        #reproduce-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .repro-cell {
+            font-size: 14px;
+            white-space: nowrap;
+            text-align: right;
+        }
+        .copy-cmd {
+            cursor: pointer;
+            opacity: 0.4;
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            line-height: 18px;
+            text-align: center;
+            font-size: 14px;
+            vertical-align: middle;
+            margin-left: 2px;
+        }
+        .copy-cmd:hover {
+            opacity: 1;
+        }
+        .copy-cmd.copied {
+            opacity: 1;
+        }
+        a.profiler-cmd {
+            cursor: pointer;
+            opacity: 0.45;
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            vertical-align: middle;
+            margin-left: 2px;
+            text-decoration: none;
+            background-image: url("https://profiler.firefox.com/res/img/favicon.png");
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: 14px 14px;
+        }
+        .profiler-cmd:hover {
+            opacity: 1;
+        }
+        .profiler-cmd.copied {
+            opacity: 1;
+            filter: drop-shadow(0 0 2px #2e7d32);
+        }
+        .repro-icon {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            line-height: 18px;
+            text-align: center;
+            border-radius: 50%;
+            font-size: 11px;
+            font-weight: 700;
+            vertical-align: middle;
+        }
+        .repro-pending-idle {
+            color: #bbb;
+        }
+        .repro-pending {
+            color: #999;
+        }
+        .repro-reproduced {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        .repro-not-reproduced {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .repro-no-match {
+            background: #fff8e1;
+            color: #f57f17;
+        }
+        .repro-error {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .mitten::before {
+            content: '';
+            display: inline-block;
+            width: 13px;
+            height: 13px;
+            vertical-align: middle;
+            margin-left: 4px;
+            margin-right: 4px;
+            background-color: #e65100;
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 448 512'%3E%3Cpath d='M352 384L64 384 5.4 178.9C1.8 166.4 0 153.4 0 140.3C0 62.8 62.8 0 140.3 0l3.4 0c66 0 123.5 44.9 139.5 108.9l31.4 125.8 17.6-20.1C344.8 200.2 362.9 192 382 192l2.8 0c34.9 0 63.3 28.3 63.3 63.3c0 15.9-6 31.2-16.8 42.9L352 384zM32 448c0-17.7 14.3-32 32-32l288 0c17.7 0 32 14.3 32 32l0 32c0 17.7-14.3 32-32 32L64 512c-17.7 0-32-14.3-32-32l0-32z'/%3E%3C/svg%3E");
+            mask-size: contain;
+            mask-repeat: no-repeat;
+        }
+        .repro-summary {
+            font-size: 11px;
+            color: #888;
+        }
+
+        .repro-detail {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .repro-detail-header {
+            font-weight: 600;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .repro-detail.reproduced {
+            background: #e8f5e9;
+            border: 1px solid #c8e6c9;
+        }
+        .repro-detail.not-reproduced {
+            background: #fff3e0;
+            border: 1px solid #ffe0b2;
+        }
+        .repro-detail.error {
+            background: #ffebee;
+            border: 1px solid #ffcdd2;
+        }
+        .repro-detail.pending {
+            background: #f5f5f5;
+            border: 1px solid #eee;
+        }
+        .repro-detail.no-match {
+            background: #fff8e1;
+            border: 1px solid #fff0c0;
+        }
+        .repro-detail-meta {
+            color: #666;
+            font-size: 11px;
+            margin-bottom: 4px;
+        }
+        .repro-links {
+            font-size: 11px;
+            margin-top: 4px;
+            display: flex;
+            gap: 8px;
+        }
+        .repro-links a {
+            color: #0060df;
+            cursor: pointer;
+        }
+        .repro-log-viewer {
+            margin-top: 6px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 11px;
+            background: rgba(0,0,0,0.04);
+            border-radius: 3px;
+            padding: 6px 8px;
+        }
+        .repro-log-viewer .log-line {
+            white-space: pre-wrap;
+            word-break: break-all;
+            padding: 1px 0;
+        }
+        .repro-log-viewer .log-fail {
+            color: #c00;
+            font-weight: 600;
+        }
+        .repro-log-viewer .log-pass {
+            color: #2e7d32;
+        }
+        .repro-log-viewer .log-warn {
+            color: #e65100;
+        }
+        .repro-log-viewer .log-info {
+            color: #555;
+        }
+        .repro-log-viewer .log-test-header {
+            color: #0060df;
+            font-weight: 600;
+            margin-top: 4px;
+        }
+        .repro-log-viewer .log-error {
+            color: #c00;
+        }
+        .repro-log-viewer .log-stack {
+            color: #888;
+            font-size: 10px;
+            margin-left: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="page-heading">Try Push Results</h1>
+
+        <div class="controls" id="input-section">
+            <div class="revision-input">
+                <label for="revision-input">Revision:</label>
+                <input type="text" id="revision-input" placeholder="Enter a revision (40-char hex, Treeherder URL, or repo:rev)" autofocus>
+                <button id="load-btn">Load</button>
+                <label class="alljobs-checkbox" title="Also fetch profiles of test jobs that ultimately succeeded, so tests that failed initially but passed on retry surface too.">
+                    <input type="checkbox" id="alljobs-checkbox"> All jobs
+                </label>
+                <span id="status"></span>
+                <span id="treeherder-link-container"></span>
+                <span id="filter-container" style="display:none; margin-left: auto;">
+                    <span class="search-container">
+                        <input type="text" id="search-box" placeholder="Filter tests (f)...">
+                        <span class="search-clear" id="search-clear">&times;</span>
+                    </span>
+                </span>
+            </div>
+            <div id="revisions-container"></div>
+            <div class="progress-bar" id="progress-bar"><div class="fill" id="progress-fill"></div></div>
+        </div>
+
+        <div id="results"></div>
+    </div>
+
+    <script src="fetch-utils.js"></script>
+    <script src="dashboards.js"></script>
+    <script src="common-ui.js"></script>
+    <script src="common-links.js"></script>
+    <!--
+      common-test-data.js is deliberately NOT loaded. It is the data logic this
+      migration replaces with lib/, and nothing on this page reads it. Verified
+      before removal: its seven globals (detectHarness, getChunkIndex,
+      getCountAtIndex, findTest, stripChunkSuffix, computeConfigStats,
+      computeTestStats) have zero consumers in this page's source, in the four
+      shared scripts above, in shared.js, or through any window.* lookup.
+      The names that DO appear in the built page are this page's own bundled
+      lib/ copies, defined in module scope. Removing the tag drops 15,636 bytes
+      of script the page downloaded and never called.
+
+      try.html reached into it for six of those seven, and the flakiness worker
+      built itself by calling .toString() on them (try.html:2584). That is the
+      one thing here that could not be transliterated; see
+      next/try-flakiness-worker.ts.
+    -->
+    <script defer src="shared.js"></script>
+    <!-- worker: ./try-flakiness-worker.ts -->
+    <script type="module" src="./try.ts"></script>
+</body>
+</html>
