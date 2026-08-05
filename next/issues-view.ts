@@ -99,7 +99,7 @@
 
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import { classifyStatus } from '../lib/model/status.ts';
-import { skipReason } from '../lib/model/skips.ts';
+import { displaySkipMessage, skipReason } from '../lib/model/skips.ts';
 import {
     type IssueGroup,
     type IssueRow,
@@ -736,7 +736,7 @@ export function issueEntries(
             if (entry.message === undefined || entry.message === null) {
                 continue;
             }
-            const display = entry.message.replace(/^skip-if:\s*/, '');
+            const display = displaySkipMessage(entry.message);
             skips.set(display, (skips.get(display) ?? 0) + entry.count);
         } else if (kind === 'fail') {
             if (entry.message === undefined || entry.message === null) {
@@ -1121,7 +1121,7 @@ export function matchesIssueLine(
             if (kind !== 'skip') {
                 return false;
             }
-            const clean = (entry.message ?? '').replace(/^skip-if:\s*/, '');
+            const clean = displaySkipMessage(entry.message ?? '');
             return clean === message;
         }
         case 'FAIL': {

@@ -100,7 +100,7 @@
  */
 
 import type { ErrorsFile } from '../lib/formats/errors.ts';
-import { parseTaskId } from '../lib/formats/tables.ts';
+import { joinTestPath, parseTaskId } from '../lib/formats/tables.ts';
 // The component-summary *rule*, shared with `fx-tests errors` so the two sides
 // cannot word the same row differently. Only the decision is shared; each side
 // aggregates its own way — see `componentBreakdown`.
@@ -450,9 +450,9 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
     const testFull = testInfo.testPathIds.map((pathId, i) => {
         const path = tables.testPaths[pathId]!;
         const name = tables.testNames[testInfo.testNameIds[i]!]!;
-        // `path ? path + '/' + name : name` — a test at the repository root has
-        // an empty path and must not render as `/name`. `errors.html:306`.
-        return path ? `${path}/${name}` : name;
+        // A test at the repository root has an empty path and must not render
+        // as `/name`, which is the rule `joinTestPath` holds. `errors.html:306`.
+        return joinTestPath(path, name);
     });
     const testBlob = testFull.map((s) => s.toLowerCase());
 

@@ -252,6 +252,30 @@ export function searchBox(options: {
  * at: …`. One row, on one harness, in a tooltip. It is fixed rather than
  * declared because the fix is three characters and a declared divergence is a
  * thing a reviewer has to carry forever.
+ *
+ * ## The three pages that adopted this helper later
+ *
+ * `try.ts`, `test.ts` and `crash-viewer.ts` each carried a private copy of
+ * `el()` that skipped this call. Replacing them with this one is a no-op on
+ * their rendered output, measured rather than assumed:
+ *
+ * - **test**: the CR-bearing message above is in today's
+ *   `mochitest-issues.json` (`tables.messages[1290]`, 1 of 23,859 strings) and
+ *   the page *does* render it — for
+ *   `dom/events/test/test_coalesce_touchmove.html` it is the text of an
+ *   `.issue-message`. But it reaches `textContent`, never a `title`: loaded in
+ *   Chrome, that page has 54 titled elements, 0 with a CR, and no CR anywhere
+ *   in the serialized DOM. The test page's titles are counts and skip
+ *   conditions, not failure messages.
+ * - **try**: its message titles come from Treeherder `bug_suggestions` at
+ *   runtime, not from a published file. Sampled 250 failing jobs across
+ *   autoland and mozilla-central: 0 of 1,982 `search` strings contain a CR.
+ * - **crash-viewer**: titles are thread headings and `tid:` labels, built by
+ *   this repo from numbers. 202 titled elements on `win32-mfcdm`, 0 with a CR.
+ *
+ * So this is a widening of the fix's reach, not a behaviour change to those
+ * three. If a CR ever does reach one of their titles, they now match the old
+ * pages instead of diverging from them.
  */
 function normalizeAttrNewlines(value: string): string {
     return value.replace(/\r\n?/g, '\n');

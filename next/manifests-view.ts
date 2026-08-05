@@ -92,6 +92,7 @@
  */
 
 import type { ManifestsFile } from '../lib/formats/manifests.ts';
+import { parseTaskId } from '../lib/formats/tables.ts';
 
 // --- the rows -------------------------------------------------------------
 
@@ -744,10 +745,29 @@ export function scatterPoints(job: JobStats): ScatterPoint[] {
  * file: **231 of 11,378** tasks. (`FORMATS.md` records 216 of 9,543 against an
  * earlier file; the share is stable, the counts are per-file.) A missing suffix
  * means run `0`.
+ *
+ * ## Why this delegates to `parseTaskId` rather than splitting on `.`
+ *
+ * This used to be `taskId.split('.')` with an unvalidated `parts[1]`, which is
+ * a *different function* from `lib/formats/tables.ts`'s `parseTaskId` on two
+ * inputs: `abc.1.2` gives retry `1` here and `2` there (last dot, not first),
+ * and `abc.def` gives retry `def` here and `0` there. Both feed the same
+ * Taskcluster `/runs/<n>/` URLs, so the two could not both be right.
+ *
+ * Neither input occurs. Across the published `manifests.json` (11,378 task ids)
+ * and both manifests fixtures (1,393 more), **0 ids carry more than one dot and
+ * 0 have a non-numeric suffix** — the only suffixes present are `1`, `2` and
+ * `3`. Running the two implementations over all 12,771 gives 0 disagreements.
+ * So this is unified on the validated one on that measurement, not on a
+ * guess, and the collision is unreachable *in this data* rather than
+ * impossible.
+ *
+ * The string-valued `retryId` is kept because it is interpolated straight into
+ * a URL; `parseTaskId` returns a number and both render identically.
  */
 export function splitTaskId(taskId: string): { baseTaskId: string; retryId: string } {
-    const parts = taskId.split('.');
-    return { baseTaskId: parts[0]!, retryId: parts[1] ?? '0' };
+    const { taskId: base, retryId } = parseTaskId(taskId);
+    return { baseTaskId: base, retryId: String(retryId) };
 }
 
 /**

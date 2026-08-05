@@ -163,6 +163,7 @@
 import { bucketFileSuffix, bucketIndexForPath } from '../lib/formats/buckets.ts';
 import { detectHarness, otherHarness } from '../lib/model/harness.ts';
 import { stripChunkSuffix } from '../lib/model/job-name.ts';
+import { el } from './drilldown-render.ts';
 import {
     type ConsoleFailure,
     type FailingTest,
@@ -285,49 +286,6 @@ function mitten(): HTMLElement {
 }
 
 // --- small DOM helpers ----------------------------------------------------
-
-/** `document.createElement` with class, text and attributes in one call. */
-function el<K extends keyof HTMLElementTagNameMap>(
-    tag: K,
-    options: {
-        class?: string | undefined;
-        text?: string | undefined;
-        title?: string | undefined;
-        id?: string | undefined;
-        href?: string | undefined;
-        attrs?: Record<string, string> | undefined;
-        children?: (Node | string | null)[] | undefined;
-    } = {}
-): HTMLElementTagNameMap[K] {
-    const node = document.createElement(tag);
-    if (options.class !== undefined && options.class !== '') {
-        node.className = options.class;
-    }
-    if (options.text !== undefined) {
-        // `textContent`, never `innerHTML`: a failure message legitimately
-        // contains `<` and `&`, and this answers the escaping question once
-        // rather than at each of the old page's 60-odd `escapeHtml` calls.
-        node.textContent = options.text;
-    }
-    if (options.title !== undefined) {
-        node.title = options.title;
-    }
-    if (options.id !== undefined) {
-        node.id = options.id;
-    }
-    if (options.href !== undefined) {
-        node.setAttribute('href', options.href);
-    }
-    for (const [name, value] of Object.entries(options.attrs ?? {})) {
-        node.setAttribute(name, value);
-    }
-    for (const child of options.children ?? []) {
-        if (child !== null) {
-            node.append(child);
-        }
-    }
-    return node;
-}
 
 /** An `<a target="_blank">` whose click does not also toggle the row. */
 function link(

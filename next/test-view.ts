@@ -77,6 +77,7 @@
 
 import { type DecodedTimingFile, type RunEntry } from '../lib/formats/decode.ts';
 import { formatDurationMs } from '../lib/model/duration.ts';
+import { extractPlatform } from '../lib/model/job-name.ts';
 import { classifyStatus } from '../lib/model/status.ts';
 import { displaySkipMessage, skipReason } from '../lib/model/skips.ts';
 import { type ConfigCoverage, coverageOf } from '../lib/query/coverage.ts';
@@ -252,52 +253,14 @@ export function extractVariant(jobName: string): string {
 }
 
 /**
- * The coarse OS of a job name.
+ * The coarse OS of a job name — `shared.js:70`'s `extractPlatform`.
  *
- * `extractPlatform` (`shared.js:70`), reproduced rather than replaced with
- * `lib/model/job-name.ts`'s `operatingSystem()`. The two are **not**
- * interchangeable and the difference is the whole platform column, so it is
- * worth naming:
- *
- * - `operatingSystem()` takes the *platform* substring and tests
- *   `includes('android'|'linux'|'win'|'macos'|'osx')` on it, returning `null`
- *   when none match.
- * - `extractPlatform()` takes the *whole job name*, checks `android` against
- *   all of it, then matches `/(?:test-|build-)([^-\/]+)/` and tests only that
- *   one segment, returning the literal string `'unknown'` when none match.
- *
- * The second segment restriction matters: `test-windows11-64-25h2/...` has
- * first segment `windows11`, so both agree, but the `'unknown'` fallback is a
- * *value the page groups by and displays* — it becomes a column header — where
- * `null` is not. Reproducing it is what keeps a job name neither recognizes
- * from silently vanishing from the table.
- *
- * Measured on the pinned snapshot: 0 of the 613 mochitest and 335 xpcshell job
- * names fall through to `'unknown'`, so the two functions agree on all of them
- * today. That is a fact about these files, not a proof — which is exactly why
- * the port keeps the page's version rather than substituting the library's and
- * calling it equivalent.
+ * Shared with `try-view.ts`, which had a byte-identical copy. It is deliberately
+ * not `operatingSystem()`; `lib/model/job-name.ts` states why both exist.
+ * Re-exported rather than imported through, because this page's own tests and
+ * the parity harness read it from here.
  */
-export function extractPlatform(name: string): string {
-    if (name.includes('android')) {
-        return 'android';
-    }
-    const platformMatch = /(?:test-|build-)([^-/]+)/.exec(name);
-    if (platformMatch) {
-        const rawPlatform = platformMatch[1]!;
-        if (rawPlatform.includes('linux')) {
-            return 'linux';
-        }
-        // `win` rather than `windows`: catches win32 and win64 too.
-        if (rawPlatform.includes('win')) {
-            return 'windows';
-        }
-        if (rawPlatform.includes('macos')) {
-            return 'mac';
-        }
-    }
-    return 'unknown';
-}
+export { extractPlatform };
 
 /**
  * The OS with its bitness, e.g. `windows-64`.

@@ -180,6 +180,60 @@ export function operatingSystem(platform: string): OperatingSystem | null {
     return null;
 }
 
+/**
+ * The coarse OS of a whole job name, `'unknown'` when none matches.
+ *
+ * `extractPlatform` (`shared.js:70`). Lives here rather than in a page because
+ * `test-view.ts` and `try-view.ts` had byte-identical copies of it; it is in
+ * `lib/` rather than in one of them because a view model has to be importable
+ * by a node test and `shared.js` is a browser script loaded by a `<script>`
+ * tag.
+ *
+ * ## Why this is not `operatingSystem()` above
+ *
+ * Both exist on purpose. They are **not** interchangeable, and the difference
+ * is the whole platform column:
+ *
+ * - `operatingSystem()` takes the *platform* substring — the caller has
+ *   already split the name — and returns `null` when nothing matches. It also
+ *   recognizes `osx`, which this one does not.
+ * - `extractPlatform()` takes the *whole job name*, checks `android` against
+ *   all of it, then matches `/(?:test-|build-)([^-\/]+)/` and tests only that
+ *   one segment, returning the literal string `'unknown'`.
+ *
+ * The fallback is the load-bearing part. `'unknown'` is a value the try and
+ * test pages *group by and display* — it is in their `PLATFORM_ORDER` and it
+ * becomes a badge or a column header — where `null` is not. Returning `null`
+ * here would make a job name neither function recognizes vanish from the table
+ * rather than show up under `unknown`.
+ *
+ * Measured on the pinned snapshot: 0 of the 613 mochitest and 335 xpcshell job
+ * names fall through to `'unknown'`, so the two agree on all of them today.
+ * That is a fact about those files, not a proof — which is why the pages keep
+ * this version rather than substituting `operatingSystem()` and calling it
+ * equivalent.
+ */
+export function extractPlatform(name: string): string {
+    if (name.includes('android')) {
+        return 'android';
+    }
+    const platformMatch = /(?:test-|build-)([^-/]+)/.exec(name);
+    if (platformMatch) {
+        const rawPlatform = platformMatch[1]!;
+        if (rawPlatform.includes('linux')) {
+            return 'linux';
+        }
+        // `win` rather than `windows`: catches win32 and win64 too.
+        if (rawPlatform.includes('win')) {
+            return 'windows';
+        }
+        if (rawPlatform.includes('macos')) {
+            return 'mac';
+        }
+    }
+    return 'unknown';
+}
+
 /** The part of a name before the first `-`, or `null` when there is none. */
 function firstSegment(name: string): string | null {
     const dash = name.indexOf('-');

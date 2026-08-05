@@ -136,11 +136,12 @@
 import { bucketFileSuffix, bucketIndexForPath, decodeBucket } from '../lib/formats/buckets.ts';
 import type { BucketFile } from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
-import { parseTaskId } from '../lib/formats/tables.ts';
+import { joinTestPath, parseTaskId } from '../lib/formats/tables.ts';
 import { detectHarness, otherHarness } from '../lib/model/harness.ts';
 import { classifyStatus } from '../lib/model/status.ts';
 import { displaySkipMessage } from '../lib/model/skips.ts';
 import { computeTestStats } from '../lib/query/test-stats.ts';
+import { el } from './drilldown-render.ts';
 import {
     type CellBadge,
     type DailyRate,
@@ -277,50 +278,6 @@ interface ChartPlugin {
 type RateField = 'failureRate' | 'timeoutRate' | 'crashRate' | 'skipRate';
 
 // --- small DOM helpers ---------------------------------------------------
-
-/** `document.createElement` with class, text and attributes in one call. */
-function el<K extends keyof HTMLElementTagNameMap>(
-    tag: K,
-    options: {
-        class?: string;
-        text?: string;
-        title?: string;
-        id?: string;
-        html?: string;
-        attrs?: Record<string, string>;
-        children?: (Node | null)[];
-    } = {}
-): HTMLElementTagNameMap[K] {
-    const node = document.createElement(tag);
-    if (options.class !== undefined && options.class !== '') {
-        node.className = options.class;
-    }
-    if (options.text !== undefined) {
-        // `textContent`, never `innerHTML`: a failure message legitimately
-        // contains `<` and `&`, and this answers the escaping question once.
-        node.textContent = options.text;
-    }
-    if (options.html !== undefined) {
-        // The one deliberate exception, and only ever for markup produced by
-        // `common-ui.js`/`common-links.js`, which escape their own inputs.
-        node.innerHTML = options.html;
-    }
-    if (options.title !== undefined) {
-        node.title = options.title;
-    }
-    if (options.id !== undefined) {
-        node.id = options.id;
-    }
-    for (const [name, value] of Object.entries(options.attrs ?? {})) {
-        node.setAttribute(name, value);
-    }
-    for (const child of options.children ?? []) {
-        if (child !== null) {
-            node.append(child);
-        }
-    }
-    return node;
-}
 
 /** An element the page's own markup guarantees exists. */
 function requireElement(id: string): HTMLElement {
@@ -2185,7 +2142,10 @@ async function loadAllTestPaths(): Promise<string[]> {
             if (name === undefined) {
                 continue;
             }
-            testSet.add(dir ? `${dir}/${name}` : name);
+            // `dir ?? ''`: an out-of-range path id and an empty directory both
+            // mean "no directory", and `joinTestPath` gives the bare name for
+            // an empty one — the same answer the inline form gave for either.
+            testSet.add(joinTestPath(dir ?? '', name));
         }
     }
     return [...testSet].sort();

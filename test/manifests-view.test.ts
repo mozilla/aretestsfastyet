@@ -39,6 +39,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { ManifestsFile } from '../lib/formats/manifests.ts';
+import { parseTaskId } from '../lib/formats/tables.ts';
 import {
     type Filters,
     type ManifestRow,
@@ -625,6 +626,27 @@ test('splitTaskId separates the retry, defaulting to run 0', () => {
     assert.deepEqual(splitTaskId('ABC123'), { baseTaskId: 'ABC123', retryId: '0' });
     assert.deepEqual(splitTaskId('ABC123.1'), { baseTaskId: 'ABC123', retryId: '1' });
     assert.deepEqual(splitTaskId('ABC123.12'), { baseTaskId: 'ABC123', retryId: '12' });
+});
+
+test('splitTaskId agrees with parseTaskId on the inputs the two used to differ on', () => {
+    // The two implementations disagreed on exactly these shapes: the old
+    // `split('.')` took the *first* dot and never checked the suffix, so
+    // `abc.1.2` was run 1 and `abc.def` was run "def" — a URL that 404s. Both
+    // shapes are absent from the data (0 of 12,771 ids measured), so this
+    // pins the behaviour rather than reporting a fixed bug.
+    for (const raw of ['abc.1.2', 'abc.def', 'abc.', 'abc.0.0', 'a.b.c.3']) {
+        const parsed = parseTaskId(raw);
+        assert.deepEqual(
+            splitTaskId(raw),
+            { baseTaskId: parsed.taskId, retryId: String(parsed.retryId) },
+            `splitTaskId and parseTaskId disagree on ${raw}`
+        );
+    }
+    // Spelled out, so the assertion above cannot pass by both being wrong the
+    // same way: the retry is the LAST dot's suffix, and only when it is digits.
+    assert.deepEqual(splitTaskId('abc.1.2'), { baseTaskId: 'abc.1', retryId: '2' });
+    assert.deepEqual(splitTaskId('abc.def'), { baseTaskId: 'abc.def', retryId: '0' });
+    assert.deepEqual(splitTaskId('abc.'), { baseTaskId: 'abc.', retryId: '0' });
 });
 
 test('the two artifact URLs put the retry in the path, not in the task id', () => {

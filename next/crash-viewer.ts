@@ -109,47 +109,9 @@ import {
     type ThreadView,
     crashView,
 } from './crash-view.ts';
+import { el } from './drilldown-render.ts';
 
 // --- small DOM helpers ---------------------------------------------------
-
-/** `document.createElement` with a class, text and attributes in one call. */
-function el<K extends keyof HTMLElementTagNameMap>(
-    tag: K,
-    options: {
-        class?: string;
-        text?: string;
-        title?: string;
-        id?: string;
-        attrs?: Record<string, string>;
-        children?: (Node | null)[];
-    } = {}
-): HTMLElementTagNameMap[K] {
-    const node = document.createElement(tag);
-    if (options.class !== undefined && options.class !== '') {
-        node.className = options.class;
-    }
-    if (options.text !== undefined) {
-        // `textContent`, never `innerHTML`: a symbol name legitimately contains
-        // `<` and `&` (`std::function<void ()>`, `A&&`), and this is the whole
-        // escaping question answered once.
-        node.textContent = options.text;
-    }
-    if (options.title !== undefined) {
-        node.title = options.title;
-    }
-    if (options.id !== undefined) {
-        node.id = options.id;
-    }
-    for (const [name, value] of Object.entries(options.attrs ?? {})) {
-        node.setAttribute(name, value);
-    }
-    for (const child of options.children ?? []) {
-        if (child !== null) {
-            node.append(child);
-        }
-    }
-    return node;
-}
 
 /**
  * A `target="_blank"` link, or a bare text node when there is no URL.

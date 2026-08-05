@@ -35,7 +35,7 @@ import {
     totalRuns,
 } from '../lib/formats/status-entries.ts';
 import type { StatusGroup } from '../lib/formats/status-group.ts';
-import { normalizeTaskId, parseTaskId } from '../lib/formats/tables.ts';
+import { joinTestPath, normalizeTaskId, parseTaskId } from '../lib/formats/tables.ts';
 import { countsAsSkip } from '../lib/model/skips.ts';
 import type { BucketFile } from '../lib/formats/buckets.ts';
 import type { DailyFile } from '../lib/formats/daily.ts';
@@ -681,6 +681,20 @@ test('timestamps are monotonic within a status group', () => {
             previous = timestamp;
         }
     }
+});
+
+// --- test paths ----------------------------------------------------------
+
+test('joinTestPath leaves a root-directory test unprefixed', () => {
+    // The empty-directory branch is the whole reason this is a function rather
+    // than a template string, and it had no test: mutating it to the
+    // unconditional `${directory}/${name}` left all 1,331 passing. It is
+    // reached by `errors-view.ts` and `test.ts`, whose autocomplete would
+    // otherwise offer `/browser_foo.js` with a leading slash.
+    assert.equal(joinTestPath('', 'browser_foo.js'), 'browser_foo.js');
+    assert.equal(joinTestPath('dom/events/test', 'test_a.html'), 'dom/events/test/test_a.html');
+    // No separator is inserted or collapsed beyond that one rule.
+    assert.equal(joinTestPath('a', ''), 'a/');
 });
 
 // --- task IDs ------------------------------------------------------------

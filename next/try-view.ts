@@ -64,6 +64,7 @@
  * `npm run typecheck` on the root project.
  */
 
+import { extractPlatform } from '../lib/model/job-name.ts';
 import type { ConfigStats } from '../lib/query/config-stats.ts';
 import type { TestStats } from '../lib/query/test-stats.ts';
 
@@ -247,38 +248,14 @@ export function sortedBuildTypes(builds: ReadonlySet<string>): string[] {
 }
 
 /**
- * The coarse OS of a job name.
+ * The coarse OS of a job name — `shared.js:70`'s `extractPlatform`.
  *
- * `extractPlatform` (`shared.js:70`), reproduced here for the same reason
- * `next/test-view.ts` reproduces it: the view model has to be importable by a
- * node test, and `shared.js` is a browser script loaded by a `<script>` tag.
- *
- * It is also **not** `lib/model/job-name.ts`'s `operatingSystem()`. That one
- * tests the platform substring and returns `null` when nothing matches; this
- * one tests the whole name for `android`, then the second segment, and returns
- * the literal string `'unknown'`. `'unknown'` is a value this page *groups by*
- * — it is in `PLATFORM_ORDER` and it becomes a badge — where `null` is not.
+ * Shared with `test-view.ts`, which had a byte-identical copy. It is
+ * deliberately not `operatingSystem()`; `lib/model/job-name.ts` states why both
+ * exist. Re-exported rather than imported through, because this page's own
+ * tests and the parity harness read it from here.
  */
-export function extractPlatform(name: string): string {
-    if (name.includes('android')) {
-        return 'android';
-    }
-    const platformMatch = /(?:test-|build-)([^-/]+)/.exec(name);
-    if (platformMatch) {
-        const rawPlatform = platformMatch[1]!;
-        if (rawPlatform.includes('linux')) {
-            return 'linux';
-        }
-        // `win` rather than `windows`: catches win32 and win64 too.
-        if (rawPlatform.includes('win')) {
-            return 'windows';
-        }
-        if (rawPlatform.includes('macos')) {
-            return 'mac';
-        }
-    }
-    return 'unknown';
-}
+export { extractPlatform };
 
 // --- intermittency --------------------------------------------------------
 
