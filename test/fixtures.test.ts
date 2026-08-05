@@ -44,7 +44,14 @@ function checkerFor(name: string): { check: Check; ctx: FileContext } | undefine
     if (name === 'index.json') {
         return { check: checkIndex, ctx };
     }
-    if (name === 'manifests.json') {
+    // Both manifests fixtures are the same shape, and are checked by the same
+    // function for that reason. `manifests-pathology.json` is the manifests
+    // page's own selection — 21 manifests chosen for the shapes the truncated
+    // one lacks, built by `test/manifests-fixture-gen.ts`, which records why
+    // each is there. Matched by prefix rather than by a second exact name so
+    // that a third selection is covered when it lands rather than silently
+    // unchecked.
+    if (name === 'manifests.json' || name.startsWith('manifests-')) {
         return { check: checkManifests, ctx };
     }
     if (name.startsWith('stackwalk-')) {

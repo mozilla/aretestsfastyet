@@ -434,10 +434,17 @@ const FRAMING: FramingEntry[] = [
         // A page bug that is not a CLI gap, noted where it will be read: the
         // page's median is the upper middle element (`:429`,
         // `durations[Math.floor(length / 2)]`), not interpolated, so an
-        // even-length sample reports the higher of the two middle values. The
-        // CLI's `medianOf` matches it deliberately — a manifests ranking that
-        // disagreed with the dashboard in the last digit would cost more than
-        // the half-element it gains.
+        // even-length sample reports the higher of the two middle values.
+        //
+        // An earlier version of this comment said "the CLI's `medianOf` matches
+        // it deliberately". Both halves were false, and the claim was repeated
+        // into a migration brief before anyone checked it: there is no
+        // `medianOf` anywhere in `lib/` or `cli/`, and the CLI reaches its
+        // median through `quantile` (`cli/commands/test.ts:781`), whose
+        // `Math.ceil(q * n) - 1` is nearest-rank — the *lower* middle. On
+        // `[10 … 100]` the page says 60 and the CLI says 50, and the two
+        // disagree on 3,122 of the 6,227 manifests in the published file.
+        // Declared as a divergence by `test/manifests-parity.test.ts`.
     },
     {
         command: 'summary',
