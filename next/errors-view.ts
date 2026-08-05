@@ -57,18 +57,40 @@
  * question, compared against each other, rather than one wrapping the other and
  * making the comparison vacuous.
  *
- * ## The row unit is one source location, not one message text
+ * ## The row unit is one source location, and the component is not part of it
  *
- * The single most important framing fact, and the one commit `819eef5` changed.
- * A row in the message view is one `messageId` — a distinct
- * **(kind, text, file, line, component)** tuple — so the same text emitted from
- * two places is two rows with two counts. `groupName()` (`errors.html:489`)
- * spells this out: the display name is the text plus `" file:line"`.
+ * The single most important framing fact. A row in the message view is one
+ * **(kind, text, file, line)** tuple, so the same text emitted from two places
+ * is two rows with two counts. `groupName()` (`errors.html:489`) spells the
+ * display out: the text plus `" file:line"`.
  *
- * Measured on the pinned `xpcshell-2026-08-04-errors.json`: **1,078 messageIds
- * over 772 distinct texts**; 59 texts occur at more than one location, and
- * `NS_ENSURE_TRUE(inst) failed` alone occupies **69 rows**. Grouping by text
- * would merge those 69 into one row whose count belongs to none of them.
+ * **The component is deliberately not in the key**, and that is a change from
+ * `errors.html`, whose row unit was the generator's `messageId` — a distinct
+ * (kind, text, file, line, **component**) tuple. The component is not a
+ * property of the message. The message is emitted at a `file:line`; the
+ * component is whichever test happened to be running when it printed. Keying on
+ * it splits one message into several rows for a reason that says nothing about
+ * the message, and the page already has a whole separate view for the component
+ * question.
+ *
+ * Measured on the pinned `xpcshell-2026-08-04-errors.json`:
+ *
+ * | | |
+ * | --- | --- |
+ * | messageIds the generator interned | **1,078** |
+ * | distinct (kind, text, file, line) keys, i.e. rows here | **870** |
+ * | keys holding more than one messageId | **36** |
+ * | of those, keys differing by anything other than the component | **0** |
+ * | widest spread | one message over **61** components |
+ *
+ * `NS_ENSURE_TRUE(inst) failed` occupies 69 messageIds and **5** rows here, and
+ * grouping by text alone would collapse those 5 into 1 — which is why the file
+ * and the line stay in the key even though the component leaves it. 772 texts
+ * over 870 keys; 36 texts occur at more than one location.
+ *
+ * What the merge must not do is throw the component away, because it is real
+ * information: `componentSummary` puts it back on the row, and
+ * `componentBreakdown` carries the full list into the tooltip.
  *
  * ## This file must stay DOM-free
  *
@@ -79,6 +101,25 @@
 
 import type { ErrorsFile } from '../lib/formats/errors.ts';
 import { parseTaskId } from '../lib/formats/tables.ts';
+// The component-summary *rule*, shared with `fx-tests errors` so the two sides
+// cannot word the same row differently. Only the decision is shared; each side
+// aggregates its own way — see `componentBreakdown`.
+import {
+    type ComponentShare,
+    UNKNOWN_COMPONENT as SHARED_UNKNOWN_COMPONENT,
+    componentBreakdownLines,
+    sortComponents,
+} from '../lib/query/error-ranking.ts';
+
+// Re-exported so a caller of this view model — the renderer, and the tests —
+// reaches the rule through the module it is already importing, rather than
+// having to know it lives in `lib/`.
+export {
+    type ComponentShare,
+    MAX_BREAKDOWN_ROWS,
+    componentSummary,
+    dominates,
+} from '../lib/query/error-ranking.ts';
 
 // --- the controls ---------------------------------------------------------
 
@@ -153,10 +194,16 @@ export interface ViewColumn {
  * The columns each view shows, besides the name column. `errors.html:223-227`.
  *
  * The message view has **no Messages column**, and that is not an omission: a
- * message-view row *is* one message, so the column would read `1` on every row.
- * `buildGroups` skips computing `totalMsgs` for it entirely (`:424`), which is
- * why `Totals.messages` below is `null` rather than 0 there — 0 would be a
- * number a reader could mistake for a measurement.
+ * message-view row is one message *as a reader means the word* — one text at
+ * one source location — so the column would read `1` on 834 of the 870 rows of
+ * the pinned xpcshell file and, on the other 36, would count the generator's
+ * per-component messageIds, which is a fact about the interning rather than
+ * about the message. The component spread is the real content of that number
+ * and `componentSummary` is where it goes.
+ *
+ * `buildGroups` skips computing `totalMsgs` for this view entirely (`:424`),
+ * which is why `Totals.messages` below is `null` rather than 0 there — 0 would
+ * be a number a reader could mistake for a measurement.
  */
 export const VIEW_COLS: Readonly<Record<ErrorView, readonly ViewColumn[]>> = {
     message: [
@@ -278,6 +325,18 @@ export interface PreparedErrors {
     compGroupId: readonly number[];
     /** Component-group id → display label. */
     compGroupLabel: readonly string[];
+
+    /**
+     * Per messageId: its dense **location**-group id, the message view's row.
+     *
+     * Several messageIds share one location id exactly when they differ only in
+     * their component — see the module comment. This is the field that makes
+     * the message view's row unit (kind, text, file, line) rather than the
+     * generator's messageId.
+     */
+    locGroupId: Int32Array;
+    /** Location-group id → the messageIds in it, ascending. */
+    locGroupMids: readonly (readonly number[])[];
     /** Per testId: its dense test-group id. */
     testGroupId: Int32Array;
     /** Test-group id → display label. */
@@ -312,8 +371,15 @@ export interface Csr {
 
 /** What a message with no text displays as. `errors.html:295`. */
 export const NO_MESSAGE = '(no message)';
-/** What a message with no component displays as. `errors.html:298`. */
-export const UNKNOWN_COMPONENT = 'Unknown';
+/**
+ * What a message with no component displays as. `errors.html:298`.
+ *
+ * The shared constant, not a second copy of the string: the CLI's rows use the
+ * same sentinel, and `test/errors-parity.test.ts` compares the two sides'
+ * component summaries — which two independently-spelled sentinels would fail
+ * for a reason that has nothing to do with the summary.
+ */
+export const UNKNOWN_COMPONENT = SHARED_UNKNOWN_COMPONENT;
 
 /**
  * Resolves a file's tables into the flat arrays the grouping loop wants.
@@ -396,6 +462,36 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
     const compSentinel = tables.components.length;
     const compGroupId = messages.componentIds.map((id) => (id == null ? compSentinel : id));
 
+    // The message view groups by (kind, text, file, line), so the four ids are
+    // interned to a dense location id the same way. The key is built from the
+    // *raw table ids* rather than from the resolved strings: two messages share
+    // a text exactly when they share a `textIds` entry, so comparing integers
+    // is both cheaper and free of the escaping question a string key raises.
+    //
+    // `??` folds an absent id onto `NO_ID`, which is outside the id space
+    // because the tables are dense from 0 — so "no file" cannot collide with
+    // "the file at index 0", the distinction `KEY_ABSENT` exists for in
+    // `lib/query/error-ranking.ts`. The line is the file's own number rather
+    // than an index, and `FORMATS.md` measured messages carrying a line with no
+    // file, so the two fields stay independent.
+    const NO_ID = -1;
+    const locIndex = new Map<string, number>();
+    const locGroupMids: number[][] = [];
+    const locGroupId = new Int32Array(messages.textIds.length);
+    for (let m = 0; m < messages.textIds.length; m++) {
+        const key = `${messages.markerNameIds[m]},${messages.textIds[m] ?? NO_ID},${
+            messages.fileIds[m] ?? NO_ID
+        },${messages.lines[m] ?? NO_ID}`;
+        let id = locIndex.get(key);
+        if (id === undefined) {
+            id = locGroupMids.length;
+            locIndex.set(key, id);
+            locGroupMids.push([]);
+        }
+        locGroupId[m] = id;
+        locGroupMids[id]!.push(m);
+    }
+
     // The test view groups by the full path string, so two `testInfo` entries
     // with the same path *and* name must share a row. `errors.html:325-331`.
     const testIndex = new Map<string, number>();
@@ -444,6 +540,8 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
         testBlob,
         compGroupId,
         compGroupLabel,
+        locGroupId,
+        locGroupMids,
         testGroupId,
         testGroupLabel,
         kindTotal,
@@ -473,9 +571,9 @@ interface ErrorsMarkersMaybeDays {
  * Builds (and caches) the CSR buckets for one view. `getCSR` (`:357`).
  *
  * The message view is the case worth reading twice: it has **no label table**,
- * because a row's group id *is* its `messageId` and its name is rendered from
- * the diagnostic itself. That is what makes the row unit a source location — see
- * the module comment.
+ * because a row's group id is a **location id** and its name is rendered from
+ * one of the diagnostics under it. That is what makes the row unit
+ * (kind, text, file, line) — see the module comment.
  */
 export function getCsr(data: PreparedErrors, view: ErrorView): Csr {
     const cached = data.csr[view];
@@ -497,10 +595,14 @@ export function getCsr(data: PreparedErrors, view: ErrorView): Csr {
             : byTest
               ? data.testGroupLabel
               : null;
-    const nGroups = labels !== null ? labels.length : data.msgKindId.length;
+    const nGroups = labels !== null ? labels.length : data.locGroupMids.length;
 
     const groupIdOf = (i: number): number =>
-        testIds !== null ? testIds[tids[i]!]! : compIds !== null ? compIds[mids[i]!]! : mids[i]!;
+        testIds !== null
+            ? testIds[tids[i]!]!
+            : compIds !== null
+              ? compIds[mids[i]!]!
+              : data.locGroupId[mids[i]!]!;
 
     const gStart = new Int32Array(nGroups + 1);
     for (let i = 0; i < n; i++) {
@@ -582,8 +684,9 @@ export interface ErrorGroupRow {
     /**
      * The row's group id.
      *
-     * In the message view this is a **`messageId`** and the row renders itself
-     * from the diagnostic; in the other two it indexes the view's label table.
+     * In the message view this is a **location id** — an index into
+     * `locGroupMids` — and the row renders itself from the diagnostics under
+     * it; in the other two it indexes the view's label table.
      */
     gid: number;
     /** The label, or `null` in the message view until `groupName` builds it. */
@@ -637,12 +740,14 @@ export interface GroupingResult {
  * (`:422`, `applyKind = view !== 'message'`). The reason is structural rather
  * than an optimisation:
  *
- * - A **message-view** row is one `messageId`, so it has exactly one kind. A
- *   checkbox can therefore only ever show or hide the *whole* row, never change
- *   its number — so the rows are built once over all kinds and the checkboxes
- *   filter visibility later (`visibleRows`). What the checkboxes *do* change
- *   there is the **Total row and every percentage tooltip**, which are
- *   recomputed from the per-kind aggregates (`:686-695`, `messageTotals` below).
+ * - A **message-view** row has exactly one kind, because the **kind is part of
+ *   its key** — merging the component out of the key did not change this, and
+ *   would have broken it had the kind gone too. A checkbox can therefore only
+ *   ever show or hide the *whole* row, never change its number — so the rows are
+ *   built once over all kinds and the checkboxes filter visibility later
+ *   (`visibleRows`). What the checkboxes *do* change there is the **Total row
+ *   and every percentage tooltip**, which are recomputed from the per-kind
+ *   aggregates (`:686-695`, `messageTotals` below).
  * - A **test-view or component-view** row mixes kinds, so unchecking one changes
  *   the row's count, its test/message counts and therefore the ranking. Those
  *   views must re-group, which is what `onKindFilterChange` (`:1042-1049`) does.
@@ -767,27 +872,89 @@ export function buildGroupRows(
  *
  * `groupName` (`errors.html:489-497`). In the test and component views it is
  * the label table's entry; in the message view it is built on demand from the
- * diagnostic and **cached onto the row**, because materializing a string per
- * message during grouping would allocate 35,474 strings the page may never
+ * row's diagnostic and **cached onto the row**, because materializing a string
+ * per row during grouping would allocate 31,530 strings the page may never
  * show.
  *
  * The shape is `text` + `" file"` + `":line"`, with each part dropped when
  * absent — and note the nesting: **a line with no file is not shown at all**,
  * because the `line` clause is inside the `file` clause. That is upstream's
  * (`:493-494`) and is reachable: 16 of the 1,078 messages on the pinned
- * xpcshell file have a line and no file, so 16 rows are named by their text
- * alone even though the grouping distinguished them by line. Two such messages
- * with the same text therefore render as two identically-named rows with
- * different counts. Reproduced; divergence list entry 5.
+ * xpcshell file have a line and no file, so those rows are named by their text
+ * alone even though the grouping distinguished them by line. Two such rows with
+ * the same text therefore render as two identically-named rows with different
+ * counts. Reproduced; divergence list entry 5.
+ *
+ * The three fields are read off `representativeMid`, which is sound precisely
+ * because they are the row's key: every messageId in the row carries the same
+ * text, file and line, and differs only in its component.
  */
 export function groupName(data: PreparedErrors, row: ErrorGroupRow): string {
     if (row.key === null) {
-        const file = data.msgFile[row.gid];
-        const line = data.msgLine[row.gid];
-        row.key =
-            data.msgText[row.gid]! + (file ? ` ${file}${line != null ? `:${line}` : ''}` : '');
+        const mid = representativeMid(data, row.gid);
+        const file = data.msgFile[mid];
+        const line = data.msgLine[mid];
+        row.key = data.msgText[mid]! + (file ? ` ${file}${line != null ? `:${line}` : ''}` : '');
     }
     return row.key;
+}
+
+/**
+ * A message-view row's first messageId, for the fields its key determines.
+ *
+ * The kind, the text, the file and the line are identical across every
+ * messageId in a location group — that *is* the grouping key — so "the first
+ * one" is not an arbitrary pick for those four fields, and the merge is only
+ * safe for them. The **component** is the field that varies, and reading it off
+ * this messageId would be the arbitrary pick; `componentSummary` exists so the
+ * renderer never has to.
+ */
+export function representativeMid(data: PreparedErrors, gid: number): number {
+    return data.locGroupMids[gid]![0]!;
+}
+
+// --- the component summary ------------------------------------------------
+
+/**
+ * Every component behind one row, most occurrences first.
+ *
+ * This is the page's half of the summary: the *aggregation*, which is
+ * page-shaped because it walks the row's CSR run over the markers. The
+ * *decision* — whether to name a leader, and how to word it — is
+ * `componentSummary` in `lib/query/error-ranking.ts`, imported rather than
+ * restated so the page and `fx-tests errors` cannot drift apart on it.
+ *
+ * The counts are summed over the row's marker groups, so a location emitted
+ * under two components contributes to both, and the shares sum to the row's
+ * count.
+ */
+export function componentBreakdown(data: PreparedErrors, row: ErrorGroupRow): ComponentShare[] {
+    const totals = new Map<string, number>();
+    const markers = data.raw.markers;
+    const mids = markers.messageIds;
+    const { gStart, order } = getCsr(data, 'message');
+
+    for (let j = gStart[row.gid]!, end = gStart[row.gid + 1]!; j < end; j++) {
+        const i = order[j]!;
+        const component = data.msgComp[mids[i]!]!;
+        totals.set(component, (totals.get(component) ?? 0) + data.groupTotal[i]!);
+    }
+
+    return sortComponents(totals);
+}
+
+/**
+ * The full breakdown as tooltip text — the shared lines, joined by newlines.
+ *
+ * A `title` attribute renders `\n` as a line break, so the shared
+ * `componentBreakdownLines` serves both this and the CLI's indented block
+ * without either having to know how the other lays it out.
+ */
+export function componentBreakdownTitle(shares: readonly ComponentShare[]): string | null {
+    if (shares.length === 0) {
+        return null;
+    }
+    return componentBreakdownLines(shares).join('\n');
 }
 
 /** A row's value in one column. `colValue` (`errors.html:589-595`). */

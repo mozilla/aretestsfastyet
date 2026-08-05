@@ -155,10 +155,10 @@
  *  5. **A message with a line and no file still renders without either.**
  *     `groupName` nests the line inside the file (`:493-494`), so a message the
  *     grouping distinguished *by line* is displayed by its text alone.
- *     Measured: **16 of 1,078** messages on the pinned xpcshell 2026-08-04 file
- *     have a line and no file. Reproduced, because changing it changes the row
- *     label a reader compares against the old page. Note the sort by name is
- *     affected too: two such rows sort as equal.
+ *     Measured: **16 of the 1,078 messageIds** on the pinned xpcshell
+ *     2026-08-04 file have a line and no file. Reproduced, because changing it
+ *     changes the row label a reader compares against the old page. Note the
+ *     sort by name is affected too: two such rows sort as equal.
  *
  *  6. **The "Show Last 21 Days" and "Load task details" buttons are deliberately
  *     omitted, because the data they ask for does not exist.** This is the one
@@ -256,6 +256,48 @@
  *     uses `escapeHtml` there, which does escape `&` — so only the tooltip
  *     differs.
  *
+ *  9. **The message view's row unit drops the component, and every row now
+ *     carries a component summary.** The one entry on this list that is a
+ *     **deliberate product change** rather than a migration decision — the rest
+ *     describe how the same behaviour is reached; this one changes what the
+ *     page shows, on purpose.
+ *
+ *     Upstream's row is one **`messageId`**, which the format defines as a
+ *     distinct (kind, text, file, line, **component**) tuple. But the component
+ *     is not a property of the message: the message is emitted at a `file:line`,
+ *     and the component is whichever test happened to be running when it
+ *     printed. Keying on it splits one message into several rows for a reason
+ *     that says nothing about the message — and the page already has a separate
+ *     component view for the component question.
+ *
+ *     **Measured on the pinned xpcshell 2026-08-04 file:**
+ *
+ *     | | old | new |
+ *     | --- | --- | --- |
+ *     | message-view rows | **1,078** | **870** |
+ *     | rows for `TargetingContextRecorder: Could not get "addonsInfo"` | 9, of 30,856 / 232 / 140 / 12 / 10 / 9 / 7 / 3 / 2 | **1, of 31,271** |
+ *     | rows for `uncaught exception: Object` at that location | 61 | **1, of 3,437** |
+ *
+ *     36 keys hold more than one messageId, and **0 of the 36** differ by
+ *     anything other than the component — so the merge loses nothing but the
+ *     split. Occurrences are conserved exactly: both groupings sum to 315,376.
+ *
+ *     What replaces the split is a **component summary on the row**, in the
+ *     component column upstream already had. One component reads as itself; a
+ *     row where one component holds a strict majority reads
+ *     `Firefox :: Nimbus Desktop Client  +8 more`; a row where none does reads
+ *     `61 components` and names nobody. The `title` carries the full breakdown,
+ *     biggest first, capped at twelve with a line saying how many components
+ *     and how many occurrences were dropped. The threshold and the cap are
+ *     documented with the distributions they came from in
+ *     `lib/query/error-ranking.ts`, which is where the rule lives so that
+ *     `fx-tests errors` shows the same words on the same row.
+ *
+ *     The other two views are untouched: the test view still groups by test
+ *     path and the component view still groups by component, and
+ *     `test/errors-parity.test.ts` asserts both against `--group-by test` and
+ *     `--group-by component`.
+ *
  * Two things worth naming that are **not** divergences, both measured rather
  * than assumed:
  *
@@ -269,19 +311,19 @@
  *   the divergence list because both pages print the same wrong string.
  * - **The virtualized list.** Kept, including its 50-row chunks, its 600px
  *   observer margin, its measured row height and its pinned chunk. It is not
- *   decoration: the pinned mochitest 2026-08-03 file produces **35,474
+ *   decoration: the pinned mochitest 2026-08-03 file produces **31,530
  *   message-view rows**, and the list is what keeps the DOM small — measured at
- *   first paint on the *xpcshell* 2026-08-04 page (1,078 rows), **529 elements
+ *   first paint on the *xpcshell* 2026-08-04 page (870 rows), **529 elements
  *   under `#content` for the 50 rows actually rendered**. Both pages render the
  *   same 50, which is why every `renderedRows` in the browser comparison reads
  *   50 rather than the row count.
  *
- * Everything else — the row unit as one source location, the `message` default
- * view, the count-descending default sort re-asserted on every view change, the
- * `ascending = column === 'name'` rule, the seven checkboxes and their
- * view-dependent meaning, the double-click solo, the single-day default window,
- * the absence of any run-count normalization, and the `#date&q&view&hide` state
- * including `q` clearing the box — is reproduced.
+ * Everything else — the `message` default view, the count-descending default
+ * sort re-asserted on every view change, the `ascending = column === 'name'`
+ * rule, the seven checkboxes and their view-dependent meaning, the double-click
+ * solo, the single-day default window, the absence of any run-count
+ * normalization, and the `#date&q&view&hide` state including `q` clearing the
+ * box — is reproduced.
  */
 
 import type { ErrorsFile } from '../lib/formats/errors.ts';
@@ -303,6 +345,9 @@ import {
     buildDetail,
     buildGroupRows,
     colValue,
+    componentBreakdown,
+    componentBreakdownTitle,
+    componentSummary,
     ensureHaystacks,
     formatHidden,
     groupName,
@@ -317,6 +362,7 @@ import {
     pctTitle,
     prepareErrors,
     readUrlState,
+    representativeMid,
     soloKind,
     sortRows,
     visibleRows,
@@ -672,7 +718,10 @@ function renderGroupRow(currentView: ErrorView, row: ErrorGroupRow, index: numbe
     element.dataset['group'] = String(index);
 
     if (currentView === 'message') {
-        element.append(diagnosticMain(row.gid));
+        // `row.gid` is a location id, so the diagnostic's kind, text, file and
+        // line come off any of its messageIds — they are the key. Only the
+        // component varies, and that is what the summary span answers.
+        element.append(diagnosticMain(representativeMid(data!, row.gid), summaryComponentSpan(row)));
     } else {
         // `g.key || '(no test)'` — an empty label, which the component view's
         // sentinel and a root-level test path can both produce. The `title`
@@ -761,8 +810,15 @@ function renderStats(
  * `diagnosticMain` (`errors.html:616-629`). Used for message-view top rows and
  * for test/component-view sub-rows — the same element in both places, which is
  * why it takes a `messageId` rather than a row.
+ *
+ * The **component span is the one part the two callers disagree about**, so it
+ * is passed in rather than read here. A sub-row under a test or a component row
+ * really is one `messageId`, so it names that one component and nothing else. A
+ * message-view row is a source location that several components may have hit,
+ * and reading `msgComp` off any single one of its messageIds would print an
+ * arbitrary pick as though it were the answer — see `componentSummary`.
  */
-function diagnosticMain(messageId: number): HTMLElement {
+function diagnosticMain(messageId: number, component: HTMLElement): HTMLElement {
     const d = data!;
     const kind = d.markerNames[d.msgKindId[messageId]!]!;
     const file = d.msgFile[messageId];
@@ -780,8 +836,33 @@ function diagnosticMain(messageId: number): HTMLElement {
     if (file) {
         main.append(el('span', { class: 'marker-loc', children: [searchfoxLink(file, line)] }));
     }
-    main.append(el('span', { class: 'marker-component', text: d.msgComp[messageId]! }));
+    main.append(component);
     return main;
+}
+
+/** The component span for one messageId: its component, and nothing else. */
+function oneComponentSpan(messageId: number): HTMLElement {
+    return el('span', { class: 'marker-component', text: data!.msgComp[messageId]! });
+}
+
+/**
+ * The component span for a message-view row: the summary, with the full
+ * breakdown as its tooltip.
+ *
+ * The breakdown is computed here rather than on the row because it walks the
+ * row's CSR run, and the virtualized list only ever renders the ~50 rows on
+ * screen — doing it for all 31,530 mochitest rows at grouping time would be
+ * work for rows the reader never scrolls to.
+ */
+function summaryComponentSpan(row: ErrorGroupRow): HTMLElement {
+    const shares = componentBreakdown(data!, row);
+    const summary = componentSummary(shares);
+    const title = componentBreakdownTitle(shares);
+    return el('span', {
+        class: `marker-component${shares.length > 1 ? ' marker-component-many' : ''}`,
+        ...(title === null ? {} : { title }),
+        text: summary ?? '',
+    });
 }
 
 /** The Searchfox link on a `file:line`. `searchfoxFileLink` (`errors.html:601`). */
@@ -885,8 +966,8 @@ function renderSubRow(currentView: ErrorView, sub: SubGroup, index: number): HTM
             })
         );
     } else {
-        // The sub is a diagnostic.
-        element.append(diagnosticMain(sub.key));
+        // The sub is a diagnostic — one messageId, so one component.
+        element.append(diagnosticMain(sub.key, oneComponentSpan(sub.key)));
     }
 
     const tooltip = pctTitle(sub.count, totals.count);

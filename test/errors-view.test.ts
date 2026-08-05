@@ -45,6 +45,7 @@ import {
     INITIAL_SORT,
     KIND_SLUG,
     KIND_SLUGS,
+    MAX_BREAKDOWN_ROWS,
     NO_MESSAGE,
     UNKNOWN_COMPONENT,
     VIEW_COLS,
@@ -52,6 +53,10 @@ import {
     buildDetail,
     buildGroupRows,
     colValue,
+    componentBreakdown,
+    componentBreakdownTitle,
+    componentSummary,
+    dominates,
     ensureHaystacks,
     formatHidden,
     getCsr,
@@ -501,6 +506,361 @@ test('message-view rows carry the right counts and the right distinct-test count
     assert.equal(totals.count, 112);
     assert.equal(totals.tests, 4);
     assert.equal(totals.messages, null, 'the message view computes no Messages total');
+});
+
+// =========================================================================
+// The component merge
+// =========================================================================
+
+/**
+ * A second hand-authored file, for the message view's component merge.
+ *
+ * `TINY` deliberately has no two messages differing **only** by component, so
+ * it cannot exercise the merge; and its arithmetic is cited by a dozen
+ * assertions, so growing it would mean re-deriving all of them. This file
+ * carries the case instead, and its numbers are equally hand-checkable.
+ *
+ * ## The messages — three locations, seven messageIds
+ *
+ * | mid | kind | text | file | line | component |
+ * | --- | --- | --- | --- | --- | --- |
+ * | 0 | `C++ warning` | `spread` | `s.cpp` | 1 | `Core :: XPCOM` |
+ * | 1 | `C++ warning` | `spread` | `s.cpp` | 1 | `Core :: DOM` |
+ * | 2 | `C++ warning` | `spread` | `s.cpp` | 1 | `Toolkit :: Places` |
+ * | 3 | `C++ warning` | `spread` | `s.cpp` | 1 | `Core :: Networking` |
+ * | 4 | `console.error` | `lead` | `l.js` | 2 | `Core :: XPCOM` |
+ * | 5 | `console.error` | `lead` | `l.js` | 2 | `Core :: DOM` |
+ * | 6 | `console.error` | `alone` | `a.js` | 3 | `Core :: DOM` |
+ *
+ * So mids 0-3 are **one row**, mids 4-5 are **one row**, mid 6 is its own —
+ * three rows from seven messageIds. Nothing but the component differs inside
+ * either merged group, which is the property the merge relies on.
+ *
+ * ## The marker groups, and the three cases they build
+ *
+ * | g | test | msg | count |
+ * | --- | --- | --- | --- |
+ * | 0 | 0 | 0 | 3 |
+ * | 1 | 0 | 1 | 3 |
+ * | 2 | 1 | 2 | 2 |
+ * | 3 | 1 | 3 | 2 |
+ * | 4 | 0 | 4 | 90 |
+ * | 5 | 1 | 5 | 10 |
+ * | 6 | 0 | 6 | 7 |
+ *
+ * - **`spread s.cpp:1`** is 3+3+2+2 = **10** over four components of 3, 3, 2
+ *   and 2. The leader holds 3 of 10 — not a majority, and 3 is *tied* with
+ *   another component, so this is both the spread case and the tie case in one
+ *   row. It must read `4 components`.
+ * - **`lead l.js:2`** is 90+10 = **100** over two components. `Core :: XPCOM`
+ *   holds 90, a clear majority, so it must read `Core :: XPCOM  +1 more`.
+ * - **`alone a.js:3`** is **7** in one component, and must read that component
+ *   with no suffix.
+ *
+ * Grand total **117** = 3+3+2+2+90+10+7, and 10+100+7 = 117 as rows, which is
+ * the conservation the merge must not break.
+ */
+const MERGE: ErrorsFile = {
+    metadata: {
+        date: '2026-08-04',
+        startTime: 1785801600,
+        generatedAt: '2026-08-05T00:00:00.000Z',
+        jobCount: 2,
+        processedJobCount: 2,
+        invalidJobCount: 0,
+        markerCounts: { 'C++ warning': 10, 'console.error': 107 },
+    },
+    tables: {
+        jobNames: ['linux-opt-xpcshell'],
+        testPaths: ['dom/base/test'],
+        testNames: ['test_a.js', 'test_b.js'],
+        repositories: ['mozilla-central'],
+        taskIds: ['AAA.0'],
+        components: ['Core :: XPCOM', 'Core :: DOM', 'Toolkit :: Places', 'Core :: Networking'],
+        commitIds: ['abc123'],
+        markerNames: ['C++ warning', 'console.error'],
+        messageTexts: ['spread', 'lead', 'alone'],
+        files: ['s.cpp', 'l.js', 'a.js'],
+    },
+    messages: {
+        markerNameIds: [0, 0, 0, 0, 1, 1, 1],
+        textIds: [0, 0, 0, 0, 1, 1, 2],
+        fileIds: [0, 0, 0, 0, 1, 1, 2],
+        lines: [1, 1, 1, 1, 2, 2, 3],
+        componentIds: [0, 1, 2, 3, 0, 1, 1],
+    },
+    taskInfo: { repositoryIds: [0], jobNameIds: [0], commitIds: [0] },
+    testInfo: { testPathIds: [0, 0], testNameIds: [0, 1], componentIds: [0, 1] },
+    markers: {
+        testIds: [0, 0, 1, 1, 0, 1, 0],
+        messageIds: [0, 1, 2, 3, 4, 5, 6],
+        taskIdIds: [[0], [0], [0], [0], [0], [0], [0]],
+        counts: [[3], [3], [2], [2], [90], [10], [7]],
+    },
+};
+
+const merged = (): PreparedErrors => prepareErrors(structuredClone(MERGE));
+
+/**
+ * The absent-field collision the location key's sentinel exists to prevent.
+ *
+ * The key is built from raw table ids, so "no file" has to be encoded as
+ * something outside the id space. `NO_ID = -1` is; **0 is not**, because the
+ * tables are dense from 0 — with `NO_ID = 0`, a message with no file would key
+ * the same as one whose file is `tables.files[0]`.
+ *
+ * ## Why this needs its own fixture, measured
+ *
+ * The mutation `NO_ID = 0` is a **no-op on all four checked-in and pinned
+ * files** — 51/51 keys on the xpcshell fixture, 60/60 on the mochitest one,
+ * 870/870 on the pinned xpcshell 2026-08-04 file and 31,530/31,530 on the
+ * pinned mochitest one — even though the last two carry 241 and 9,844 messages
+ * with no file. The collision needs the *other three* fields to match as well,
+ * and no real file happens to contain such a pair. So this file makes one.
+ *
+ * Three messages, all `C++ warning` with text id 0 and line 5:
+ *
+ * | mid | file | what it is |
+ * | --- | --- | --- |
+ * | 0 | `tables.files[0]` = `zero.cpp` | the real file at index 0 |
+ * | 1 | **absent** | the message with no file |
+ * | 2 | `tables.files[0]` = `zero.cpp` | a second one at index 0, different component |
+ *
+ * Correct: **two** rows — mids 0 and 2 merge (same location, two components),
+ * mid 1 is its own row. With `NO_ID = 0`: **one** row of all three, because
+ * mid 1's absent file encodes as the same `0`.
+ */
+const SENTINEL: ErrorsFile = {
+    metadata: {
+        date: '2026-08-04',
+        startTime: 1785801600,
+        generatedAt: '2026-08-05T00:00:00.000Z',
+        jobCount: 1,
+        processedJobCount: 1,
+        invalidJobCount: 0,
+        markerCounts: { 'C++ warning': 111 },
+    },
+    tables: {
+        jobNames: ['linux-opt-xpcshell'],
+        testPaths: ['dom/base/test'],
+        testNames: ['test_a.js'],
+        repositories: ['mozilla-central'],
+        taskIds: ['AAA.0'],
+        components: ['Core :: XPCOM', 'Core :: DOM'],
+        commitIds: ['abc123'],
+        markerNames: ['C++ warning'],
+        messageTexts: ['same text'],
+        files: ['zero.cpp'],
+    },
+    messages: {
+        markerNameIds: [0, 0, 0],
+        textIds: [0, 0, 0],
+        // The whole point: index 0, absent, index 0.
+        fileIds: [0, null, 0],
+        lines: [5, 5, 5],
+        componentIds: [0, 0, 1],
+    },
+    taskInfo: { repositoryIds: [0], jobNameIds: [0], commitIds: [0] },
+    testInfo: { testPathIds: [0], testNameIds: [0], componentIds: [0] },
+    markers: {
+        testIds: [0, 0, 0],
+        messageIds: [0, 1, 2],
+        taskIdIds: [[0], [0], [0]],
+        counts: [[100], [1], [10]],
+    },
+};
+
+test('a message with no file does not merge with the file at table index 0', () => {
+    const data = prepareErrors(structuredClone(SENTINEL));
+    const { rows } = buildGroupRows(data, 'message', allOn(data), INITIAL_SORT);
+
+    // Two rows, not one and not three.
+    assert.equal(rows.length, 2, 'the fileless message is its own row');
+
+    const byCount = new Map(rows.map((row) => [row.count, row]));
+    // mids 0 and 2 are both `zero.cpp:5`: 100 + 10 = 110, over two components.
+    // mid 1 has no file: 1, alone. 110 + 1 = 111, the grand total.
+    assert.deepEqual(
+        rows.map((row) => row.count).sort((a, b) => b - a),
+        [110, 1]
+    );
+    assert.equal(
+        rows.reduce((sum, row) => sum + row.count, 0),
+        111,
+        'and nothing is lost: 100 + 1 + 10'
+    );
+
+    // The merged row names `zero.cpp:5`; the lone one names its text only,
+    // because `groupName` nests the line inside the file.
+    assert.equal(groupName(data, byCount.get(110)!), 'same text zero.cpp:5');
+    assert.equal(groupName(data, byCount.get(1)!), 'same text');
+
+    // The merged row spans two components and the fileless one spans one, so
+    // the summaries differ — which they could not if all three had merged.
+    assert.equal(componentSummary(componentBreakdown(data, byCount.get(110)!)), 'Core :: XPCOM  +1 more');
+    assert.equal(componentSummary(componentBreakdown(data, byCount.get(1)!)), 'Core :: XPCOM');
+
+    // And the two messageIds that did merge are the two with the file.
+    assert.deepEqual([...data.locGroupMids[byCount.get(110)!.gid]!], [0, 2]);
+    assert.deepEqual([...data.locGroupMids[byCount.get(1)!.gid]!], [1]);
+});
+
+test('the message view merges messageIds that differ only by component', () => {
+    const data = merged();
+    const { rows, totals } = buildGroupRows(data, 'message', allOn(data), INITIAL_SORT);
+
+    // Seven messageIds, three rows. A page still keyed on messageId shows 7.
+    assert.equal(rows.length, 3, 'seven messageIds collapse to three source locations');
+    assert.equal(data.msgComp.length, 7, 'and there really were seven messageIds');
+
+    const byName = new Map(rows.map((row) => [groupName(data, row), row]));
+    // 3+3+2+2 = 10, 90+10 = 100, 7. Summed from the group table, not from the
+    // implementation.
+    assert.equal(byName.get('spread s.cpp:1')!.count, 10);
+    assert.equal(byName.get('lead l.js:2')!.count, 100);
+    assert.equal(byName.get('alone a.js:3')!.count, 7);
+
+    // Conservation: 10 + 100 + 7 = 117 = the grand total, and the raw group
+    // counts sum to the same. Both sides derived from the literals above, so
+    // this is not the merge grading itself.
+    assert.equal(
+        rows.reduce((sum, row) => sum + row.count, 0),
+        117
+    );
+    assert.equal(
+        MERGE.markers.counts.reduce((sum, cs) => sum + (cs as number[])[0]!, 0),
+        117,
+        'and that is what the raw group counts add up to'
+    );
+    assert.equal(totals.count, 117);
+
+    // The distinct-test counts survive the merge as a union, not a sum: the
+    // `spread` row is tests 0 and 1, and adding its four messageIds' test
+    // counts would give 4.
+    assert.equal(byName.get('spread s.cpp:1')!.testCount, 2);
+    assert.equal(byName.get('lead l.js:2')!.testCount, 2);
+    assert.equal(byName.get('alone a.js:3')!.testCount, 1);
+});
+
+test('the component breakdown is every component of a row, biggest first', () => {
+    const data = merged();
+    const { rows } = buildGroupRows(data, 'message', allOn(data), INITIAL_SORT);
+    const byName = new Map(rows.map((row) => [groupName(data, row), row]));
+
+    // Ties broken by name: `Core :: DOM` before `Core :: XPCOM` at 3 each, and
+    // `Core :: Networking` before `Toolkit :: Places` at 2 each. Without the
+    // name tie-break this would come out in `tables.components` order, which is
+    // XPCOM, DOM, Places, Networking — a different answer, so the assertion
+    // distinguishes the two.
+    assert.deepEqual(componentBreakdown(data, byName.get('spread s.cpp:1')!), [
+        { component: 'Core :: DOM', count: 3 },
+        { component: 'Core :: XPCOM', count: 3 },
+        { component: 'Core :: Networking', count: 2 },
+        { component: 'Toolkit :: Places', count: 2 },
+    ]);
+    assert.deepEqual(componentBreakdown(data, byName.get('lead l.js:2')!), [
+        { component: 'Core :: XPCOM', count: 90 },
+        { component: 'Core :: DOM', count: 10 },
+    ]);
+    assert.deepEqual(componentBreakdown(data, byName.get('alone a.js:3')!), [
+        { component: 'Core :: DOM', count: 7 },
+    ]);
+
+    // Each breakdown sums to its row's count, so nothing is attributed twice.
+    for (const row of rows) {
+        assert.equal(
+            componentBreakdown(data, row).reduce((sum, share) => sum + share.count, 0),
+            row.count,
+            `${groupName(data, row)}: the breakdown accounts for the whole row`
+        );
+    }
+});
+
+test('the summary names a leader only on a strict majority', () => {
+    const data = merged();
+    const { rows } = buildGroupRows(data, 'message', allOn(data), INITIAL_SORT);
+    const byName = new Map(rows.map((row) => [groupName(data, row), row]));
+    const summaryOf = (name: string): string | null =>
+        componentSummary(componentBreakdown(data, byName.get(name)!));
+
+    // 90 of 100 — a majority, so the leader is named and the rest are counted.
+    assert.equal(summaryOf('lead l.js:2'), 'Core :: XPCOM  +1 more');
+    // 3 of 10 over four components — no majority, and the top two are tied, so
+    // naming either would report the tie-break as a finding.
+    assert.equal(summaryOf('spread s.cpp:1'), '4 components');
+    // One component reads as itself, with no suffix and no count.
+    assert.equal(summaryOf('alone a.js:3'), 'Core :: DOM');
+
+    // The boundary, exercised on values rather than through a fixture: a strict
+    // majority names a leader and an exact half does not. `dominates` is the
+    // whole of the rule, so this is where a `>=` mutation dies.
+    assert.equal(dominates(51, 100), true, '51 of 100 is a majority');
+    assert.equal(dominates(50, 100), false, 'an even split is not a leader');
+    assert.equal(dominates(49, 100), false);
+    // Odd totals, where "half" is not an integer and a `count / 2` rounding
+    // mistake would show: 2 of 3 leads, 1 of 3 does not.
+    assert.equal(dominates(2, 3), true);
+    assert.equal(dominates(1, 3), false);
+
+    // And the summary follows `dominates` rather than reimplementing it: a
+    // two-component even split reports the spread.
+    assert.equal(
+        componentSummary([
+            { component: 'A', count: 17 },
+            { component: 'B', count: 17 },
+        ]),
+        '2 components'
+    );
+    assert.equal(
+        componentSummary([
+            { component: 'A', count: 18 },
+            { component: 'B', count: 17 },
+        ]),
+        'A  +1 more'
+    );
+    assert.equal(componentSummary([]), null, 'no components, no summary');
+});
+
+test('the breakdown tooltip lists every component until it truncates', () => {
+    const data = merged();
+    const { rows } = buildGroupRows(data, 'message', allOn(data), INITIAL_SORT);
+    const byName = new Map(rows.map((row) => [groupName(data, row), row]));
+
+    // Four components, under the cap, so every one is listed with its count and
+    // there is no "and N more" line.
+    assert.equal(
+        componentBreakdownTitle(componentBreakdown(data, byName.get('spread s.cpp:1')!)),
+        'Core :: DOM  3\nCore :: XPCOM  3\nCore :: Networking  2\nToolkit :: Places  2'
+    );
+    assert.equal(
+        componentBreakdownTitle(componentBreakdown(data, byName.get('lead l.js:2')!)),
+        'Core :: XPCOM  90\nCore :: DOM  10'
+    );
+    assert.equal(componentBreakdownTitle([]), null);
+
+    // Above the cap it truncates, and says how many were dropped and how many
+    // occurrences they hold. Built here rather than from a fixture so the
+    // arithmetic is visible: 20 components of 100, 99, 98 … 81.
+    const many = Array.from({ length: 20 }, (_, i) => ({
+        component: `C${i}`,
+        count: 100 - i,
+    }));
+    const title = componentBreakdownTitle(many)!;
+    const lines = title.split('\n');
+    assert.equal(lines.length, MAX_BREAKDOWN_ROWS + 1, 'twelve components plus the tail line');
+    assert.equal(lines[0], 'C0  100');
+    assert.equal(lines[MAX_BREAKDOWN_ROWS - 1], 'C11  89');
+    // The dropped eight are C12…C19, i.e. 88+87+…+81 = 676. Summed by hand:
+    // eight terms averaging 84.5, so 8 × 84.5 = 676.
+    assert.equal(lines[MAX_BREAKDOWN_ROWS], '… and 8 more, 676 occurrences');
+    // The shown twelve (100…89, twelve terms averaging 94.5 = 1,134) plus the
+    // dropped 676 is 1,810, which is the whole population — so the tooltip
+    // accounts for every occurrence even when it truncates.
+    assert.equal(
+        many.reduce((sum, share) => sum + share.count, 0),
+        1810
+    );
+    assert.equal(1134 + 676, 1810);
 });
 
 test('the test view merges two testInfo entries with the same path and name', () => {
@@ -1194,6 +1554,34 @@ const REAL: { name: string; file: ErrorsFile }[] = ['xpcshell', 'mochitest'].map
     ) as ErrorsFile,
 }));
 
+/**
+ * The message view's row key, rebuilt from the raw JSON.
+ *
+ * Independent of `errors-view.ts` on purpose — it reads `file.messages` and
+ * `file.tables` directly and never calls `prepareErrors`, so an expectation
+ * built with it is not the implementation grading itself. It is deliberately
+ * written a *different* way too: `errors-view.ts` interns table ids, this joins
+ * the resolved strings, so the two agree only if both mean the same thing.
+ *
+ * The separator and the absent-marker are the control bytes the rest of the
+ * project uses, for the reason `lib/query/error-ranking.ts` records: a
+ * printable one lets a message text containing a colon build the same key as a
+ * different message and silently merge.
+ */
+function rawLocationKey(file: ErrorsFile, mid: number): string {
+    const SEP = '\u001f';
+    const ABSENT = '\u0001';
+    const textId = file.messages.textIds[mid];
+    const fileId = file.messages.fileIds[mid];
+    const line = file.messages.lines[mid];
+    return [
+        file.tables.markerNames[file.messages.markerNameIds[mid]!]!,
+        textId != null ? file.tables.messageTexts[textId]! : ABSENT,
+        fileId != null ? file.tables.files[fileId]! : ABSENT,
+        line != null ? String(line) : ABSENT,
+    ].join(SEP);
+}
+
 test('the real fixtures group to counts an independent walk agrees with', () => {
     for (const { name, file } of REAL) {
         // A second, independent walk over the raw JSON. Nothing here calls
@@ -1201,16 +1589,16 @@ test('the real fixtures group to counts an independent walk agrees with', () => 
         const totalOf = (groupId: number): number =>
             file.markers.counts[groupId]!.reduce((a, b) => a + b, 0);
 
-        const perMessage = new Map<number, { count: number; tests: Set<number> }>();
+        const perLocation = new Map<string, { count: number; tests: Set<number> }>();
         let grand = 0;
         for (let g = 0; g < file.markers.testIds.length; g++) {
-            const mid = file.markers.messageIds[g]!;
+            const key = rawLocationKey(file, file.markers.messageIds[g]!);
             const total = totalOf(g);
             grand += total;
-            let entry = perMessage.get(mid);
+            let entry = perLocation.get(key);
             if (entry === undefined) {
                 entry = { count: 0, tests: new Set() };
-                perMessage.set(mid, entry);
+                perLocation.set(key, entry);
             }
             entry.count += total;
             entry.tests.add(file.markers.testIds[g]!);
@@ -1220,15 +1608,56 @@ test('the real fixtures group to counts an independent walk agrees with', () => 
         const { rows, totals } = buildGroupRows(data, 'message', allOn(data), INITIAL_SORT);
 
         assert.equal(totals.count, grand, `${name}: grand total`);
-        assert.equal(rows.length, perMessage.size, `${name}: one row per messageId`);
+        assert.equal(rows.length, perLocation.size, `${name}: one row per source location`);
         for (const row of rows) {
-            const expected = perMessage.get(row.gid)!;
-            assert.equal(row.count, expected.count, `${name}: message ${row.gid} count`);
+            // The row is matched to the walk's entry by the key rebuilt from
+            // the row's own representative message — so a row whose gid pointed
+            // at the wrong location would look the entry up under the wrong key
+            // and fail on the count, rather than being handed its own answer.
+            const key = rawLocationKey(file, data.locGroupMids[row.gid]![0]!);
+            const expected = perLocation.get(key);
+            assert.ok(expected !== undefined, `${name}: the walk has location ${key}`);
+            assert.equal(row.count, expected!.count, `${name}: location ${key} count`);
             assert.equal(
                 row.testCount,
-                expected.tests.size,
-                `${name}: message ${row.gid} distinct tests`
+                expected!.tests.size,
+                `${name}: location ${key} distinct tests`
             );
+            // Every messageId folded into the row really does share the key,
+            // which is the property that makes reading the text, file and line
+            // off the first one sound.
+            for (const mid of data.locGroupMids[row.gid]!) {
+                assert.equal(rawLocationKey(file, mid), key, `${name}: ${key} is homogeneous`);
+            }
+        }
+
+        // The merge conserves: the rows sum to the same total the per-messageId
+        // walk does, so nothing was dropped or double-counted by folding.
+        const perMessage = new Map<number, number>();
+        for (let g = 0; g < file.markers.testIds.length; g++) {
+            const mid = file.markers.messageIds[g]!;
+            perMessage.set(mid, (perMessage.get(mid) ?? 0) + totalOf(g));
+        }
+        assert.equal(
+            rows.reduce((sum, row) => sum + row.count, 0),
+            [...perMessage.values()].reduce((sum, count) => sum + count, 0),
+            `${name}: merging conserves the grand total`
+        );
+        // And the xpcshell fixture really does merge something, so the
+        // conservation check above is not vacuous there. 54 messages over 51
+        // locations, read off the raw file.
+        const locations = new Set(
+            [...perMessage.keys()].map((mid) => rawLocationKey(file, mid))
+        );
+        if (name === 'xpcshell') {
+            assert.equal(perMessage.size, 54, 'xpcshell: 54 messageIds carry markers');
+            assert.equal(locations.size, 51, 'xpcshell: over 51 source locations');
+            assert.equal(rows.length, 51, 'xpcshell: and the page shows 51 rows');
+        } else {
+            // The mochitest fixture merges nothing — 60 messages, 60 locations —
+            // which is why the conservation check needs the xpcshell one to
+            // mean anything.
+            assert.equal(perMessage.size, locations.size, `${name}: nothing to merge`);
         }
 
         // And the distinct-test total is the union, not a sum of the column.
@@ -1284,17 +1713,46 @@ test('the CSR buckets partition the markers exactly, for every view', () => {
                 seen[i] = 1;
             }
             // And every entry is in the run its group id names.
+            //
+            // The message view's expectation is built from the **raw** location
+            // key rather than from `data.locGroupId`, so a `getCsr` that
+            // bucketed by the wrong field cannot agree with itself: the check is
+            // that every marker in run `g` resolves to the same key, and that
+            // two runs never share one.
+            const keyOfRun = new Map<number, string>();
             for (let g = 0; g < csr.nGroups; g++) {
                 for (let j = csr.gStart[g]!; j < csr.gStart[g + 1]!; j++) {
                     const i = csr.order[j]!;
+                    if (view === 'message') {
+                        const key = rawLocationKey(file, file.markers.messageIds[i]!);
+                        const seen = keyOfRun.get(g);
+                        if (seen === undefined) {
+                            keyOfRun.set(g, key);
+                        } else {
+                            assert.equal(
+                                key,
+                                seen,
+                                `${name}/${view}: run ${g} mixes two source locations`
+                            );
+                        }
+                        continue;
+                    }
                     const expected =
-                        view === 'message'
-                            ? file.markers.messageIds[i]!
-                            : view === 'test'
-                              ? data.testGroupId[file.markers.testIds[i]!]!
-                              : data.compGroupId[file.markers.messageIds[i]!]!;
+                        view === 'test'
+                            ? data.testGroupId[file.markers.testIds[i]!]!
+                            : data.compGroupId[file.markers.messageIds[i]!]!;
                     assert.equal(expected, g, `${name}/${view}: marker ${i} in the wrong run`);
                 }
+            }
+            if (view === 'message') {
+                // Distinct runs hold distinct locations — the half that catches
+                // a CSR splitting one location across two runs, which the
+                // homogeneity check above would pass.
+                assert.equal(
+                    new Set(keyOfRun.values()).size,
+                    keyOfRun.size,
+                    `${name}/${view}: no source location is split across two runs`
+                );
             }
         }
     }

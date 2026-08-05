@@ -33,18 +33,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { type ErrorsFile, decodeErrors } from '../lib/formats/errors.ts';
-import { type ErrorGroup, rankErrors } from '../lib/query/error-ranking.ts';
 import {
+    type ErrorGroup,
+    componentSummary,
+    rankErrors,
+} from '../lib/query/error-ranking.ts';
+import {
+    type ErrorGroupRow,
     type PreparedErrors,
     INITIAL_SORT,
     KIND_SLUG,
     VIEW_COLS,
     buildGroupRows,
+    componentBreakdown,
     ensureHaystacks,
     groupName,
     kindMask,
     kindStates,
     prepareErrors,
+    representativeMid,
     soloKind,
     sortRows,
     visibleRows,
@@ -104,78 +111,130 @@ function cliRows(raw: ErrorsFile, options: Parameters<typeof rankErrors>[1] = {}
 // =========================================================================
 
 /**
- * The page's rows, folded onto the CLI's `location` key.
+ * The page's message-view rows, keyed the way the CLI keys its own.
  *
- * ## The divergence this function exists to bridge, which the comparison found
+ * ## There is no fold here any more, and that is the change
  *
- * The page's row unit is a **`messageId`**, which the format defines as a
- * distinct **(kind, text, file, line, component)** tuple. `lib/query/
- * error-ranking.ts`'s `location` key is **(kind, text, file, line)** — no
- * component. So one source location that different tests attribute to different
- * Bugzilla components is **several rows on the page and one row on the CLI**.
+ * This function used to *merge* the page's rows before comparing, because the
+ * page's row unit was the generator's **`messageId`** — a distinct
+ * (kind, text, file, line, **component**) tuple — while the CLI's `location`
+ * key is (kind, text, file, line). One source location that different tests
+ * attributed to different Bugzilla components was several rows on the page and
+ * one on the CLI, and the difference was declared as a divergence.
  *
- * Neither side is wrong and neither is a typo. The page's unit is the file's own
- * interning, so a row is exactly one thing the generator distinguished; the
- * CLI's key is what its module comment says — "the same text from two files is
- * two problems" — and a component is an attribute of the *test* rather than of
- * the source location, so folding it in makes `--group-by location` no longer
- * mean location.
+ * **The page now keys on (kind, text, file, line) too**, so the two sides
+ * produce the same rows and there is nothing to fold. The component was never a
+ * property of the message: the message is emitted at a `file:line` and the
+ * component is whichever test happened to be running when it printed, so
+ * keying on it split one message into rows for a reason that says nothing about
+ * the message. What both sides now do instead is *report* the component —
+ * `componentSummary` on the row, the full breakdown behind it — which is
+ * asserted below.
  *
- * **Measured, and it is not a corner case:**
+ * **Measured on the pinned xpcshell 2026-08-04 file:** 1,078 messageIds over
+ * **870** (kind, text, file, line) keys; **36** keys hold more than one
+ * messageId and **0 of the 36** differ by anything except the component. In the
+ * checked-in fixtures: xpcshell is 54 messageIds over 51 keys, mochitest 60
+ * over 60.
  *
- * | file | messages | location keys | rows the CLI merges away | occurrences in them |
- * | --- | --- | --- | --- | --- |
- * | xpcshell 2026-08-04 (real) | 1,078 | 870 | 208 | 45,175 of 315,376 (14.3%) |
- * | xpcshell 2026-08-03 (real) | 1,066 | 868 | 198 | 29,908 of 225,067 (13.3%) |
- * | xpcshell fixture | 54 | 51 | 3 | 52 of 663 (7.8%) |
- * | mochitest fixture | 60 | 60 | 0 | 0 |
- *
- * Every merged key differed **only** by component — 36 of 36 on the real file —
- * so the component is the whole of the difference and there are no exact
- * duplicate messages.
- *
- * The concrete case in the xpcshell fixture:
- * `NS_ENSURE_TRUE(inst) failed StaticComponents.cpp:14484` is messageId 11
- * (`Toolkit :: Startup and Profile System`, 16 occurrences) and messageId 33
- * (`Firefox :: Address Bar`, 8) — two rows of 16 and 8 on the page, one row of
- * 24 on the CLI.
- *
- * So the value comparison folds the page's rows the CLI's way and then asserts
- * equality, which tests everything *except* the fold. The fold itself is a
- * declared divergence with its own entry, and the per-component rows are
- * asserted separately below.
+ * So this builds the comparison key and nothing else — no merging, no
+ * arithmetic — and the assertions that follow compare row for row.
  */
-function pageRowsFoldedToLocation(
+function pageRowsByLocation(
     page: PreparedErrors
-): Map<string, { count: number; tests: Set<number>; name: string }> {
+): Map<string, { count: number; tests: Set<number>; name: string; row: ErrorGroupRow }> {
     const { rows } = buildGroupRows(page, 'message', allOn(page), INITIAL_SORT);
-    const folded = new Map<string, { count: number; tests: Set<number>; name: string }>();
+    const byKey = new Map<
+        string,
+        { count: number; tests: Set<number>; name: string; row: ErrorGroupRow }
+    >();
     const markers = page.raw.markers;
 
     for (const row of rows) {
-        // The CLI's key, rebuilt from the page's own resolved fields.
+        // The CLI's key, rebuilt from the page's own resolved fields. Every
+        // messageId in the row shares these four by construction, so the
+        // representative one carries them.
+        const mid = representativeMid(page, row.gid);
         const key = [
-            page.msgKindId[row.gid],
-            page.msgText[row.gid],
-            page.msgFile[row.gid] ?? KEY_ABSENT,
-            page.msgLine[row.gid] ?? KEY_ABSENT,
+            page.msgKindId[mid],
+            page.msgText[mid],
+            page.msgFile[mid] ?? KEY_ABSENT,
+            page.msgLine[mid] ?? KEY_ABSENT,
         ].join(KEY_SEPARATOR);
-        let entry = folded.get(key);
-        if (entry === undefined) {
-            entry = { count: 0, tests: new Set(), name: groupName(page, row) };
-            folded.set(key, entry);
-        }
-        entry.count += row.count;
-        // The test spread has to be re-unioned rather than summed: two
-        // components' rows can name the same test, and adding their counts
-        // would overcount it. Walked off the raw markers.
+        assert.ok(!byKey.has(key), `the page's keys are distinct: ${key}`);
+        // The test spread is walked off the raw markers, independently of the
+        // page's own `testCount`, so the comparison is not the page grading
+        // itself. A row's messageIds are its whole membership.
+        const mids = new Set(page.locGroupMids[row.gid]!);
+        const tests = new Set<number>();
         for (let g = 0; g < markers.messageIds.length; g++) {
-            if (markers.messageIds[g] === row.gid) {
-                entry.tests.add(markers.testIds[g]!);
+            if (mids.has(markers.messageIds[g]!)) {
+                tests.add(markers.testIds[g]!);
             }
         }
+        byKey.set(key, { count: row.count, tests, name: groupName(page, row), row });
     }
-    return folded;
+    return byKey;
+}
+
+/**
+ * The same key, built from a CLI row.
+ *
+ * The kind is turned back into its `markerNames` index so the two keys are
+ * byte-comparable: the page carries a `markerNameId` and the CLI resolves it to
+ * a name, and comparing `0` against `'C++ warning'` would make every row miss.
+ */
+function cliKey(raw: ErrorsFile, row: ErrorGroup): string {
+    return [
+        raw.tables.markerNames.indexOf(row.kind!),
+        row.text ?? '(no message)',
+        row.file ?? KEY_ABSENT,
+        row.line ?? KEY_ABSENT,
+    ].join(KEY_SEPARATOR);
+}
+
+/**
+ * `[leader, total]` for every multi-component row, from a third walk.
+ *
+ * Neither `componentBreakdown` nor `rankErrors` is involved: this reads
+ * `raw.markers` and `raw.messages` and sums per (kind, text, file, line) key
+ * and per component. It exists so the threshold test's expected numbers are not
+ * produced by the code deciding the threshold — the failure mode this project
+ * has hit eight times.
+ *
+ * Ordered biggest total first, ties by leader, matching how the caller sorts.
+ */
+function rawMultiComponentLeaders(raw: ErrorsFile): [number, number][] {
+    const perKey = new Map<string, Map<string, number>>();
+    for (let g = 0; g < raw.markers.messageIds.length; g++) {
+        const mid = raw.markers.messageIds[g]!;
+        const textId = raw.messages.textIds[mid];
+        const fileId = raw.messages.fileIds[mid];
+        const componentId = raw.messages.componentIds[mid];
+        const key = [
+            raw.messages.markerNameIds[mid],
+            textId != null ? raw.tables.messageTexts[textId] : KEY_ABSENT,
+            fileId != null ? raw.tables.files[fileId] : KEY_ABSENT,
+            raw.messages.lines[mid] ?? KEY_ABSENT,
+        ].join(KEY_SEPARATOR);
+        const component =
+            componentId != null ? raw.tables.components[componentId]! : 'Unknown';
+        let components = perKey.get(key);
+        if (components === undefined) {
+            components = new Map();
+            perKey.set(key, components);
+        }
+        const count = (raw.markers.counts[g] as number[]).reduce((a, b) => a + b, 0);
+        components.set(component, (components.get(component) ?? 0) + count);
+    }
+
+    return [...perKey.values()]
+        .filter((components) => components.size > 1)
+        .map((components): [number, number] => {
+            const counts = [...components.values()];
+            return [Math.max(...counts), counts.reduce((a, b) => a + b, 0)];
+        })
+        .sort((a, b) => b[1] - a[1] || b[0] - a[0]);
 }
 
 test('parity: every message row has the same count and test spread on both sides', () => {
@@ -184,21 +243,20 @@ test('parity: every message row has the same count and test spread on both sides
 
         const cliByKey = new Map<string, ErrorGroup>();
         for (const row of cliRows(raw)) {
-            const key = [
-                raw.tables.markerNames.indexOf(row.kind!),
-                row.text ?? '(no message)',
-                row.file ?? KEY_ABSENT,
-                row.line ?? KEY_ABSENT,
-            ].join(KEY_SEPARATOR);
+            const key = cliKey(raw, row);
             assert.ok(!cliByKey.has(key), `${harness}: the CLI's keys are distinct`);
             cliByKey.set(key, row);
         }
 
-        const folded = pageRowsFoldedToLocation(page);
-        assert.ok(folded.size > 0, `${harness}: the page produced rows`);
-        assert.equal(folded.size, cliByKey.size, `${harness}: the same set of source locations`);
+        const byLocation = pageRowsByLocation(page);
+        assert.ok(byLocation.size > 0, `${harness}: the page produced rows`);
+        assert.equal(
+            byLocation.size,
+            cliByKey.size,
+            `${harness}: the same set of source locations`
+        );
 
-        for (const [key, entry] of folded) {
+        for (const [key, entry] of byLocation) {
             const cli = cliByKey.get(key);
             assert.ok(cli !== undefined, `${harness}: the CLI has a row for ${entry.name}`);
             assert.equal(entry.count, cli!.count, `${harness}: ${entry.name} occurrences`);
@@ -210,21 +268,21 @@ test('parity: every message row has the same count and test spread on both sides
         }
 
         // And the totals agree, which catches a row present on one side only.
-        const pageTotal = [...folded.values()].reduce((sum, row) => sum + row.count, 0);
+        const pageTotal = [...byLocation.values()].reduce((sum, row) => sum + row.count, 0);
         const cliTotal = [...cliByKey.values()].reduce((sum, row) => sum + row.count, 0);
         assert.equal(pageTotal, cliTotal, `${harness}: grand totals`);
     }
 });
 
-test('parity: the page splits a source location by component and the CLI does not', () => {
-    // The divergence found by the comparison above, asserted directly rather
-    // than only through the fold — so it fails if either side changes.
+test('parity: both sides merge a source location that several components hit', () => {
+    // What used to be a declared divergence, now asserted as agreement. The
+    // fixture case, read straight off the raw file rather than off either
+    // implementation.
     const { raw, page } = load('xpcshell');
 
     // Messages 11 and 33 are the same (kind, text, file, line) with different
-    // components. Read straight off the fixture.
-    const sameLocation = [11, 33];
-    for (const mid of sameLocation) {
+    // components.
+    for (const mid of [11, 33]) {
         assert.equal(raw.messages.markerNameIds[mid], raw.messages.markerNameIds[11]);
         assert.equal(raw.messages.textIds[mid], raw.messages.textIds[11]);
         assert.equal(raw.messages.fileIds[mid], raw.messages.fileIds[11]);
@@ -236,23 +294,54 @@ test('parity: the page splits a source location by component and the CLI does no
         'and the components differ, which is the whole of the difference'
     );
 
-    // The page shows them as two rows with two counts.
-    const { rows } = buildGroupRows(page, 'message', allOn(page), INITIAL_SORT);
-    const byGid = new Map(rows.map((row) => [row.gid, row]));
-    assert.equal(byGid.get(11)!.count, 16);
-    assert.equal(byGid.get(33)!.count, 8);
-    // With the *same* label, because the component is not in `groupName`.
-    assert.equal(groupName(page, byGid.get(11)!), groupName(page, byGid.get(33)!));
+    // Their occurrences, summed off the raw markers: 16 and 8, so the merged
+    // row must be 24 and neither 16 nor 8 may survive as a row of its own.
+    const rawCount = (mid: number): number => {
+        let total = 0;
+        for (let g = 0; g < raw.markers.messageIds.length; g++) {
+            if (raw.markers.messageIds[g] === mid) {
+                total += (raw.markers.counts[g] as number[]).reduce((a, b) => a + b, 0);
+            }
+        }
+        return total;
+    };
+    assert.equal(rawCount(11), 16);
+    assert.equal(rawCount(33), 8);
 
-    // The CLI shows one row of 24.
+    // The page now shows **one** row of 24, holding both messageIds.
+    const { rows } = buildGroupRows(page, 'message', allOn(page), INITIAL_SORT);
+    const gid = page.locGroupId[11]!;
+    assert.equal(page.locGroupId[33], gid, 'the two messageIds share a location id');
+    const merged = rows.filter((row) => row.gid === gid);
+    assert.equal(merged.length, 1, 'one row, not two');
+    assert.equal(merged[0]!.count, 24, '16 + 8');
+    assert.deepEqual(
+        [...page.locGroupMids[gid]!],
+        [11, 33],
+        'and it is those two messageIds it merged'
+    );
+
+    // The CLI shows the same one row of 24.
     const cli = cliRows(raw).find(
         (row) =>
             row.file === 'StaticComponents.cpp' &&
             row.line === 14484 &&
             (row.text ?? '').startsWith('NS_ENSURE_TRUE(inst)')
     );
-    assert.ok(cli !== undefined, 'the CLI has the merged row');
-    assert.equal(cli!.count, 24, '16 + 8, merged');
+    assert.ok(cli !== undefined, 'the CLI has the row');
+    assert.equal(cli!.count, 24);
+
+    // And no row on either side carries 16 or 8 alone at that location, which
+    // is what "merged" means and what a page still keyed on messageId would
+    // fail.
+    const atLocation = rows.filter(
+        (row) => groupName(page, row) === groupName(page, merged[0]!)
+    );
+    assert.deepEqual(
+        atLocation.map((row) => row.count),
+        [24],
+        'no unmerged remnant of the split'
+    );
 });
 
 test('parity: the test view agrees with `--group-by test`', () => {
@@ -306,15 +395,12 @@ test('parity: the full ranked sequence is identical, not just the set', () => {
     // The sort-key defect produced the same set in a different order, so this
     // compares position by position over the whole ranking rather than as sets.
     //
-    // The page's rows are folded onto the CLI's key first, for the reason
-    // `pageRowsFoldedToLocation` documents — comparing an unfolded page ranking
-    // against the CLI's would report the component split as an ordering
-    // difference at every position after the first merged row, which is a real
-    // divergence but not *this* one, and would drown it.
+    // The page's rows are keyed the CLI's way and ranked; no merging happens
+    // here any more, because the two sides group the same.
     for (const harness of HARNESSES) {
         const { raw, page } = load(harness);
 
-        const pageRanked = [...pageRowsFoldedToLocation(page).values()].sort(
+        const pageRanked = [...pageRowsByLocation(page).values()].sort(
             (a, b) => b.count - a.count
         );
         const cliRanked = cliRows(raw);
@@ -349,8 +435,8 @@ test('parity: the full ranked sequence is identical, not just the set', () => {
 });
 
 test('parity: sorting by tests produces the same test-count sequence on both sides', () => {
-    // Clicking the `Tests` header against `--sort tests`. Folded for the same
-    // reason as the occurrences ranking.
+    // Clicking the `Tests` header against `--sort tests`, keyed the same way as
+    // the occurrences ranking.
     //
     // ## What this can and cannot check, on these fixtures
     //
@@ -371,7 +457,7 @@ test('parity: sorting by tests produces the same test-count sequence on both sid
     for (const harness of HARNESSES) {
         const { raw, page } = load(harness);
 
-        const pageRanked = [...pageRowsFoldedToLocation(page).values()].sort(
+        const pageRanked = [...pageRowsByLocation(page).values()].sort(
             (a, b) => b.tests.size - a.tests.size
         );
         const cli = cliRows(raw, { sort: 'tests' });
@@ -558,24 +644,6 @@ test('parity: the declared page-vs-CLI divergences all still diverge', () => {
 
     const divergences: Divergence[] = [
         {
-            what: 'the row unit: one source location, or one per component of it',
-            reason:
-                'The page groups by messageId, which the format defines as ' +
-                '(kind, text, file, line, component); the CLI groups by (kind, text, file, ' +
-                'line) and leaves the component out. So one source location that different ' +
-                'tests attribute to different Bugzilla components is several rows on the page ' +
-                'and one on the CLI. Neither is a mistake: the page shows exactly what the ' +
-                'generator interned, which is what lets a reader filter by component; the ' +
-                "CLI's key is what --group-by location has to mean, since a component is an " +
-                'attribute of the test rather than of the source line, and folding it in ' +
-                'would make the flag name false. Measured on the pinned xpcshell 2026-08-04 ' +
-                'file: 1,078 messages over 870 location keys, so 208 rows differ, holding ' +
-                '45,175 of 315,376 occurrences (14.3%). Every merged key differed only by ' +
-                'component — 36 of 36 — so there are no exact duplicate messages.',
-            page: rows.length,
-            cli: cliLocation.length,
-        },
-        {
             what: 'what the free-text box searches',
             reason:
                 'The page has one box that matches message text, source file, component and ' +
@@ -622,4 +690,126 @@ test('parity: the declared page-vs-CLI divergences all still diverge', () => {
         buildGroupRows(page, 'message', allOn(page), INITIAL_SORT).totals.count,
         'the grand total is not a divergence'
     );
+    // **The row unit is no longer a divergence.** It was declared as one — the
+    // page keyed on messageId and the CLI on (kind, text, file, line) — and the
+    // page now keys the same way. `assertDeclaredDivergences` would fail a
+    // stale entry whose sides had converged, so the entry is gone rather than
+    // kept with equal numbers; this is the assertion that replaces it.
+    assert.equal(rows.length, cliLocation.length, 'the row unit is not a divergence');
+});
+
+// =========================================================================
+// The component summary
+// =========================================================================
+
+test('parity: both sides summarize a row’s components identically', () => {
+    // The information the merge would otherwise have thrown away. Both sides
+    // reach the same wording by different routes — the page walks its CSR run
+    // over the markers, the CLI accumulates a map while ranking — so this
+    // compares two aggregations, not one function against itself.
+    for (const harness of HARNESSES) {
+        const { raw, page } = load(harness);
+
+        const cliByKey = new Map<string, ErrorGroup>();
+        for (const row of cliRows(raw)) {
+            cliByKey.set(cliKey(raw, row), row);
+        }
+
+        const pageRows = pageRowsByLocation(page);
+        assert.equal(pageRows.size, cliByKey.size, `${harness}: the same rows`);
+
+        let multiComponent = 0;
+        for (const [key, entry] of pageRows) {
+            const cli = cliByKey.get(key)!;
+            const pageShares = componentBreakdown(page, entry.row);
+
+            // The full breakdown, component by component and count by count.
+            assert.deepEqual(
+                pageShares,
+                cli.components,
+                `${harness}: ${entry.name} component breakdown`
+            );
+            // And therefore the summary, which is the same rule applied to it.
+            assert.equal(
+                componentSummary(pageShares),
+                componentSummary(cli.components),
+                `${harness}: ${entry.name} component summary`
+            );
+
+            // Each side's breakdown accounts for the whole row, independently.
+            assert.equal(
+                pageShares.reduce((sum, share) => sum + share.count, 0),
+                entry.count,
+                `${harness}: ${entry.name} page breakdown sums to the row`
+            );
+            assert.equal(
+                cli.components.reduce((sum, share) => sum + share.count, 0),
+                cli.count,
+                `${harness}: ${entry.name} CLI breakdown sums to the row`
+            );
+
+            if (pageShares.length > 1) {
+                multiComponent++;
+            }
+        }
+
+        // The comparison is only worth anything if some row actually spans more
+        // than one component — otherwise every summary is "the one component"
+        // and a broken threshold would pass. The xpcshell fixture has 3 such
+        // rows and the mochitest fixture has **0**, measured off the raw file,
+        // so the check is asserted where it exists and its absence is asserted
+        // where it does not.
+        const expectedMulti = harness === 'xpcshell' ? 3 : 0;
+        assert.equal(
+            multiComponent,
+            expectedMulti,
+            `${harness}: rows spanning more than one component`
+        );
+    }
+});
+
+test('parity: the summary distinguishes a concentrated row from a spread one', () => {
+    // The threshold itself, on real fixture rows rather than on invented
+    // shares — so a rule that happened to agree with the CLI while being wrong
+    // still fails here.
+    const { raw, page } = load('xpcshell');
+    const pageRows = [...pageRowsByLocation(page).values()];
+    const multi = pageRows
+        .map((entry) => ({ entry, shares: componentBreakdown(page, entry.row) }))
+        .filter(({ shares }) => shares.length > 1);
+    assert.equal(multi.length, 3, 'the fixture has three multi-component rows');
+
+    const described = multi
+        .map(({ shares }) => {
+            const total = shares.reduce((sum, share) => sum + share.count, 0);
+            return { leader: shares[0]!.count, total, summary: componentSummary(shares) };
+        })
+        .sort((a, b) => b.total - a.total || b.leader - a.leader);
+
+    // The three leader-vs-total pairs, **recomputed from the raw fixture** so
+    // the expectation is not read off the breakdown it is checking: for every
+    // (kind, text, file, line) key, sum the raw group counts per component.
+    const rawPairs = rawMultiComponentLeaders(raw);
+    assert.deepEqual(
+        described.map(({ leader, total }) => [leader, total]),
+        rawPairs,
+        'the leader and total of each multi-component row, against a raw walk'
+    );
+    // And what that walk found, written out so a reader sees the shape the rest
+    // of the test depends on: a 66.7% row, an exact half, and an 83.3% row.
+    assert.deepEqual(rawPairs, [
+        [16, 24],
+        [8, 16],
+        [10, 12],
+    ]);
+    // 16 of 24 is 66.7% — named. 10 of 12 is 83.3% — named. 8 of 16 is exactly
+    // half — **not** named, which is the case a `>=` threshold would get wrong
+    // and which no invented example in this file could have caught.
+    assert.deepEqual(
+        described.map(({ summary }) => summary!.endsWith(' components')),
+        [false, true, false],
+        'the exact-half row reports the spread and the other two name a leader'
+    );
+    assert.match(described[1]!.summary!, /^2 components$/);
+    assert.match(described[0]!.summary!, /^.+ {2}\+1 more$/);
 });

@@ -102,6 +102,17 @@
             flex-shrink: 0;
         }
 
+        /*
+         * A message-view row that spans more than one component. The summary
+         * names a leader or reports the spread and its `title` carries the full
+         * breakdown, so the row needs to say there is more to read — a plain
+         * component name looks the same and hides nothing.
+         */
+        .marker-component-many {
+            border-bottom: 1px dotted #666;
+            cursor: help;
+        }
+
         .kind-badge {
             font-size: 10px;
             font-weight: bold;

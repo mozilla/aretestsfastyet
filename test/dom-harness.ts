@@ -29,6 +29,12 @@
  * - `createRateChart` — the real one needs Chart.js and a canvas 2D context,
  *   neither of which jsdom has. It is recorded instead, which also makes "was a
  *   chart drawn, with what series" assertable.
+ * - `window.Chart` — the same exception one level down, for
+ *   `next/issues.ts`, whose two chart kinds are the old page's own and go to
+ *   Chart.js directly rather than through `common-charts.js`. Recorded with the
+ *   whole configuration, and its `getChart` really does return the last chart
+ *   made on a canvas, so a page that stopped destroying a chart before drawing
+ *   over it is visible here rather than only in a browser.
  * - `getDataDateRange` is real, but `common-links.js` reads `data.metadata`; it
  *   works unchanged on the fixtures.
  * - `initHarnessSwitcher` is real and needs an `<h1>`, which `PAGE_HTML` has.
@@ -95,6 +101,11 @@ const GLOBAL_NAMES = [
     // against a stub the test author chose.
     'formatNumber',
     'linkifyFailureMessage',
+    // `shared.js`'s. `next/issues.ts` names a run's platform with it for the
+    // hover tooltips, and using the real one means a test's expected platform
+    // names come from that file's rules rather than from a list a test author
+    // wrote down.
+    'extractPlatform',
 ] as const;
 
 /**
@@ -178,6 +189,32 @@ export interface ChartCall {
     eventLabel: string;
 }
 
+/**
+ * One recorded `new Chart(canvas, config)`.
+ *
+ * `next/issues.ts` does not go through `common-charts.js` — its two chart kinds
+ * are the old page's own `createFailureRateChart` and `createIssueMessageChart`
+ * (`issues.html:2743`, `:2813`), which live nowhere but that page. So the seam
+ * for those is Chart.js itself, which is genuinely a global from a CDN tag.
+ *
+ * **What is recorded is the whole configuration**, not a summary of it: the
+ * assertion a test wants to make is "this canvas was handed these series with
+ * these labels", and a summary chosen here would be a value this file picked
+ * rather than one the page computed.
+ */
+export interface ChartJsCall {
+    /** The canvas's `id`, which is how a test names the chart it expects. */
+    canvasId: string;
+    /** Whether the canvas was in the document when the chart was made. */
+    attached: boolean;
+    type: string;
+    labels: string[];
+    datasets: { label: string; data: number[] }[];
+    options: Record<string, unknown>;
+    /** The whole config, for an assertion the fields above do not cover. */
+    config: Record<string, unknown>;
+}
+
 export interface Harness {
     window: JSDOM['window'];
     document: Document;
@@ -188,10 +225,25 @@ export interface Harness {
     content: HTMLElement;
     /** Every `createRateChart` call since the harness was built, in order. */
     charts: ChartCall[];
+    /** Every `new Chart(…)` since the harness was built, in order. */
+    chartJs: ChartJsCall[];
     /** Files `fetchData` will serve, by the name the controller asks for. */
     files: Map<string, unknown>;
     /** Names `fetchData` was asked for, in order, including the 404s. */
     requested: string[];
+    /**
+     * `fetchData` will not resolve a name in this set until `release` is
+     * called for it.
+     *
+     * The 21-day page starts its detailed fetch from a click handler and awaits
+     * nobody, so "the merge has not landed yet" is a state that exists for
+     * exactly one microtask — too short for a test to observe by luck, and a
+     * test that happened to observe it by luck would be a flake. Holding the
+     * response makes the state last as long as the test needs.
+     */
+    hold(filename: string): void;
+    /** Lets a held name resolve. */
+    release(filename: string): void;
     /** Restores the globals this harness replaced. */
     restore(): void;
 }
@@ -226,6 +278,9 @@ export function setupPage(
     const files = new Map<string, unknown>(Object.entries(options.files ?? {}));
     const requested: string[] = [];
     const charts: ChartCall[] = [];
+    const chartJs: ChartJsCall[] = [];
+    /** Names whose response is being held, to the resolver that releases it. */
+    const held = new Map<string, () => void>();
 
     const scope = globalThis as unknown as Record<string, unknown>;
     const saved = new Map<string, unknown>();
@@ -258,6 +313,12 @@ export function setupPage(
     // for a date with no file, so the error path is reachable from a test.
     set('fetchData', async (filename: string): Promise<Response> => {
         requested.push(filename);
+        const gate = held.get(filename);
+        if (gate !== undefined) {
+            await new Promise<void>((resolve) => {
+                held.set(filename, resolve);
+            });
+        }
         const body = files.get(filename);
         if (body === undefined) {
             return new Response('not found', { status: 404 });
@@ -273,13 +334,51 @@ export function setupPage(
         }
     );
 
+    // Chart.js. jsdom's `<canvas>` has no 2D context, so the real library
+    // cannot run here; this records what it was handed. `getChart` returns the
+    // last chart made on a canvas, because `next/issues.ts` destroys a survivor
+    // before drawing over it and a stub that always returned `undefined` would
+    // let a page that never destroyed anything pass.
+    const liveCharts = new Map<unknown, { destroy(): void; destroyed: boolean }>();
+    class FakeChart {
+        constructor(canvas: HTMLCanvasElement, config: Record<string, unknown>) {
+            const data = config['data'] as
+                | { labels: string[]; datasets: { label: string; data: number[] }[] }
+                | undefined;
+            chartJs.push({
+                canvasId: canvas.id,
+                attached: dom.window.document.contains(canvas),
+                type: String(config['type']),
+                labels: data?.labels ?? [],
+                datasets: data?.datasets ?? [],
+                options: (config['options'] as Record<string, unknown>) ?? {},
+                config,
+            });
+            const instance = { destroy: (): void => void (instance.destroyed = true), destroyed: false };
+            liveCharts.set(canvas, instance);
+        }
+        static getChart(canvas: HTMLCanvasElement): { destroy(): void } | undefined {
+            const found = liveCharts.get(canvas);
+            return found === undefined || found.destroyed ? undefined : found;
+        }
+    }
+    (dom.window as unknown as Record<string, unknown>)['Chart'] = FakeChart;
+
     return {
         window: dom.window,
         document: dom.window.document,
         content: dom.window.document.getElementById(page === 'issues' ? 'tree-table' : 'content')!,
         charts,
+        chartJs,
         files,
         requested,
+        hold(filename: string): void {
+            held.set(filename, () => {});
+        },
+        release(filename: string): void {
+            held.get(filename)?.();
+            held.delete(filename);
+        },
         restore(): void {
             for (const [name, value] of saved) {
                 if (value === undefined) {

@@ -53,9 +53,12 @@ import {
 } from '../../lib/formats/errors.ts';
 import { parseTaskId } from '../../lib/formats/tables.ts';
 import {
+    type ComponentShare,
     type ErrorGroup,
     type ErrorGrouping,
     type ErrorSort,
+    componentBreakdownLines,
+    componentSummary,
     kindTotals,
     rankErrors,
 } from '../../lib/query/error-ranking.ts';
@@ -210,6 +213,20 @@ interface ErrorRowJson {
     count: number;
     testCount: number;
     tests: { path: string; count: number }[];
+    /**
+     * Every component the row's occurrences came from, biggest first.
+     *
+     * **Uncapped**, unlike `tests`: a script asking "which components does this
+     * message touch" wants the whole list, and the truncation the text renderer
+     * applies is a property of a terminal rather than of the answer. Empty for
+     * `--group-by kind`.
+     */
+    components: { component: string; count: number }[];
+    /**
+     * The one-line summary the text output shows, so a script reads the same
+     * verdict the terminal did rather than re-deriving the threshold.
+     */
+    componentSummary: string | null;
     taskIds?: string[];
 }
 
@@ -487,6 +504,11 @@ function toRowJson(row: ErrorGroup, file: DecodedErrorsFile | null): ErrorRowJso
         count: row.count,
         testCount: row.testCount,
         tests: row.tests.map((entry) => ({ path: entry.path, count: entry.count })),
+        components: row.components.map((share) => ({
+            component: share.component,
+            count: share.count,
+        })),
+        componentSummary: componentSummary(row.components),
     };
     if (file !== null) {
         const seen = new Set<string>();
@@ -554,6 +576,28 @@ function renderText(result: ErrorsJson): string {
         }
     }
 
+    // Which components the rows land in, in the same shape and for the same
+    // reason as the locations above: a component name is 40 characters and a
+    // `+8 more` suffix is another 8, so it does not fit beside an 88-character
+    // message.
+    //
+    // Skipped entirely when the grouping already answers it: `--group-by
+    // component` rows *are* components and the summary would repeat the row's
+    // own name, and `--group-by kind` rows have no component to report.
+    const summarized = result.rows.filter(
+        (row) => row.componentSummary !== null && componentBlockApplies(result.grouping)
+    );
+    if (summarized.length > 0) {
+        lines.push('');
+        lines.push('Which components');
+        for (const row of summarized) {
+            lines.push(
+                `  ${truncate(oneLine(describeRow(row)), 52).padEnd(52)}  ` +
+                    `${truncate(row.componentSummary!, 60)}`
+            );
+        }
+    }
+
     // `CLI.md`'s "is this specific to one test, or everywhere?" view, only for
     // a query narrow enough that the answer is about a message rather than
     // about the file. At twenty rows the per-row test list is noise, and the
@@ -572,6 +616,19 @@ function renderText(result: ErrorsJson): string {
             }
             if (row.testCount > 5) {
                 lines.push(`    … ${fmtCount(row.testCount - 5)} more tests`);
+            }
+            // The full breakdown, at the same narrowness the test list uses:
+            // once the query is down to a few rows the reader is asking about
+            // *this message*, and "which components, how much each" is then the
+            // question the one-line summary above only gestures at. Nothing to
+            // add when the row has a single component — the summary already
+            // named it and its count is the row's count.
+            if (componentBlockApplies(result.grouping) && row.components.length > 1) {
+                lines.push('');
+                lines.push(`  Components — ${row.componentSummary!}`);
+                for (const line of componentBreakdownLines(row.components as ComponentShare[])) {
+                    lines.push(`    ${line}`);
+                }
             }
         }
     }
@@ -594,6 +651,25 @@ function renderText(result: ErrorsJson): string {
     lines.push('');
     lines.push(...footerLines(result));
     return joinLines(lines);
+}
+
+/**
+ * Whether the component blocks are worth printing for a grouping.
+ *
+ * Two groupings answer the component question by construction and get nothing
+ * added:
+ *
+ * - **`component`**, where a row *is* a component. Its summary would restate the
+ *   row's own name, and the breakdown would be a one-line block saying the row
+ *   equals itself.
+ * - **`kind`**, where a row is `C++ warning` and every component in the file
+ *   appears under it. `rankErrors` does not even accumulate the map there.
+ *
+ * The other three — `location` (the default), `message` and `test` — all have
+ * rows a component is a real attribute *of*, and all three get it.
+ */
+function componentBlockApplies(grouping: ErrorGrouping): boolean {
+    return grouping !== 'component' && grouping !== 'kind';
 }
 
 /** The verdict line for a row's test spread. */
@@ -755,6 +831,11 @@ function renderMarkdown(result: ErrorsJson): string {
         lines.push(...footerLines(result).map((line) => line.trim()));
         return joinLines(lines);
     }
+    // Markdown gets the component as a column rather than as a block below:
+    // this output is for pasting into a bug, where the component is often the
+    // first thing a triager wants beside the message, and a table has the width
+    // a terminal does not.
+    const withComponents = componentBlockApplies(result.grouping);
     lines.push(
         ...md.table(
             [
@@ -762,12 +843,14 @@ function renderMarkdown(result: ErrorsJson): string {
                 { header: 'tests', align: 'right' },
                 { header: 'message' },
                 { header: 'location' },
+                ...(withComponents ? [{ header: 'components' }] : []),
             ],
             result.rows.map((row) => [
                 fmtCount(row.count),
                 fmtCount(row.testCount),
                 oneLine(describeRow(row)),
                 locationOf(row) ?? '',
+                ...(withComponents ? [row.componentSummary ?? ''] : []),
             ])
         )
     );

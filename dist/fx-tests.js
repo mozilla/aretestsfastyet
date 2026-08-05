@@ -1984,6 +1984,7 @@ function rankErrors(file, options = {}) {
         ...groupFields(grouping, message, path),
         count: 0,
         perTest: /* @__PURE__ */ new Map(),
+        perComponent: /* @__PURE__ */ new Map(),
         groupIds: []
       };
       groups.set(key, accumulator);
@@ -1993,6 +1994,13 @@ function rankErrors(file, options = {}) {
       group.testId,
       (accumulator.perTest.get(group.testId) ?? 0) + group.totalCount
     );
+    if (grouping !== "kind") {
+      const component = message.component ?? UNKNOWN_COMPONENT;
+      accumulator.perComponent.set(
+        component,
+        (accumulator.perComponent.get(component) ?? 0) + group.totalCount
+      );
+    }
     if (accumulator.groupIds.length < maxGroupIds) {
       accumulator.groupIds.push(group.groupId);
     }
@@ -2009,6 +2017,7 @@ function rankErrors(file, options = {}) {
       count: accumulator.count,
       testCount: accumulator.perTest.size,
       tests: [...accumulator.perTest].sort((a, b) => b[1] - a[1]).slice(0, maxTests).map(([testId, count2]) => ({ testId, path: pathOf(testId), count: count2 })),
+      components: sortComponents(accumulator.perComponent),
       groupIds: accumulator.groupIds
     });
   }
@@ -2017,6 +2026,39 @@ function rankErrors(file, options = {}) {
     (a, b) => sort === "tests" ? b.testCount - a.testCount || b.count - a.count : b.count - a.count || b.testCount - a.testCount
   );
   return { rows: rows2, totals: { matchedCount, fileCount, matchedGroups } };
+}
+var UNKNOWN_COMPONENT = "Unknown";
+function sortComponents(perComponent) {
+  return [...perComponent].map(([component, count2]) => ({ component, count: count2 })).sort((a, b) => b.count - a.count || a.component.localeCompare(b.component));
+}
+function dominates(leaderCount, total) {
+  return leaderCount * 2 > total;
+}
+function componentSummary(shares) {
+  if (shares.length === 0) {
+    return null;
+  }
+  if (shares.length === 1) {
+    return shares[0].component;
+  }
+  const total = shares.reduce((sum, share) => sum + share.count, 0);
+  if (dominates(shares[0].count, total)) {
+    return `${shares[0].component}  +${(shares.length - 1).toLocaleString()} more`;
+  }
+  return `${shares.length.toLocaleString()} components`;
+}
+var MAX_BREAKDOWN_ROWS = 12;
+function componentBreakdownLines(shares) {
+  const shown = shares.slice(0, MAX_BREAKDOWN_ROWS);
+  const lines = shown.map((share) => `${share.component}  ${share.count.toLocaleString()}`);
+  if (shares.length > shown.length) {
+    const rest = shares.slice(shown.length);
+    const restCount = rest.reduce((sum, share) => sum + share.count, 0);
+    lines.push(
+      `\u2026 and ${rest.length.toLocaleString()} more, ${restCount.toLocaleString()} occurrences`
+    );
+  }
+  return lines;
 }
 function matchesTest(path, wanted) {
   if (path === wanted) {
@@ -2796,7 +2838,12 @@ function toRowJson(row, file) {
     component: row.component,
     count: row.count,
     testCount: row.testCount,
-    tests: row.tests.map((entry) => ({ path: entry.path, count: entry.count }))
+    tests: row.tests.map((entry) => ({ path: entry.path, count: entry.count })),
+    components: row.components.map((share) => ({
+      component: share.component,
+      count: share.count
+    })),
+    componentSummary: componentSummary(row.components)
   };
   if (file !== null) {
     const seen = /* @__PURE__ */ new Set();
@@ -2848,6 +2895,18 @@ function renderText4(result) {
       );
     }
   }
+  const summarized = result.rows.filter(
+    (row) => row.componentSummary !== null && componentBlockApplies(result.grouping)
+  );
+  if (summarized.length > 0) {
+    lines.push("");
+    lines.push("Which components");
+    for (const row of summarized) {
+      lines.push(
+        `  ${truncate(oneLine(describeRow(row)), 52).padEnd(52)}  ${truncate(row.componentSummary, 60)}`
+      );
+    }
+  }
   if (result.rows.length <= 3) {
     for (const row of result.rows) {
       if (row.tests.length === 0) {
@@ -2862,6 +2921,13 @@ function renderText4(result) {
       }
       if (row.testCount > 5) {
         lines.push(`    \u2026 ${count(row.testCount - 5)} more tests`);
+      }
+      if (componentBlockApplies(result.grouping) && row.components.length > 1) {
+        lines.push("");
+        lines.push(`  Components \u2014 ${row.componentSummary}`);
+        for (const line of componentBreakdownLines(row.components)) {
+          lines.push(`    ${line}`);
+        }
       }
     }
   }
@@ -2882,6 +2948,9 @@ function renderText4(result) {
   lines.push("");
   lines.push(...footerLines(result));
   return joinLines(lines);
+}
+function componentBlockApplies(grouping) {
+  return grouping !== "component" && grouping !== "kind";
 }
 function spreadVerdict(row) {
   const head = `${count(row.count)} occurrences in ${count(row.testCount)} test${row.testCount === 1 ? "" : "s"}`;
@@ -2978,19 +3047,22 @@ function renderMarkdown4(result) {
     lines.push(...footerLines(result).map((line) => line.trim()));
     return joinLines(lines);
   }
+  const withComponents = componentBlockApplies(result.grouping);
   lines.push(
     ...table(
       [
         { header: "occurrences", align: "right" },
         { header: "tests", align: "right" },
         { header: "message" },
-        { header: "location" }
+        { header: "location" },
+        ...withComponents ? [{ header: "components" }] : []
       ],
       result.rows.map((row) => [
         count(row.count),
         count(row.testCount),
         oneLine(describeRow(row)),
-        locationOf(row) ?? ""
+        locationOf(row) ?? "",
+        ...withComponents ? [row.componentSummary ?? ""] : []
       ])
     )
   );
