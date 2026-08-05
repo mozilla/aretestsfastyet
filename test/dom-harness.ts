@@ -88,6 +88,13 @@ const GLOBAL_NAMES = [
     'initUrlHashManager',
     'initHarnessSwitcher',
     'getHarnessType',
+    // `next/issues.ts` uses these two directly: `formatNumber` for every stat
+    // cell and `linkifyFailureMessage` for a FAIL line's message. They are the
+    // real `common-ui.js` implementations, so an assertion on a rendered
+    // number or a linkified message compares against that file rather than
+    // against a stub the test author chose.
+    'formatNumber',
+    'linkifyFailureMessage',
 ] as const;
 
 /**
@@ -111,6 +118,57 @@ const PAGE_HTML = `<!DOCTYPE html><html><body>
 <div id="content"><div class="no-data">Loading crash data...</div></div>
 </body></html>`;
 
+/**
+ * `next/issues.html`'s controls, by the ids that page's controller looks up.
+ *
+ * A second constant rather than a parameterization of the first, because the
+ * two pages genuinely disagree about every id — `date-select` against
+ * `dateSelect`, `search-box` against `searchBox` — and a shared template with
+ * eight substitutions would hide exactly the kind of mismatch this harness
+ * exists to catch. This is **copied from `next/issues.html`'s own markup**
+ * (`:608-655`), trimmed to the elements the controller and the shared scripts
+ * reach for, so an id renamed on the page and not here fails as a null
+ * dereference in `start()`.
+ */
+const ISSUES_PAGE_HTML = `<!DOCTYPE html><html><body>
+<div class="container">
+<h1>Test Issues</h1>
+<div class="controls">
+  <div class="date-selector">
+    <label for="date-select">Select Date: </label>
+    <select id="date-select"></select>
+    <span id="status-text" class="status-text">Loading data...</span>
+    <button id="historical-button" class="historical-button">Show Last 21 Days</button>
+  </div>
+  <div class="search-container">
+    <input type="text" class="search-box" id="search-box">
+    <button class="search-clear" id="search-clear">×</button>
+  </div>
+</div>
+<div class="explanation">
+  <div class="issue-type-filters">
+    <label class="filter-checkbox"><input type="checkbox" id="filter-failures" checked></label>
+    <label class="filter-checkbox"><input type="checkbox" id="filter-timeouts" checked></label>
+    <label class="filter-checkbox"><input type="checkbox" id="filter-crashes" checked></label>
+    <label class="filter-checkbox"><input type="checkbox" id="filter-skips" checked></label>
+  </div>
+</div>
+<div id="error" class="error" style="display: none;"></div>
+<div id="tree-container" style="display: none;">
+  <div class="tree-table" id="tree-table"></div>
+</div>
+<div id="no-data" class="no-data" style="display: none;">No data available.</div>
+</div>
+</body></html>`;
+
+/** Which page's markup a harness should be built with. */
+export type PageKind = 'crashes' | 'issues';
+
+const MARKUP: Record<PageKind, string> = {
+    crashes: PAGE_HTML,
+    issues: ISSUES_PAGE_HTML,
+};
+
 /** One recorded `createRateChart` call. */
 export interface ChartCall {
     canvasId: string;
@@ -123,7 +181,10 @@ export interface ChartCall {
 export interface Harness {
     window: JSDOM['window'];
     document: Document;
-    /** `#content`, where a render puts its list. */
+    /**
+     * Where a render puts its list: `#content` on the crashes page,
+     * `#tree-table` on the issues page.
+     */
     content: HTMLElement;
     /** Every `createRateChart` call since the harness was built, in order. */
     charts: ChartCall[];
@@ -149,9 +210,12 @@ export function fixture<T>(name: string): T {
  * `url` sets `?kind=` and the `#hash` the controller reads at startup, which is
  * the only way to drive `loadFromUrlHash` from outside — it is module-private.
  */
-export function setupPage(options: { url?: string; files?: Record<string, unknown> } = {}): Harness {
-    const dom = new JSDOM(PAGE_HTML, {
-        url: options.url ?? 'https://tests.firefox.dev/crashes.html',
+export function setupPage(
+    options: { url?: string; files?: Record<string, unknown>; page?: PageKind } = {}
+): Harness {
+    const page = options.page ?? 'crashes';
+    const dom = new JSDOM(MARKUP[page], {
+        url: options.url ?? `https://tests.firefox.dev/${page}.html`,
         runScripts: 'outside-only',
     });
 
@@ -212,7 +276,7 @@ export function setupPage(options: { url?: string; files?: Record<string, unknow
     return {
         window: dom.window,
         document: dom.window.document,
-        content: dom.window.document.getElementById('content')!,
+        content: dom.window.document.getElementById(page === 'issues' ? 'tree-table' : 'content')!,
         charts,
         files,
         requested,

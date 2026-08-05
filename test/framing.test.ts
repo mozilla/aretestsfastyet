@@ -135,19 +135,33 @@ const FRAMING: FramingEntry[] = [
     {
         command: 'issues',
         pageFile: 'issues.html',
+        // The page has migrated: `next/issues.html`, built from
+        // `next/issues-view.ts` and `next/issues.ts`. The citations follow it,
+        // because that is now the page this command is compared against — the
+        // root `issues.html` is the pre-migration copy and citing it would
+        // freeze facts about a file nobody is changing any more.
         pageCitations: {
-            rowUnit: 'issues.html:1933 (renderComponentsView), tests only as child rows at :2133',
-            grouping: 'issues.html:887-890 (getCurrentView hard-codes it)',
-            sortKey: 'issues.html:663-664 (sortField/sortDirection)',
-            window: 'issues.html:3707-3713 (no hash → the date-select value, one day)',
-            filters: 'issues.html:626-638 (four checkboxes, all `checked`)',
+            rowUnit:
+                'next/issues.ts:render (one row per component), tests only as child rows via ' +
+                'testRows(); issues.html:1933 before the migration',
+            grouping:
+                'next/issues-view.ts:buildComponentRows — component, with no view control; ' +
+                'issues.html:887-890 hard-coded the same thing',
+            sortKey: 'next/issues-view.ts:INITIAL_SORT (issues.html:663-664 before the migration)',
+            window:
+                'next/issues-view.ts:isHistoricalDate — an absent `date` means the 21-day ' +
+                'aggregate. This is the deliberate change: issues.html:3709-3712 loaded the ' +
+                'date-select value, one day.',
+            filters: 'next/issues.html:626-638 (four checkboxes, all `checked`)',
         },
         page: {
             rowUnit: 'Bugzilla component',
             grouping: 'component',
             sortKey: 'issueCount',
             sortDirection: 'desc',
-            window: 'single most recent day',
+            // Was 'single most recent day'. The migration changed it, which is
+            // what closed the divergence that used to be declared here.
+            window: '21-day aggregate',
             filters: 'fail, timeout, crash, skip — all four issue types',
             harness: 'xpcshell',
         },
@@ -156,28 +170,26 @@ const FRAMING: FramingEntry[] = [
             grouping: 'component',
             sortKey: 'issueCount',
             sortDirection: 'desc',
-            // Resolved in the CLI's favour: 21 days is the right default. See
-            // the entry in `divergences` — the page is the side to change.
             window: '21-day aggregate',
             filters: 'fail, timeout, crash, skip — all four issue types',
             harness: 'xpcshell',
         },
-        divergences: [
-            {
-                field: 'window',
-                reason:
-                    'RESOLVED: 21 days is right, and the CLI already does it. `issues.html` ' +
-                    'loads the single most recent day by default (`:3707-3713`); `fx-tests ' +
-                    'issues` reads the 21-day aggregate `{harness}-issues.json` and takes the ' +
-                    'whole window (`cli/commands/issues.ts:230`, `resolveDayWindow` with no ' +
-                    '--day/--since). The two answer measurably different questions — a ' +
-                    'component that had one bad night ranks first on the page and is diluted ' +
-                    '21-fold in the CLI — and the 21-day view is the one worth defaulting to. ' +
-                    'So this divergence closes when the page migrates, not when the CLI ' +
-                    'changes: the migrated issues.html must default to 21 days. Until then ' +
-                    'both values stay asserted, and this entry is the acceptance criterion.',
-            },
-        ],
+        // Empty, and that is the point: the `window` divergence that lived here
+        // was declared RESOLVED-pending-migration and said in as many words
+        // that it "closes when the page migrates, not when the CLI changes".
+        // `next/issues.html` now defaults to the 21-day aggregate
+        // (`next/issues.ts` divergence 1), so the two sides agree and the entry
+        // had to go — "a declared divergence whose sides have converged is a
+        // failure" is asserted below, so leaving it would have failed the suite
+        // by design rather than by accident.
+        //
+        // Measured on the pinned xpcshell data, which is what made 21 days the
+        // right side to converge on: the aggregate ranks 133 components against
+        // the single day's 87, and the two orders differ below rank 5 —
+        // `Toolkit :: Add-ons Manager` is 6th over 21 days and 7th on
+        // 2026-08-04. The top ten are the same ten, so this steadied the
+        // ranking rather than replacing it.
+        divergences: [],
     },
     {
         command: 'failures',
@@ -259,15 +271,20 @@ const FRAMING: FramingEntry[] = [
             // up an "issue". So the page framing recorded here is that
             // checkbox's, and the row unit is the page's — component — which is
             // where the one declared divergence comes from.
-            rowUnit: 'issues.html:1933 (components view)',
-            filters: 'issues.html:626-638 (skips is one of four checked boxes)',
+            rowUnit: 'next/issues.ts:render (components view); issues.html:1933 before it',
+            filters: 'next/issues.html:626-638 (skips is one of four checked boxes)',
+            // Follows the migrated page, like the `issues` entry above.
+            window: 'next/issues-view.ts:isHistoricalDate (21-day aggregate by default)',
         },
         page: {
             rowUnit: 'Bugzilla component',
             grouping: 'component',
             sortKey: 'issueCount',
             sortDirection: 'desc',
-            window: 'single most recent day',
+            // Was 'single most recent day'; the migration changed the page, so
+            // the window this command's page-side reports changed with it. That
+            // is what removed the `window` divergence this entry used to carry.
+            window: '21-day aggregate',
             filters: 'skips counted alongside fail, timeout and crash',
             harness: 'xpcshell',
         },
@@ -298,10 +315,11 @@ const FRAMING: FramingEntry[] = [
                     "page's issueCount is a union over four types and would not order a " +
                     'skips-only list.',
             },
-            {
-                field: 'window',
-                reason: 'The same unresolved 1-day-vs-21-day split as `issues`. See that entry.',
-            },
+            // The `window` divergence that used to sit here — "the same
+            // unresolved 1-day-vs-21-day split as `issues`" — is gone for the
+            // same reason it is gone from the `issues` entry: the page migrated
+            // and now defaults to the 21-day aggregate, so both sides read the
+            // same window and a declared exception would be a stale one.
             {
                 field: 'filters',
                 reason:
@@ -865,10 +883,19 @@ test('every divergence carries a reason, and every page fact a citation', () => 
             assert.ok(cited, `${entry.command}: no page citations at all`);
         }
         for (const [field, citation] of Object.entries(entry.pageCitations)) {
+            // A citation has to name a file a reader can open. `.html` was the
+            // only possibility while every page was one inline `<script>`; a
+            // migrated page's decisions live in its `next/*.ts` modules, and
+            // citing `next/issues.html` for a rule implemented in
+            // `next/issues-view.ts` would point at the wrong file. Both forms
+            // are accepted, and the check still rejects a citation that names
+            // no file at all — which is what it was for.
             assert.match(
                 citation,
-                /\.html/,
-                `${entry.command}/${field}: a citation must name the page file`
+                /\.html|next\/[\w-]+\.ts/,
+                `${entry.command}/${field}: a citation must name the page file — either a ` +
+                    '`.html` page or, for a migrated page, the `next/*.ts` module that ' +
+                    'implements the decision'
             );
         }
     }
@@ -957,28 +984,62 @@ test('issues counts all four issue types by default', async () => {
     assertFraming('issues', 'filters', [...types].sort(), ['crash', 'fail', 'skip', 'timeout']);
 });
 
-test('issues reads the 21-day aggregate — the declared divergence from the page', async () => {
-    // The unresolved one. `issues.html:3707-3713` loads a single most recent
-    // day; this reads the whole 21-day window. Both values are asserted so
-    // whichever way it is resolved has to come through the table.
+test('issues reads the 21-day aggregate, and so does the migrated page', async () => {
+    // This used to assert a *declared divergence*: the CLI covered 21 days and
+    // `issues.html` opened on one. The migration closed it by changing the
+    // page, which is the direction the old entry specified, so what is checked
+    // here is now the agreement rather than the gap.
     const { stdout } = await invoke(['issues', '--json', '--limit', '1']);
     const header = json(stdout)['header'] as { dayCount: number; singleDay: boolean };
     assert.equal(
         header.singleDay,
         false,
-        'fx-tests issues covers the whole window; issues.html defaults to one day ' +
-            '(issues.html:3707-3713). If this became single-day, the divergence in FRAMING is ' +
-            'resolved and must be deleted.'
+        'fx-tests issues covers the whole window, and next/issues.html now defaults to the ' +
+            'same one. If this became single-day the two sides would disagree again and the ' +
+            'window divergence would have to be re-declared in FRAMING.'
     );
     assert.equal(header.dayCount, 21, 'the aggregate is 21 days');
 
-    const entry = entryFor('issues');
-    const windowDivergence = entry.divergences.find(
-        (divergence) => divergence.field === 'window'
+    // The page side, read off the migrated source rather than restated. Both
+    // halves matter and neither is checkable from CLI output: the page has to
+    // treat an absent `date` as the 21-day view, and it has to fetch the
+    // aggregate file rather than a daily one.
+    //
+    // Asserted against the real function, not against a copy of its rule — an
+    // assertion that reimplemented `isHistoricalDate` here would pass whatever
+    // the page did.
+    const { isHistoricalDate, HISTORICAL_DATE } = await import('../next/issues-view.ts');
+    assert.equal(
+        isHistoricalDate(undefined),
+        true,
+        'no `date` in the hash must mean the 21-day aggregate — this is the migration\'s ' +
+            'deliberate change (next/issues.ts divergence 1). issues.html:3709-3712 loaded the ' +
+            'date-select value instead.'
     );
-    assert.ok(
-        windowDivergence !== undefined,
-        'the 1-day-vs-21-day split must stay declared while it exists'
+    assert.equal(isHistoricalDate(HISTORICAL_DATE), true);
+    assert.equal(
+        isHistoricalDate('2026-08-04'),
+        false,
+        'a named day must still select that day, or the migration removed a working control'
+    );
+
+    const source = await readFile(new URL('../next/issues.ts', import.meta.url), 'utf8');
+    assert.match(
+        source,
+        /historicalDataFile: `\$\{harness\}-issues\.json`/,
+        'the 21-day view must read the aggregate `{harness}-issues.json`, which is a different ' +
+            'file with a different shape from the daily `{harness}-<date>.json`'
+    );
+
+    // And the entry must no longer declare a window divergence: the sides have
+    // converged, and the invariant above ("a declared divergence whose sides
+    // have converged is a failure") is what enforces that from the other end.
+    const entry = entryFor('issues');
+    assert.equal(
+        entry.divergences.find((divergence) => divergence.field === 'window'),
+        undefined,
+        'the 1-day-vs-21-day split is resolved; its entry must be gone, not kept as a stale ' +
+            'exception for the next real difference to hide behind'
     );
 });
 
