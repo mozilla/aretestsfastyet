@@ -35,15 +35,14 @@
  *
  * ## What this deliberately does not cover
  *
- * Only the surface `test/dom-harness.ts` calls: the `JSDOM` constructor, two of
+ * Only the surface the test harnesses call: the `JSDOM` constructor, three of
  * its options, and `.window`. **Not** covered, and each would be a compile
  * error rather than a silent `any` if a test reached for it —
  * `JSDOM.fromFile`/`fromURL`, `serialize()`, `nodeLocation()`, `virtualConsole`,
  * `CookieJar`/`ResourceLoader`, `runScripts: undefined`'s other modes beyond the
- * two listed, and every constructor option the harness does not pass
- * (`referrer`, `contentType`, `pretendToBeVisual`, `storageQuota`, …). Adding
- * one is a two-line edit here; the point is that the list of what the harness
- * depends on stays readable.
+ * two listed, and every constructor option no harness passes (`referrer`,
+ * `contentType`, `storageQuota`, …). Adding one is a two-line edit here; the
+ * point is that the list of what the tests depend on stays readable.
  *
  * A standalone `.d.ts` rather than a `declare module` inside the harness,
  * because an augmentation cannot be attached to a module TypeScript already
@@ -64,6 +63,16 @@ declare module 'jsdom' {
          * button in `test/failures-page.test.ts`.
          */
         runScripts?: 'outside-only' | 'dangerously';
+        /**
+         * Turns on `requestAnimationFrame`, which is off by default.
+         *
+         * Needed by `test/index-page.test.ts`: the landing page defers its
+         * whole render into an animation frame (`index.html:766`), so without
+         * this `start()` throws `requestAnimationFrame is not a function` and
+         * nothing renders. Enabling it keeps the page's real
+         * frame-then-timeout sequencing under test rather than stubbing it.
+         */
+        pretendToBeVisual?: boolean;
     }
 
     export class JSDOM {
