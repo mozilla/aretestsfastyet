@@ -1,14 +1,49 @@
 # Plan: deploying the migrated pages
 
 Nine of the site's twenty-six pages have been rewritten onto the shared `lib/`
-library and live in `next/`. They are built, tested and reviewed, and nothing
-deploys them: `dist-pages/` is gitignored and there is no CI. This plan is what
+library and live in `site/`. They are built, tested and reviewed, and nothing
+deploys them: `dist-site/` is gitignored and there is no CI. This plan is what
 a fresh session needs to change that.
 
 Read `docs/PARITY.md` first for why the migration exists, and the header of
-`next/errors.ts` for what a migrated page looks like.
+`site/errors.ts` for what a migrated page looks like.
 
 ---
+
+## 0. Do this first: the rename
+
+The migrated pages lived in `next/` during the migration, building into
+`dist-pages/`. Both names describe a phase that ends when this deploy lands —
+after it, "next" is simply the site. **Rename before writing the workflow**, so
+the workflow's paths are written once against their final names:
+
+| was | is |
+| --- | --- |
+| `next/` | `site/` |
+| `dist-pages/` | `dist-site/` |
+| `tsconfig.next.json` | `tsconfig.site.json` |
+| the nine superseded root `*.html` | `old/*.html` (see §1) |
+
+`dist/` was considered for the output and rejected: it already holds
+`dist/fx-tests.js`, the CLI bundle, which is **committed on purpose** (the `bin`
+and `files` entries in `package.json` point at it, and `check-bundle-fresh.ts`
+fails the suite when it is stale). Putting gitignored output in the same
+directory would mean "is `dist/` committed?" no longer has one answer.
+
+Scope, measured: **368 references across 56 files** — `tsconfig.next.json`, the
+`pages` npm script, `tools/build-pages.ts`, every file in the directory itself,
+and 24 files under `test/`. Most are import paths, but many are prose in
+comments and in `docs/`, so a blind search-and-replace over `next/` will also
+rewrite unrelated English. Do it as `git mv` plus a reviewed sweep, in **its own
+commit**, with `npm test` and `npm run typecheck` green before and after.
+
+Nothing outside the repository depends on the two build names: neither is
+published, and `dist-site/` is gitignored. **The `old/` move is different** —
+those files are served today at `tests.firefox.dev`, so moving them in the
+repository is only safe because the deploy republishes them at the root. Do the
+`old/` move in a **separate commit** from the `next/` → `site/` rename: one is
+pure refactoring, the other changes what a reader of the repository is served,
+and bisecting a broken deploy is much easier when the two are not entangled.
 
 ## 1. What is actually being deployed
 
@@ -19,9 +54,10 @@ Deleting the old pages would delete two thirds of the site. The deploy is a
 
 | | count | where it comes from |
 | --- | --- | --- |
-| migrated | 9 | `next/*.html`, built by `npm run pages` |
+| migrated | 9 | `site/*.html`, built by `npm run pages` |
 | unmigrated | 17 | root `*.html`, copied verbatim |
 | shared assets | — | `shared.js`, `shared.css`, `common-*.js`, `dashboards.js`, favicons |
+| committed data | 1 | `mochitest-stats-backfill.json` (see below) |
 
 The nine: `crash-viewer`, `crashes`, `errors`, `failures`, `index`, `issues`,
 `manifests`, `test`, `try`.
@@ -31,6 +67,24 @@ implementation is published under `old/`. So `test.html` is the new one and
 `old/test.html` is the current one, kept for comparison and as an escape hatch
 that is not a revert. `old/` is deleted once the new pages have been trusted
 for long enough — that removal is a follow-up commit, not part of this work.
+
+**Decided: the nine superseded pages move into a real `old/` directory in the
+repository**, as part of the rename in §0. Only those nine. The seventeen
+unmigrated pages stay at the root: they are not old, they are the only version
+there is, and filing them under `old/` would say "superseded" about pages
+nothing supersedes.
+
+This gives `old/` a single unambiguous meaning — *replaced, pending deletion* —
+and makes the cleanup `git rm -r old/` with nothing to sort through. It also
+means the repository root stops mixing nine dead pages with seventeen live ones,
+where today you cannot tell by looking which `index.html` is served.
+
+Checked before deciding: the parity harnesses in `test/` do **not** read the old
+root `*.html` files. They compare against reference logic reimplemented in the
+test files themselves, over fixtures. `test/index-parity.test.ts:94` reads
+`mochitest-stats-backfill.json` from the root, but that is a data file, not a
+page. So moving the nine breaks no test — verify this still holds when you do
+it, rather than trusting this paragraph.
 
 **Decided:** the workflow lands on the **fork** first
 (`origin` → `fqueze.github.io/aretestsfastyet`), which is already the staging
@@ -46,26 +100,64 @@ Every inter-page link is built by the shared scripts (`dashboards.js`,
 a page served from the root links to the root. Each set is self-consistent with
 no rewriting.
 
-This was checked rather than assumed: `grep` for `.html` in `next/*.ts` and
+This was checked rather than assumed: `grep` for `.html` in `site/*.ts` and
 `lib/` returns only comment citations, never a constructed link.
 
-One consequence, and it is already settled: an `old/` page linking to an
-**unmigrated** page (`old/issues.html` → `old/workers.html`) resolves inside
-`old/`, so the seventeen have to be there too or that link 404s.
+One consequence, and it is the reason the repository layout and the published
+layout are **not** the same: an `old/` page linking to an **unmigrated** page
+resolves inside `old/`. `dashboards.js` is a flat list of bare filenames —
+`workers.html`, `xpcshell-timings.html` — and every page carries a
+"Dashboards ▾" menu listing all twenty-six. So from `old/issues.html`, the link
+to `workers.html` resolves to `old/workers.html`, which does not exist in the
+repository and would 404.
 
-**Decided: copy all twenty-six pages and the shared assets into `old/`**, making
-it a complete, self-consistent snapshot of the site as it is today. Measured
-before choosing:
+**Decided: the deploy copies the seventeen unmigrated pages and the shared
+assets into `dist-site/old/` as well**, so the published `old/` is a complete,
+self-consistent snapshot even though the repository's `old/` holds only nine
+files. The two layouts differ only by files that are copies.
+
+| | repository | published |
+| --- | --- | --- |
+| root | 17 unmigrated | 9 built + 17 unmigrated |
+| `old/` | 9 superseded | all 26 + assets |
+| `site/` | 9 sources | — |
+
+Measured before choosing:
 
 | | size |
 | --- | --- |
-| `dist-pages/` — nine built pages plus assets | 724 kB |
-| all twenty-six root pages | 1.5 MB |
+| `dist-site/` — nine built pages plus assets | 724 kB |
+| all twenty-six old pages | 1.5 MB |
 | shared assets (`shared.*`, `common-*.js`, `dashboards.js`, favicons) | 128 kB |
 
 About 1.6 MB extra on a static site, which is not worth trading a working
-fallback for. The alternative — copying only the nine — leaves links out of
-`old/` broken for no saving that matters.
+fallback for. The alternative — publishing only the nine in `old/` — needs the
+old pages' links rewritten to climb out of the directory, which means modifying
+the very artifact being kept as an untouched escape hatch.
+
+### Committed data files are part of the deploy
+
+`mochitest-stats-backfill.json` sits in the repo root and is fetched by the
+index page at runtime, by relative path. It is not an optional extra: around
+2026-06-10 a mozilla-central aggregation job failed without being marked failed,
+and later runs rebuilt history from scratch, so the live artifact now starts at
+2026-05-29. The committed backfill is what restores the months before that.
+
+**This has already caused one bug.** The page was built into `dist-pages/`
+without it, the `fetch` 404'd, and the failure is swallowed by design — a
+missing backfill is meant to degrade to live-only data, not to throw. The result
+was a chart showing 68 days instead of 200, with no error anywhere. It was found
+by a human looking at the page; 1,333 passing tests did not see it.
+
+So: **the assembly must copy committed data files, and a missing one must fail
+the build.** Two properties, and the second matters more than the first. Any
+page that fetches a committed sibling by relative path has this failure mode,
+and it is silent at runtime in every case.
+
+Check for new ones rather than trusting this list — grep the built bundles for
+relative `fetch('./…')` literals. Note that files fetched through `fetchData()`
+are a different thing entirely: those come from CI artifacts over the network
+and must *not* be copied.
 
 ## 2. The workflow
 
@@ -81,9 +173,9 @@ publishes nothing until it is done.
 
 ```
 npm ci
-npm run typecheck     # both projects: root and tsconfig.next.json
-npm test              # 1,331 tests, and check-bundle for a stale dist/fx-tests.js
-npm run pages         # builds next/ into dist-pages/
+npm run typecheck     # both projects: root and tsconfig.site.json
+npm test              # 1,333 tests, and check-bundle for a stale dist/fx-tests.js
+npm run pages         # builds site/ into dist-site/
 ```
 
 A failure must **not** publish. The failure mode to avoid is the one
@@ -92,14 +184,26 @@ after overwriting a good artifact, so the deploy ships the broken one.
 
 **Assembly step**, after the gates:
 
-1. `dist-pages/` already holds the nine built pages and the assets they
-   reference (`tools/build-pages.ts` copies those).
-2. Copy the seventeen unmigrated root `*.html` into it.
-3. Copy **all twenty-six** root `*.html` and the shared assets into
-   `dist-pages/old/`, so that tree is a complete snapshot (§1).
-4. Publish `dist-pages/` as the Pages artifact.
+After §0 the repository holds the seventeen unmigrated pages at the root and the
+nine superseded ones in `old/`. So:
 
-Assemble into a **fresh** directory rather than into a `dist-pages/` left over
+1. `dist-site/` already holds the nine built pages, the assets they reference
+   in markup, and the committed data files they fetch by relative path
+   (`tools/build-pages.ts` copies all three, and fails if one is missing).
+2. Copy the seventeen unmigrated root `*.html` into it.
+3. Build `dist-site/old/` as a complete snapshot (§1): the nine from `old/`,
+   **plus** the same seventeen unmigrated pages, the shared assets, and the
+   committed data files. The seventeen are deliberately published twice — once
+   at the root and once inside `old/` — because `old/` links resolve inside
+   `old/`. The old pages fetch the backfill by the same relative path, so it
+   has to be there too or `old/index.html` shows the same truncated chart.
+4. Publish `dist-site/` as the Pages artifact.
+
+Step 3 is the one to get right: it is the only place the repository layout and
+the published layout deliberately diverge, and a reader who assumes they match
+will produce an `old/` whose every cross-page link 404s.
+
+Assemble into a **fresh** directory rather than into a `dist-site/` left over
 from a previous run. A stale file from an earlier build that no longer exists
 in the sources would otherwise be published indefinitely, and nothing would
 report it.
@@ -123,15 +227,26 @@ Then check, in a browser, that:
 - each of the nine loads and renders real data,
 - each of the seventeen still loads,
 - `old/test.html` loads and its links stay within `old/`,
+- **from `old/index.html`, open the "Dashboards ▾" menu and follow a link to an
+  unmigrated page** — e.g. Worker Pools. It must land on `old/workers.html` and
+  render, not 404. This is the check for assembly step 3, and it is the failure
+  the repository layout invites,
 - the "Dashboards ▾" menu works from a migrated page and from an unmigrated
   one,
+- **no request 404s** — open the network panel, on `index.html` and on
+  `old/index.html`. This is the check that would have caught the backfill bug,
+  and it costs one glance per page,
+- **`index.html`'s mochitest chart starts in January, not on 2026-05-29.** If it
+  starts at the end of May, the backfill did not load. Compare against the
+  xpcshell chart beside it, which has no backfill and always starts in January,
 - no page logs a console error that the same page does not log today.
 
-**Do not skip the last one.** Two defects in this migration were invisible to
-every automated check and visible immediately on loading the page: a button
-that rendered enabled and did nothing, and a page that never fetched the file
-its charts needed. `docs/PARITY.md` §7 says it directly — the harness makes
-reading the output cheap, it does not replace doing it.
+**Do not skip the browser pass.** Three defects in this migration were invisible
+to every automated check and visible immediately on loading the page: a button
+that rendered enabled and did nothing, a page that never fetched the file its
+charts needed, and a chart silently missing four months of history because a
+data file was not copied into the output. `docs/PARITY.md` §7 says it directly —
+the harness makes reading the output cheap, it does not replace doing it.
 
 **After the first successful deploy**, load the fork's live pages and compare
 against `old/` on the same site. That is the first time the two have been
@@ -151,9 +266,10 @@ person who needs it will be reading that file, not this document.
 
 - **Deploying to `upstream` / `tests.firefox.dev`.** Separate change, after the
   fork works.
-- **Removing the old implementations from the repository.** They are still the
-  comparison target for the parity harnesses, and seventeen pages have no
-  replacement. Revisit once `old/` has been dropped from the deploy.
+- **Deleting the nine superseded pages.** §0 moves them to `old/`; deleting them
+  is the follow-up, once the new pages have been trusted long enough. At that
+  point it is `git rm -r old/` and dropping step 3 of the assembly — which is
+  the whole reason for giving `old/` one unambiguous meaning.
 - **Migrating the remaining seventeen pages.** No CLI command corresponds to
   them, so the argument that justified this programme — that the page and the
   command must agree — does not reach them.
@@ -168,8 +284,21 @@ The pages were migrated by nine agents working largely independently, and the
 defects that mattered were found by a human running the thing, not by the test
 suite — which was green throughout. Specifically: a formatter duplicated
 thirteen times, a control that rendered enabled and did nothing, a page whose
-charts silently never loaded their data, and two rate formulas that were wrong
-on both sides at once in different ways.
+charts silently never loaded their data, two rate formulas that were wrong on
+both sides at once in different ways, and a chart missing four months of history
+because a committed data file was never copied into the build output.
+
+That last one is worth dwelling on, because it is the one this document did not
+predict. A test in `test/index-page.test.ts` *asserted* the truncated result as
+correct — and it was correct, as a unit test of what the page should do when the
+backfill is genuinely absent. What nothing asked was whether the file is
+reachable in the layout the deploy actually produces. The bug lived in the gap
+between "the page handles a missing file gracefully" and "the file should not be
+missing."
+
+Expect more of that shape here. The suite tests the pages; the deploy tests the
+*arrangement* of them, and almost nothing covers arrangement.
 
 So when the site is deployed, the highest-value next action is not more
-automation. It is opening the nine pages and reading them.
+automation. It is opening the nine pages and reading them, with the network
+panel open.
