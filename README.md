@@ -35,7 +35,9 @@ fx-tests --help                                      # all 13 commands
 
 Every page is listed on [`help.html`](help.html); the most useful ones are
 also reachable from the "Dashboards ▾" menu in the top-right corner of each
-page. The main ones:
+page. The filenames below are the URLs on the site; where a page's source lives
+in the repository is described under [How it works](#how-it-works). The main
+ones:
 
 - **Test Health** (`index.html`) — the landing page. Trend charts and a 7-day
   summary of flaky test-failure, flaky job-failure, skip and invalid-job rates
@@ -66,20 +68,34 @@ frequently used dashboards" on `help.html`.
 
 The site is a set of static HTML pages with inline CSS and JavaScript, sharing
 a few scripts (`fetch-utils.js`, `shared.js`, `common-ui.js`, `dashboards.js`,
-…). **The dashboards have no build step** — they are served exactly as they
-appear in the tree, and editing a page and reloading it is the whole loop.
-
-Each page fetches pre-aggregated JSON data from the Firefox CI (Taskcluster)
+…). Each page fetches pre-aggregated JSON data from the Firefox CI (Taskcluster)
 index at runtime — there is no server. The data is produced by
 [`fetch-test-data.js`](https://searchfox.org/mozilla-central/source/testing/timings/fetch-test-data.js)
 in mozilla-central, which queries Firefox CI and writes the compact,
 table-encoded JSON files the dashboards consume.
 
-The command-line tool below does have a toolchain — TypeScript, a bundler and a
-test suite — and it is deliberately confined to `cli/`, `lib/`, `test/` and
-`tools/`. No page depends on it, and none of the HTML in this repository is
-generated. See [`docs/PLAN.md`](docs/PLAN.md) for why migrating the pages onto
-the shared library is a separate exercise rather than part of this one.
+The repository holds the pages in three places:
+
+- **the root** — the 17 pages that have not been migrated, plus `docs.html`.
+  **These have no build step**: they are served exactly as they appear in the
+  tree, and editing a page and reloading it is the whole loop.
+- **[`site/`](site/)** — the 9 pages that have been migrated onto the shared
+  library in `lib/`, so that they can `import` typed and tested code instead of
+  carrying another copy of it inline. `npm run pages` builds them into
+  self-contained HTML in `dist-site/` (gitignored), one file per page with its
+  script inlined. That is the only thing the build buys, and it touches nothing
+  in the root — see the header comment in
+  [`tools/build-pages.ts`](tools/build-pages.ts) for why the output is a single
+  file. A page in `site/` is still valid HTML a browser can load directly, so
+  the edit-and-reload loop survives the migration.
+- **`old/`** — the 9 superseded root pages the migrated ones replace, kept for
+  comparison until the new ones have been trusted.
+
+The command-line tool below shares that toolchain — TypeScript, a bundler and a
+test suite — across `cli/`, `lib/`, `test/` and `tools/`. See
+[`docs/PARITY.md`](docs/PARITY.md) for why the pages are being migrated onto
+the shared library and how the two versions are compared, and
+[`docs/DEPLOY.md`](docs/DEPLOY.md) for how the built pages are meant to ship.
 
 ## `fx-tests`, the command-line tool
 
@@ -115,6 +131,8 @@ the suite rather than going quietly stale.
 
 [`docs/CLI.md`](docs/CLI.md) is the full command reference and
 [`docs/PLAN.md`](docs/PLAN.md) describes how the library was extracted.
+[`docs.html`](docs.html) renders every markdown doc in this repository in the
+browser, with the links between them resolved.
 
 ## Data format
 
