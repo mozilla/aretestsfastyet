@@ -5,9 +5,9 @@
  * ## The bug this exists for
  *
  * `tools/build-pages.ts` used to discover siblings by scanning the HTML for
- * `src=`/`href=` attributes only. `next/index.ts` fetches its committed backfill
+ * `src=`/`href=` attributes only. `site/index.ts` fetches its committed backfill
  * from code — `fetch('./mochitest-stats-backfill.json')` — which no attribute
- * mentions, so the file was never copied into `dist-pages/`, the built page's
+ * mentions, so the file was never copied into `dist-site/`, the built page's
  * request 404'd, and the page's own best-effort handling turned that into
  * "there is no backfill". Measured on the built page: the mochitest chart showed
  * 68 points from 2026-05-29 instead of 200 from 2026-01-17. Nothing failed; the
@@ -16,14 +16,14 @@
  * ## Why the scan is over the bundle, not the source
  *
  * The bundle is what the browser actually runs, so it is what actually issues
- * the requests. Scanning `next/*.ts` instead would miss a fetch that arrives
+ * the requests. Scanning `site/*.ts` instead would miss a fetch that arrives
  * from an imported `lib/` module, and would see one that esbuild tree-shook
  * away. It is also the same string the `</script>` guard checks, so both
  * checks look at the identical artefact.
  *
  * ## Why a required/optional distinction exists
  *
- * `next/index.ts` issues two backfill fetches and only one of the files exists:
+ * `site/index.ts` issues two backfill fetches and only one of the files exists:
  * `ls *-stats-backfill.json` is a single entry, and the xpcshell request has
  * 404'd on every load since the page was written. That is deliberate — the
  * backfill is a repair for a specific mochitest data loss — so "every relative
@@ -50,7 +50,7 @@
  * has typed and tested — not the UI plumbing, which has no `lib/` equivalent
  * and no reason to grow one yet.
  *
- * They do have to be *reachable*, though: the built page sits in `dist-pages/`,
+ * They do have to be *reachable*, though: the built page sits in `dist-site/`,
  * so a relative `src="shared.js"` resolves next to it and 404s unless the file
  * is copied there. crash-viewer.html did not catch this because it is entirely
  * self-contained.
@@ -92,7 +92,7 @@ const FETCH_SIBLING = /fetch\(\s*(["'`])\.\/([\w.-]+)\1\s*\)/g;
  * The **filename is part of the marker** rather than being inferred from the
  * next line. Position-based matching would break on a marker whose explanation
  * runs to several lines, and reading the name twice is what makes the exemption
- * greppable: `grep -rn build-optional next/` lists every file the build is
+ * greppable: `grep -rn build-optional site/` lists every file the build is
  * knowingly allowed to miss, which is a list worth being able to see.
  *
  * The match is against the page's *sources*, not the bundle, because esbuild

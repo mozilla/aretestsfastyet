@@ -1,5 +1,5 @@
 /**
- * `next/errors-view.ts` — the view model behind `next/errors.html`.
+ * `site/errors-view.ts` — the view model behind `site/errors.html`.
  *
  * ## Where every expected value comes from
  *
@@ -28,7 +28,7 @@
  *
  * Each assertion below was checked against the question "could this pass
  * against a plausible wrong implementation?" — the mutation list at the bottom
- * of `next/errors.ts`'s report records which ones were verified by actually
+ * of `site/errors.ts`'s report records which ones were verified by actually
  * breaking the code.
  */
 
@@ -76,7 +76,7 @@ import {
     soloKind,
     sortRows,
     visibleRows,
-} from '../next/errors-view.ts';
+} from '../site/errors-view.ts';
 
 // =========================================================================
 // The hand-authored file

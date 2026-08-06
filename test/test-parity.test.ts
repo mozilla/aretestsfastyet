@@ -1,8 +1,8 @@
 /**
- * New page vs CLI for `test`: `next/test.html?test=<path>` ↔ `fx-tests test <path>`.
+ * New page vs CLI for `test`: `site/test.html?test=<path>` ↔ `fx-tests test <path>`.
  *
  * `PARITY.md` §5, for the second of the three migrated pages. Both sides are
- * driven over the **same bucket fixtures** — `next/test-view.ts`'s
+ * driven over the **same bucket fixtures** — `site/test-view.ts`'s
  * `buildTestView` on one side, a real `run()` invocation on the other — and
  * compared on values, order and framing.
  *
@@ -55,7 +55,7 @@ import {
     cellKey,
     displayPlatformOf,
     displayVariantOf,
-} from '../next/test-view.ts';
+} from '../site/test-view.ts';
 import {
     type Divergence,
     assertDeclaredDivergences,
@@ -131,7 +131,7 @@ interface RawCounts {
 /**
  * Per-configuration counts read straight off the bucket file's parallel arrays.
  *
- * **Deliberately importing nothing from `lib/` or `next/`.** This is the
+ * **Deliberately importing nothing from `lib/` or `site/`.** This is the
  * independent path the cell comparison's expectations come from, and the reason
  * it exists is a defect in the first draft of this file: summing
  * `coverageOf(...).configs` and comparing it to the page's grid *looked* like
@@ -270,7 +270,7 @@ test('the independent raw reader agrees with coverageOf on every config', () => 
     assert.equal(checked, 923, 'the configurations in the fixtures changed');
 });
 
-/** The page's view model for one corpus entry, built as `next/test.ts` builds it. */
+/** The page's view model for one corpus entry, built as `site/test.ts` builds it. */
 function pageView(entry: Candidate, harness: string): TestView {
     return buildTestView(entry.file, {
         testId: entry.testId,
@@ -372,7 +372,7 @@ test('the page cell grid matches counts read straight off the fixture arrays', a
     // test, and it read like coverage.
     //
     // So the expectation now comes from `rawConfigCounts`, which walks the
-    // bucket file's parallel arrays with no `lib/` or `next/` code in the path
+    // bucket file's parallel arrays with no `lib/` or `site/` code in the path
     // at all. The same mutation now fails here.
     //
     // Compared per cell rather than as one grand total: a total would net out a
@@ -400,7 +400,7 @@ test('the page cell grid matches counts read straight off the fixture arrays', a
                 skips: 0,
             };
             // The page folds EXPECTED-FAIL into passes (`outcomesOfConfig`,
-            // `next/test-view.ts:607`): an annotation that fired as intended is
+            // `site/test-view.ts:607`): an annotation that fired as intended is
             // not an issue. Applied here rather than left out, because omitting
             // it would make every expected-fail look like a mismatch.
             cell.passes += counts.pass + counts.expectedFail;
@@ -518,7 +518,7 @@ test('every failing config the CLI ranks is a cell the page shows as failing', a
 
 test('the two independently-written coarse-OS rules agree on every job name', async () => {
     // `lib/query/coverage.ts:394`'s `operatingSystemOf` and
-    // `next/test-view.ts:280`'s `extractPlatform` are two separate
+    // `site/test-view.ts:280`'s `extractPlatform` are two separate
     // implementations of "which OS is this", and the CLI's "Runs on N configs
     // across …" line and the page's column grouping are each built on one of
     // them. They are not the *same* function, so their agreement is a real
@@ -884,7 +884,7 @@ const DIVERGENCES: Divergence[] = [
         what: 'timeouts have no CLI issue row',
         reason:
             'The page emits one TIMEOUT row per test carrying the whole timeout count under a ' +
-            'fixed string (`next/test-view.ts:1105`), because a `TIMEOUT*` status group records ' +
+            'fixed string (`site/test-view.ts:1105`), because a `TIMEOUT*` status group records ' +
             'no `messageIds` at all (`lib/formats/status-entries.ts:18`) and there is nothing to ' +
             'group by. The CLI has three message channels — `messages`, `crashSignatures`, ' +
             '`skips` — all keyed on a recorded string, so a timeout falls through all three. It ' +
@@ -930,7 +930,7 @@ const DIVERGENCES: Divergence[] = [
             'The page groups columns by *detailed* platform (`mac-64`, `mac-aarch64`, ' +
             '`windows-32`) and collapses a single-member group to the base; the CLI\'s "Runs on ' +
             'N configs across …" line reports the coarse OS. Two separate implementations — ' +
-            '`next/test-view.ts:280` and `lib/query/coverage.ts:394` — and their agreement on ' +
+            '`site/test-view.ts:280` and `lib/query/coverage.ts:394` — and their agreement on ' +
             'the coarse level is asserted above over 300 distinct job names, so the difference ' +
             'is granularity and not classification. Correct on both sides: a matrix has room for ' +
             'six columns and a one-line summary does not, and splitting `mac` into two in a ' +
@@ -987,7 +987,7 @@ test('the unexercised skip branches are named rather than claimed as parity', as
     // agree:
     //
     //   - the page drops `run-if` skips from its issue list
-    //     (`next/test-view.ts:1255`) and the CLI's `collectSkips` does not;
+    //     (`site/test-view.ts:1255`) and the CLI's `collectSkips` does not;
     //   - the page drops a skip with no message at all and the CLI labels it
     //     `(no reason recorded)`.
     //

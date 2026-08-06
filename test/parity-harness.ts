@@ -17,7 +17,7 @@
  * ## Why `synthProfile` exists, and what it is not
  *
  * The page and the CLI read the push from **different sources of the same
- * bytes**: `next/try.ts` parses the resource-usage profile in a web worker,
+ * bytes**: `site/try.ts` parses the resource-usage profile in a web worker,
  * `cli/commands/try.ts` parses it with `parseTestMarkers`. There is no shared
  * `lib/` module for that step, so a parity check has to feed both the same
  * profile.

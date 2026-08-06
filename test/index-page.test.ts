@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /**
- * `next/index.ts`, the landing page controller, driven end to end in jsdom.
+ * `site/index.ts`, the landing page controller, driven end to end in jsdom.
  *
  * ## Why this file builds its own jsdom rather than using `test/dom-harness.ts`
  *
@@ -45,15 +45,15 @@ import { JSDOM } from 'jsdom';
 
 import type { StatsFile } from '../lib/formats/stats.ts';
 import { computeSummary } from '../lib/query/summary.ts';
-import { SUMMARY_DAYS, mergeBackfillStats, summaryRows } from '../next/index-view.ts';
+import { SUMMARY_DAYS, mergeBackfillStats, summaryRows } from '../site/index-view.ts';
 
 const ROOT = new URL('../', import.meta.url);
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
-/** The scripts `next/index.html` loads, in the order its tags do. */
+/** The scripts `site/index.html` loads, in the order its tags do. */
 const SHARED_SCRIPTS = ['fetch-utils.js', 'shared.js', 'dashboards.js'] as const;
 
-/** The globals those scripts define that `next/index.ts` names. */
+/** The globals those scripts define that `site/index.ts` names. */
 const GLOBAL_NAMES = ['withDevParams', 'renderDashboardTeaser', 'setupWindowResize'] as const;
 
 /** One recorded `Plotly.newPlot`. */
@@ -76,7 +76,7 @@ interface IndexHarness {
 }
 
 /**
- * The landing page's markup, read from `next/index.html` itself.
+ * The landing page's markup, read from `site/index.html` itself.
  *
  * Read rather than copied, unlike `dom-harness.ts`'s two page constants. The
  * reason those are copied is that the crashes and issues pages disagree about
@@ -86,7 +86,7 @@ interface IndexHarness {
  * tags are stripped: jsdom must not try to load Plotly from a CDN.
  */
 function pageMarkup(): string {
-    return readFileSync(new URL('next/index.html', ROOT), 'utf8').replace(
+    return readFileSync(new URL('site/index.html', ROOT), 'utf8').replace(
         /<script\b[^>]*>[\s\S]*?<\/script>/g,
         ''
     );
@@ -245,7 +245,7 @@ async function flush(harness: IndexHarness): Promise<void> {
 /**
  * A fresh instance of the controller.
  *
- * `next/index.ts` keeps the loaded files, the summaries and the current display
+ * `site/index.ts` keeps the loaded files, the summaries and the current display
  * mode in module-level `let`s, exactly as the page does — so a second `start()`
  * against the same module instance inherits the first test's display mode and
  * its stats. That is correct for a page, which is loaded once, and wrong for a
@@ -257,7 +257,7 @@ async function flush(harness: IndexHarness): Promise<void> {
  */
 async function freshController(): Promise<{ start(): Promise<void> }> {
     return (await import(
-        `../next/index.ts?case=${Date.now()}-${Math.random()}`
+        `../site/index.ts?case=${Date.now()}-${Math.random()}`
     )) as { start(): Promise<void> };
 }
 

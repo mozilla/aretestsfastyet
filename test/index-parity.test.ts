@@ -1,5 +1,5 @@
 /**
- * `next/index.html` against `fx-tests summary` — `PARITY.md` §5.
+ * `site/index.html` against `fx-tests summary` — `PARITY.md` §5.
  *
  * Both sides now read `{harness}-stats.json` and both compute a 7-day topline,
  * so a disagreement is a real difference in what one of them decided rather
@@ -69,7 +69,7 @@ import {
     SUMMARY_DAYS,
     mergeBackfillStats,
     summaryRows,
-} from '../next/index-view.ts';
+} from '../site/index-view.ts';
 import {
     assertDeclaredDivergences,
     assertSameOrder,
@@ -96,7 +96,7 @@ function backfillFile(): StatsFile {
 }
 
 /**
- * The page's merged view of one harness — what `next/index.ts` renders from.
+ * The page's merged view of one harness — what `site/index.ts` renders from.
  *
  * xpcshell has no committed backfill (`ls *-stats-backfill.json` is one entry),
  * so its merge is a no-op and the two sides read the identical dates.
@@ -417,7 +417,7 @@ test('the page adds a flavor breakdown the CLI does not have', async () => {
 });
 
 test('the prior-period comparison the page borrows is the CLI\'s own', async () => {
-    // Divergence 6 in `next/index.ts`. The page's tooltip quotes
+    // Divergence 6 in `site/index.ts`. The page's tooltip quotes
     // `computeSummary`, so this asserts the two produce the same comparison
     // rather than the page having grown a second implementation of it.
     const cli = await cliSummary();

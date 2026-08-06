@@ -1,6 +1,6 @@
 /**
  * New page vs CLI for the crash viewer:
- * `next/crash-viewer.html?url=…` ↔ `fx-tests crash <taskId>.<retryId> <minidumpId>`.
+ * `site/crash-viewer.html?url=…` ↔ `fx-tests crash <taskId>.<retryId> <minidumpId>`.
  *
  * `PARITY.md` §5, for the first of the three migrated pages, and the one where
  * the brief says to "check what is actually comparable rather than forcing it".
@@ -36,7 +36,7 @@
  *
  * ## The comparison this file cannot make
  *
- * Neither side is rendered. `next/crash-viewer.ts` turns the view model into
+ * Neither side is rendered. `site/crash-viewer.ts` turns the view model into
  * elements and `renderText`/`renderMarkdown` turn `CrashJson` into strings;
  * asserting on the first in node needs a DOM shim, and comparing rendered text
  * to rendered HTML would be comparing two presentations rather than two
@@ -49,7 +49,7 @@ import assert from 'node:assert/strict';
 import type { Frame, StackwalkFile, Thread } from '../lib/formats/stackwalk.ts';
 import { parseFileInfo } from '../lib/links.ts';
 import { crashSignature } from '../lib/model/crash-signature.ts';
-import { type CrashView, type ThreadView, crashView } from '../next/crash-view.ts';
+import { type CrashView, type ThreadView, crashView } from '../site/crash-view.ts';
 import {
     type Divergence,
     assertDeclaredDivergences,
@@ -577,7 +577,7 @@ const DIVERGENCES: Divergence[] = [
     {
         what: 'the text shown for an unsymbolized frame',
         reason:
-            "Upstream's `???` is what the page shows (`next/crash-view.ts:259`) and the CLI " +
+            "Upstream's `???` is what the page shows (`site/crash-view.ts:259`) and the CLI " +
             'falls back to `module + offset`. Both are derived from the same null ' +
             '`frame.function`, and the CLI reports `unsymbolized: true` so a consumer can tell ' +
             'the two apart — which is what makes the string a presentation choice rather than a ' +
@@ -592,12 +592,12 @@ const DIVERGENCES: Divergence[] = [
         what: 'a frame whose file is recorded with line 0',
         reason:
             "FOUND BY THIS FILE. The page's location cell is gated on `frame.file && frame.line` " +
-            '(`next/crash-view.ts:317`), and `0` is falsy, so a frame recording ' +
+            '(`site/crash-view.ts:317`), and `0` is falsy, so a frame recording ' +
             '`tools/profiler/core/platform.cpp` at line 0 shows no location at all — while the ' +
             'CLI emits `file` and `line: 0` and its renderer prints `platform.cpp:0`. One frame ' +
             'of the 1,348 in the corpus, so it is narrow, but it is a real disagreement about ' +
             'whether a location was recorded rather than a formatting choice. Left as it is ' +
-            'because the fix is in `next/` or `cli/`, outside this change, and because which ' +
+            'because the fix is in `site/` or `cli/`, outside this change, and because which ' +
             'side is right is arguable: line 0 from a stack walker means "the file is known and ' +
             'the line is not", which the page renders as no location and the CLI as a location ' +
             'of zero. Neither reads as what it means.',

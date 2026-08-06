@@ -1,5 +1,5 @@
 /**
- * Builds the migrated dashboard pages in `next/` into self-contained HTML.
+ * Builds the migrated dashboard pages in `site/` into self-contained HTML.
  *
  * ## Why a build exists here at all, when the other pages have none
  *
@@ -9,10 +9,10 @@
  * up for one thing only — being able to `import` the typed, tested code in
  * `lib/` instead of carrying a fourth copy of it inline.
  *
- * The unmigrated pages are untouched by this script. It reads `next/` and
- * writes `dist-pages/`; it never opens a page in the repository root, and
+ * The unmigrated pages are untouched by this script. It reads `site/` and
+ * writes `dist-site/`; it never opens a page in the repository root, and
  * nothing it writes lands on top of one. A page is migrated exactly when its
- * source moves into `next/`, so there is no state where the same page has two
+ * source moves into `site/`, so there is no state where the same page has two
  * live definitions.
  *
  * ## Why the output is a single file with everything inlined
@@ -44,10 +44,10 @@ import { fileURLToPath } from 'node:url';
 import { type SiblingAsset, findSiblingAssets } from './page-assets.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const sourceDir = join(root, 'next');
+const sourceDir = join(root, 'site');
 // Overridable so the freshness check can build to a scratch directory, the
 // same arrangement `tools/build-cli.ts` uses.
-const outDir = process.env['FX_PAGES_BUILD_OUT'] ?? join(root, 'dist-pages');
+const outDir = process.env['FX_PAGES_BUILD_OUT'] ?? join(root, 'dist-site');
 
 /**
  * The marker a source page uses to say "the bundle goes here".
@@ -214,7 +214,7 @@ async function buildPage(name: string): Promise<BuiltPage> {
     }
 
     if (inlined === 0) {
-        // A page in `next/` that inlines nothing is almost certainly a typo in
+        // A page in `site/` that inlines nothing is almost certainly a typo in
         // the script tag rather than a page that genuinely needs no code — and
         // it would deploy as a blank dashboard.
         throw new Error(
@@ -277,7 +277,7 @@ function checkWorkerSelfContained(page: string, worker: string, bundle: string):
  * whole point of `tools/page-assets.ts`: the symptom of a page that cannot load
  * `shared.js` is a dashboard that renders its markup and then does nothing, and
  * the symptom of one that cannot load its committed data file is worse still —
- * `next/index.ts` treats a 404 backfill as "there is no backfill" and drew six
+ * `site/index.ts` treats a 404 backfill as "there is no backfill" and drew six
  * months less history for a week without anything failing.
  *
  * Returns the assets that should actually be copied: everything required, plus
@@ -365,7 +365,7 @@ function checkSafe(name: string, bundles: readonly string[]): void {
 
 const sources = (await readdir(sourceDir).catch(() => [])).filter((name) => name.endsWith('.html'));
 if (sources.length === 0) {
-    console.log('No pages in next/ yet; nothing to build.');
+    console.log('No pages in site/ yet; nothing to build.');
 } else {
     await mkdir(outDir, { recursive: true });
     const built: BuiltPage[] = [];

@@ -1,9 +1,9 @@
 /**
  * The crash viewer's view model, against the two real dumps.
  *
- * ## Why this imports from `next/`
+ * ## Why this imports from `site/`
  *
- * `next/crash-view.ts` is **page-local** — it names element ids, CSS classes
+ * `site/crash-view.ts` is **page-local** — it names element ids, CSS classes
  * and glyphs, so it is the page's, not `lib/`'s (that module's comment gives
  * the rule and how it was applied). A node test importing it is the point:
  * being page-local costs nothing in testability, because the seam is the module
@@ -23,7 +23,7 @@
  *
  * ## What these tests are for, and what they deliberately are not
  *
- * They are **not** DOM tests. `next/crash-viewer.ts` turns the structures below
+ * They are **not** DOM tests. `site/crash-viewer.ts` turns the structures below
  * into elements and nothing else, and asserting on that in node needs a DOM
  * shim that is itself a second implementation of the browser — expensive, and
  * it would pass while the real page was blank. The rendering is verified where
@@ -62,7 +62,7 @@ import {
     frameRows,
     otherThreadViews,
     trustDescription,
-} from '../next/crash-view.ts';
+} from '../site/crash-view.ts';
 
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 

@@ -1,5 +1,5 @@
 /**
- * `next/issues.html` against `fx-tests issues` — `PARITY.md` §5.
+ * `site/issues.html` against `fx-tests issues` — `PARITY.md` §5.
  *
  * The comparison this migration was sequenced last to make. Both sides now
  * read the same 21-day aggregate through `lib/query/issues.ts`, so a
@@ -12,7 +12,7 @@
  * ranked components over the **single most recent day** and `fx-tests issues`
  * over **21 days**. `test/framing.test.ts` carried that as a declared
  * divergence whose reason said it "closes when the page migrates". It has;
- * `next/issues-view.ts`'s `isHistoricalDate` treats an absent `date` as the
+ * `site/issues-view.ts`'s `isHistoricalDate` treats an absent `date` as the
  * aggregate, so the windows agree and the entry is gone.
  *
  * That is why the framing block below asserts agreement rather than recording a
@@ -54,7 +54,7 @@ import {
     INITIAL_SORT,
     buildComponentRows,
     sortComponents,
-} from '../next/issues-view.ts';
+} from '../site/issues-view.ts';
 import {
     type Divergence,
     assertDeclaredDivergences,
@@ -283,9 +283,9 @@ test('both sides group by component over the same 21-day window', async () => {
     // *file*. Both are read off the source rather than restated, because a
     // page that agreed on the label while fetching a daily file would pass any
     // assertion written against the label alone.
-    const { isHistoricalDate } = await import('../next/issues-view.ts');
+    const { isHistoricalDate } = await import('../site/issues-view.ts');
     assert.equal(isHistoricalDate(undefined), true, 'no hash means the aggregate');
-    const controller = readFileSync(new URL('../next/issues.ts', import.meta.url), 'utf8');
+    const controller = readFileSync(new URL('../site/issues.ts', import.meta.url), 'utf8');
     assert.match(
         controller,
         /historicalDataFile: `\$\{harness\}-issues\.json`/,
@@ -303,7 +303,7 @@ test('both sides count all four issue types by default', async () => {
     assert.deepEqual([...(result['types'] as string[])].sort(), ['crash', 'fail', 'skip', 'timeout']);
     // The page's four checkboxes are all `checked` in the markup this
     // migration kept byte-identical, so the page default is read off the page.
-    const markup = readFileSync(new URL('../next/issues.html', import.meta.url), 'utf8');
+    const markup = readFileSync(new URL('../site/issues.html', import.meta.url), 'utf8');
     for (const id of ['filter-failures', 'filter-timeouts', 'filter-crashes', 'filter-skips']) {
         const pattern = new RegExp(`id="${id}"[^>]*\\bchecked\\b`);
         assert.match(markup, pattern, `${id} must be checked by default`);

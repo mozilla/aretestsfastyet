@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /**
- * `next/crashes.ts`, the crashes page controller, driven end to end in jsdom.
+ * `site/crashes.ts`, the crashes page controller, driven end to end in jsdom.
  *
  * ## Why this file exists at all
  *
@@ -23,7 +23,7 @@
  *
  * - The seven signature rows, their counts and their test counts are tallied
  *   off the raw fixture JSON by `tallyCrashes()` below, which reads
- *   `tables`/`testRuns` directly and imports nothing from `next/`.
+ *   `tables`/`testRuns` directly and imports nothing from `site/`.
  * - Every class name and label is a literal, taken from
  *   `common-data-view.css` and the old `crashes.html`.
  * - Link hrefs are built by the **real** `common-links.js`, loaded into the
@@ -54,7 +54,7 @@ interface Tally {
     tests: Map<string, Set<string>>;
 }
 
-/** The crashes in the 21-day fixture, counted without touching `next/`. */
+/** The crashes in the 21-day fixture, counted without touching `site/`. */
 function tallyCrashes(): Tally {
     const counts = new Map<string, number>();
     const tests = new Map<string, Set<string>>();
@@ -141,7 +141,7 @@ const FILES = {
  * ones after them re-render first.
  */
 const harness = setupPage({ url: 'https://tests.firefox.dev/crashes.html', files: FILES });
-const { start } = await import('../next/crashes.ts');
+const { start } = await import('../site/crashes.ts');
 await start();
 
 const list = (): HTMLElement => harness.content.querySelector('.crash-list')!;
@@ -220,7 +220,7 @@ test('the page names its columns "Crash Signature" and "Crashes"', () => {
 });
 
 test('a signature label is plain text with no title and no Searchfox anchor', () => {
-    // `next/crashes.ts:244-247`: `labelNodes: (key) => [key]` and
+    // `site/crashes.ts:244-247`: `labelNodes: (key) => [key]` and
     // `labelTitle: () => undefined`. The failures page does the opposite on
     // both counts, so this is the hook pair asserted as a page identity.
     for (const row of dataRows()) {
@@ -232,7 +232,7 @@ test('a signature label is plain text with no title and no Searchfox anchor', ()
 });
 
 test('no test row on the crashes page carries a bug-filing button', () => {
-    // `testNameSuffix: () => null` (`next/crashes.ts:272`). The failures page
+    // `testNameSuffix: () => null` (`site/crashes.ts:272`). The failures page
     // emits 24 of these on the same fixture, so the absence is a real
     // distinction rather than an artefact of empty data.
     let testRows = 0;
@@ -309,7 +309,7 @@ test('the status text reports the 21-day window from the file"s own metadata', (
 /**
  * A note on `endsSignature`'s three clauses, from mutating each in turn.
  *
- * `next/crashes.ts:338` stops the removal walk on `crash-row`, `sort-header`
+ * `site/crashes.ts:338` stops the removal walk on `crash-row`, `sort-header`
  * **or** `total-row`. Only the first is load-bearing, and that is measured
  * rather than argued:
  *
@@ -321,7 +321,7 @@ test('the status text reports the 21-day window from the file"s own metadata', (
  *
  * Both survivors are redundant by construction, not by accident of this
  * fixture. `renderTotalRow` emits `class="${vocab.rowClass} total-row"`
- * (`next/drilldown-render.ts:496`), so **every** `total-row` is also a
+ * (`site/drilldown-render.ts:496`), so **every** `total-row` is also a
  * `crash-row` and the first clause already caught it; and the `sort-header` is
  * `renderList`'s first child, so it is never a following sibling of an expanded
  * row at all. Upstream lists all three (`crashes.html:841`) and they are
@@ -349,7 +349,7 @@ test('expanding a signature inserts its subtree directly after the row', () => {
 });
 
 test('expanding a second signature closes the first', () => {
-    // `toggleSignature` (`next/crashes.ts:378`): only one signature is open at
+    // `toggleSignature` (`site/crashes.ts:378`): only one signature is open at
     // a time, and the previously open row is found through `rowsByKey`.
     const [first, second] = dataRows();
     first!.click();
@@ -393,7 +393,7 @@ test('a signature spanning several tests in one directory expands to a path row'
     assert.equal(pathRow.classList.contains('expanded'), true);
     assert.ok(opened.length > before.length, 'the path expanded to something');
     const pathIndex = [...list().children].indexOf(pathRow);
-    // Chart first, then the path's tests. `togglePath` (`next/crashes.ts:403`).
+    // Chart first, then the path's tests. `togglePath` (`site/crashes.ts:403`).
     assert.equal(opened[pathIndex + 1], 'div.historical-chart');
     assert.equal(opened[pathIndex + 2], 'div.test-row');
     // Everything before the path row is untouched.
@@ -409,7 +409,7 @@ test('a signature spanning several tests in one directory expands to a path row'
     // `path-row, crash-row`.
     //
     // Reproduced, not introduced. `endsPath` stops on anything that is not a
-    // test row, a chart or an instance table (`next/crashes.ts:349`), and a
+    // test row, a chart or an instance table (`site/crashes.ts:349`), and a
     // collapsed-away path's test row *is* a test row — so the walk runs past
     // the end of its own subtree. `crashes.html:886-891` is the same loop with
     // the same three classes, so the old page loses the same row.
@@ -467,7 +467,7 @@ test('expanding a test inserts an instance table, and closing removes only that'
 
 test('a single-crash row links its job name at the crash viewer for its own dump', () => {
     // `jobNameHref` is `getCrashViewerUrl(occurrence) || getProfilerUrl(…)`
-    // (`next/crashes.ts:267`). The expected URL is rebuilt here from the raw
+    // (`site/crashes.ts:267`). The expected URL is rebuilt here from the raw
     // task ID and dump ID with the *real* `common-links.js`, so this compares
     // two independent computations rather than echoing a stub.
     const getCrashViewerUrl = (globalThis as unknown as {
@@ -506,7 +506,7 @@ test('a single-crash row links its job name at the crash viewer for its own dump
 });
 
 test('clicking a single-crash row opens the crash viewer for that occurrence', () => {
-    // `singleRowHref` (`next/crashes.ts:274`), the click behaviour upstream
+    // `singleRowHref` (`site/crashes.ts:274`), the click behaviour upstream
     // expresses as `data-crash-url` plus a delegated handler.
     //
     // The row's own listener is what is under test, so the click has to happen
@@ -556,7 +556,7 @@ test('clicking a single-crash row opens the crash viewer for that occurrence', (
 });
 
 test('an occurrence"s links are Profile, Crash and Job, in that order', () => {
-    // `occurrenceLinks` (`next/crashes.ts:249`) — `renderCrashLinks` in element
+    // `occurrenceLinks` (`site/crashes.ts:249`) — `renderCrashLinks` in element
     // form. The order is upstream's and the Crash link is conditional on a
     // dump, so the labels are asserted as a sequence.
     let checked = 0;
@@ -677,7 +677,7 @@ test('clicking the Tests header sorts by test count, descending first', () => {
         'the widest signature is first'
     );
     // A new column starts descending — it does not inherit the previous
-    // column's direction. `nextSort` (`next/drilldown-view.ts:452`).
+    // column's direction. `nextSort` (`site/drilldown-view.ts:452`).
     const arrows = [...list().querySelectorAll('.sort-arrow')].map((a) => a.textContent);
     assert.deepEqual(arrows, ['▼', ''], 'the arrow moved to the Tests column');
 
@@ -750,7 +750,7 @@ test('a search drops non-matching rows and leaves the survivors" numbers alone',
 test('a row expanded under a search shows its whole, unfiltered subtree', async () => {
     // The other half of divergence 4, and the half a filter-only test misses:
     // `render()` re-opens from `groups`, not from the filtered rows
-    // (`next/crashes.ts:321`).
+    // (`site/crashes.ts:321`).
     const multi = EXPECTED_ROWS.find((row) => row.testCount > 1)!;
     const row = dataRows().find(
         (candidate) => candidate.querySelector('.crash-signature')!.textContent === multi.key
@@ -780,12 +780,12 @@ test('a row expanded under a search shows its whole, unfiltered subtree', async 
     // A note on what this test does *not* pin, because a mutation proved it.
     //
     // `render()` re-attaches an open row's subtree from `groups`
-    // (`next/crashes.ts:315`) rather than from the filtered rows, and the
+    // (`site/crashes.ts:315`) rather than from the filtered rows, and the
     // comment there calls that "deliberately the *unfiltered* subtree". Rewiring
     // it to read the filtered row's `paths` instead changes nothing and survives
     // this suite — correctly, because the two are the **same object**:
     // `filterGroupsByMatch` is an `Array.prototype.filter`
-    // (`next/drilldown-view.ts:531`) that selects whole rows and never rebuilds
+    // (`site/drilldown-view.ts:531`) that selects whole rows and never rebuilds
     // `row.paths`, so a surviving row holds the very `PathNode`s `groups` does.
     //
     // The distinction only becomes observable if the crashes page ever adopts a
@@ -951,10 +951,10 @@ test('expanding a path draws a chart labelled "signature in path"', () => {
     assert.notEqual(pathEvents, multi.count, 'and not the whole signature');
 
     // The crashes page's own status test in `ratesFor` is `=== 'CRASH'`
-    // (`next/crashes.ts:567`). Loosening it to `startsWith('CRASH')` survives,
+    // (`site/crashes.ts:567`). Loosening it to `startsWith('CRASH')` survives,
     // and that is expected rather than a gap: measured here, the file's status
     // table contains exactly one CRASH-prefixed entry, `CRASH` itself, so the
-    // two rules select the same runs. `next/drilldown-view.ts:150` records the
+    // two rules select the same runs. `site/drilldown-view.ts:150` records the
     // same measurement for the extractor and keeps the exact form deliberately,
     // so a future `CRASH-PARALLEL` is a decision rather than an absorption.
     assert.deepEqual(
@@ -1012,10 +1012,10 @@ test('choosing a date leaves the 21-day view and loads that day"s file', async (
 test('a single-day view reached from the 21-day view keeps the 21-day denominator', () => {
     // Measured, and it contradicts a comment rather than the code.
     //
-    // `next/drilldown-view.ts:814` says "`totalRuns` is 0 unless the 21-day
+    // `site/drilldown-view.ts:814` says "`totalRuns` is 0 unless the 21-day
     // file is loaded […] so every tooltip on a single-day view is empty". That
     // is true only *before* the first toggle. `historicalData` is assigned when
-    // the 21-day file loads (`next/crashes.ts:707`) and **never reset**, so
+    // the 21-day file loads (`site/crashes.ts:707`) and **never reset**, so
     // toggling back to a single day leaves `totalRunsOf` returning the 21-day
     // run total and every tooltip populated.
     //
@@ -1086,7 +1086,7 @@ test('toggling back to 21 days restores the full ranked list', async () => {
 
 test('a day that decodes but has no crashes shows this page"s empty text', async () => {
     // `VOCAB.emptyText`, which is only reached when the file parses and
-    // `groups.size === 0` (`next/crashes.ts:290`). No checked-in fixture is
+    // `groups.size === 0` (`site/crashes.ts:290`). No checked-in fixture is
     // like that, so one is derived here by taking the daily file and removing
     // its CRASH status groups — everything else, including the decode, is
     // unchanged, so this exercises the empty branch and not the error branch.
@@ -1215,7 +1215,7 @@ test('leaving the 21-day view by hash loads the OLD date once before the new one
     // Reproduced upstream behaviour, measured rather than inferred, and worth a
     // test because it looks like a bug and is not this migration's.
     //
-    // `loadFromUrlHash` (`next/crashes.ts:748-759`) toggles out of historical
+    // `loadFromUrlHash` (`site/crashes.ts:748-759`) toggles out of historical
     // mode *before* it writes the hash's date into the selector. The toggle's
     // own callback runs `loadSelectedDate()`, which reads the selector — still
     // holding the previously selected date. So a hash navigation from the
@@ -1285,7 +1285,7 @@ test('the crashes page does NOT clear a stale search box on hashchange', async (
     // Divergence 5 on the *failures* page is a fix; the crashes page keeps the
     // bug deliberately, and the two lists say so from both sides. Asserting it
     // here is what makes the asymmetry a tested decision rather than a
-    // difference nobody noticed. `next/crashes.ts:744`.
+    // difference nobody noticed. `site/crashes.ts:744`.
     searchBox().value = 'ctypes';
     searchBox().dispatchEvent(new harness.window.Event('input', { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -1307,7 +1307,7 @@ test('the crashes page does NOT clear a stale search box on hashchange', async (
 });
 
 test('the harness switcher renamed the heading for this page', () => {
-    // `initHarnessSwitcher('Crashes by Signature')` (`next/crashes.ts:765`) —
+    // `initHarnessSwitcher('Crashes by Signature')` (`site/crashes.ts:765`) —
     // the one string that names which page this is outside the vocabulary.
     const heading = harness.document.querySelector('h1')!;
     // `initHarnessSwitcher` replaces the heading with a `<select>` followed by

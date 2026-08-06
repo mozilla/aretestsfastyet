@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /**
- * `next/manifests.ts`, the manifests page controller, driven end to end in
+ * `site/manifests.ts`, the manifests page controller, driven end to end in
  * jsdom.
  *
  * ## Why this file exists at all
@@ -24,14 +24,14 @@
  * `manifest-timings` index rather than a harness's — and its markup shares no
  * id with either. Parameterizing the shared harness for a third page whose
  * every id differs is the arrangement its own comment argues against, so the
- * markup below is **copied from `next/manifests.html`** and an id renamed there
+ * markup below is **copied from `site/manifests.html`** and an id renamed there
  * and not here fails as a null dereference inside `start()`.
  *
  * ## Where the expected values come from
  *
  * Never from the code under test. The row contents are tallied off the raw
  * fixture by `tally()` below, which walks the parallel arrays directly and
- * imports nothing from `next/`; the class names and glyphs are literals taken
+ * imports nothing from `site/`; the class names and glyphs are literals taken
  * from `manifests.html`'s own stylesheet and markup.
  *
  * ## Which fixture, and why not the obvious one
@@ -58,8 +58,8 @@ import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 
 import type { ManifestsFile } from '../lib/formats/manifests.ts';
-import { resetForTest, start } from '../next/manifests.ts';
-import { formatDuration } from '../next/manifests-view.ts';
+import { resetForTest, start } from '../site/manifests.ts';
+import { formatDuration } from '../site/manifests-view.ts';
 
 // --- the fixture, and ground truth read off it ----------------------------
 
@@ -67,7 +67,7 @@ const FIXTURE = JSON.parse(
     readFileSync(new URL('./fixtures/manifests-pathology.json', import.meta.url), 'utf8')
 ) as ManifestsFile;
 
-/** manifest -> job -> durations, walked without touching `next/`. */
+/** manifest -> job -> durations, walked without touching `site/`. */
 function tally(file: ManifestsFile): Map<string, Map<string, number[]>> {
     const out = new Map<string, Map<string, number[]>>();
     for (let i = 0; i < file.runs.durations.length; i++) {
@@ -118,7 +118,7 @@ const SKIPPED_EVERYWHERE = [...TALLY.keys()].filter(
 // --- the harness ----------------------------------------------------------
 
 /**
- * `next/manifests.html`'s markup, trimmed to what the controller reaches for.
+ * `site/manifests.html`'s markup, trimmed to what the controller reaches for.
  *
  * Copied from that file (`:276-350`), including the inline `on*` attributes —
  * which do nothing here, exactly as they do nothing in the browser under a

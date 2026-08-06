@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /**
- * `next/drilldown-render.ts`, the shared renderer for `crashes.html` and
+ * `site/drilldown-render.ts`, the shared renderer for `crashes.html` and
  * `failures.html`.
  *
  * Until now nothing imported this file. It was part of the 2,598 lines the
@@ -42,8 +42,8 @@ import type {
     SubRow,
     TestNode,
     Totals,
-} from '../next/drilldown-view.ts';
-import type { RenderHooks, Vocabulary } from '../next/drilldown-render.ts';
+} from '../site/drilldown-view.ts';
+import type { RenderHooks, Vocabulary } from '../site/drilldown-render.ts';
 import {
     el,
     externalLink,
@@ -54,7 +54,7 @@ import {
     renderList,
     renderOccurrenceTable,
     renderSubRows,
-} from '../next/drilldown-render.ts';
+} from '../site/drilldown-render.ts';
 
 // A page for the whole file: `el()` reaches for the ambient `document`, and
 // these tests build detached trees, so one is enough and nothing leaks between
@@ -64,8 +64,8 @@ const harness = setupPage();
 // --- the two vocabularies, written out ------------------------------------
 //
 // Retyped here rather than imported, and that is the point. The controllers'
-// `VOCAB` records are module-private (`const VOCAB` in `next/crashes.ts:170`
-// and `next/failures.ts:168`), so there is nothing to import — but even if
+// `VOCAB` records are module-private (`const VOCAB` in `site/crashes.ts:170`
+// and `site/failures.ts:168`), so there is nothing to import — but even if
 // there were, importing them would make this file assert that the renderer uses
 // whatever names the page gave it, which is true of any pair of records. These
 // are the names `common-data-view.css` styles.
@@ -478,7 +478,7 @@ test('el writes text as text, so a message containing markup is not parsed', () 
 });
 
 test('el normalizes CR and CRLF in a title, matching what the HTML parser does', () => {
-    // `next/drilldown-render.ts:256`. The old pages write the title into a
+    // `site/drilldown-render.ts:256`. The old pages write the title into a
     // string and let the parser build the attribute, and the parser turns a
     // literal CR or CRLF into a single LF. Assigning `.title` does not, so
     // without the normalization the two pages disagree on the tooltip of any
@@ -644,7 +644,7 @@ test('renderList returns every row keyed by its raw key, and nothing else', () =
 });
 
 test('renderList keeps a key containing a quote, which the old attribute round-trip lost', () => {
-    // `next/drilldown-render.ts:49-78`: upstream writes the key into
+    // `site/drilldown-render.ts:49-78`: upstream writes the key into
     // `data-message` with `escapeAttr` and finds the row again with a selector
     // built by the same function, which cannot match once the parser has
     // decoded `&quot;` — measured at 1,848 of 2,841 failures rows. The Map is
@@ -716,7 +716,7 @@ test('renderList asks the hooks for the label and its title, once per row', () =
 
 test('renderList omits the title attribute entirely when the hook returns undefined', () => {
     // The crashes page's `labelTitle` is `() => undefined`
-    // (`next/crashes.ts:247`) and upstream puts no `title` on a signature cell.
+    // (`site/crashes.ts:247`) and upstream puts no `title` on a signature cell.
     // `title=""` would be a different DOM, and a DOM diff sees it.
     const { hooks } = hooksWithLog();
     const noTitle: RenderHooks = { ...hooks, labelTitle: () => undefined };
@@ -1072,7 +1072,7 @@ test('a single-occurrence row with a href opens it on click, and an inert one do
 test('a single-occurrence row carries no data-path or data-test, unlike an expandable one', () => {
     // The difference both controllers' `wireSubRows` relies on. An expandable
     // test row is wired by reading `element.dataset['path']!` and
-    // `['test']` (`next/crashes.ts:495`); a `single-*` row is excluded from
+    // `['test']` (`site/crashes.ts:495`); a `single-*` row is excluded from
     // that branch because it already has the renderer's own click listener.
     //
     // Asserted because it is what makes the exclusion safe rather than merely
@@ -1142,7 +1142,7 @@ test('renderSubRows returns one element per sub-row, in the order given', () => 
 // =========================================================================
 
 test('the occurrence table is a table > tbody > tr, as the HTML parser would build', () => {
-    // `next/drilldown-render.ts:751-765`. The old pages build the table as a
+    // `site/drilldown-render.ts:751-765`. The old pages build the table as a
     // string and let the parser synthesize a `<tbody>`; `createElement` plus
     // `append` does not, and the parity diff reported 24 node differences on
     // one expanded row because of it.

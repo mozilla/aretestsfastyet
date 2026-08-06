@@ -1,5 +1,5 @@
 /**
- * New page vs CLI for `try`: `next/try.html?rev=…` ↔ `fx-tests try <rev>`.
+ * New page vs CLI for `try`: `site/try.html?rev=…` ↔ `fx-tests try <rev>`.
  *
  * `PARITY.md` §5, and the sequencing step §6.4 asks for "per page, as each
  * lands". Both sides are driven over the **same pinned push**
@@ -24,8 +24,8 @@
  *
  * ## What each side is
  *
- * - **Page**: `next/try-view.ts`'s `aggregateFailures` / `sortTests` /
- *   `splitTables`, driven exactly as `next/try.ts` drives them. Same setup as
+ * - **Page**: `site/try-view.ts`'s `aggregateFailures` / `sortTests` /
+ *   `splitTables`, driven exactly as `site/try.ts` drives them. Same setup as
  *   `test/try-view.test.ts`, which is why that file's helpers are followed
  *   rather than re-derived.
  * - **CLI**: a real `run()` invocation with a fake Treeherder client and
@@ -55,7 +55,7 @@ import {
     sortTests,
     splitTables,
     tagIntermittent,
-} from '../next/try-view.ts';
+} from '../site/try-view.ts';
 import {
     type Divergence,
     type PushFixture,
@@ -75,7 +75,7 @@ import {
 const PUSH = fixtureJson<PushFixture>('try-7d16bff81bb1.json');
 
 // =========================================================================
-// The page side, driven as next/try.ts drives it
+// The page side, driven as site/try.ts drives it
 // =========================================================================
 
 const FAILED_TEST_JOBS = PUSH.jobs.filter(
@@ -254,7 +254,7 @@ test('the synthesized profiles re-parse to the pinned push, bar the two divergen
     }
 
     // The page side, read straight off the fixture — not through
-    // `next/try-view.ts`, so the two paths are genuinely independent.
+    // `site/try-view.ts`, so the two paths are genuinely independent.
     const pageSide = PUSH.timings.map((timing) => ({
         path: timing.path,
         status: timing.status,
@@ -359,9 +359,9 @@ test('every shared row agrees field by field', async () => {
     // field", over all 26 shared rows rather than a spot check.
     //
     // Both sides are on `lib/`… except that they are not, for `try`: the push
-    // is parsed by `next/try.ts`'s worker on one side and
+    // is parsed by `site/try.ts`'s worker on one side and
     // `cli/commands/try.ts`'s `parseTestMarkers` on the other, and the
-    // aggregation is `next/try-view.ts`'s `aggregateFailures` against the
+    // aggregation is `site/try-view.ts`'s `aggregateFailures` against the
     // command's own inline accumulation. So this is a genuine two-implementation
     // comparison and not a tautology — which is why 0 differences over 26 rows
     // and four fields is worth asserting.
@@ -649,7 +649,7 @@ const DIVERGENCES: Divergence[] = [
         reason:
             'A crash during manifest teardown is recorded against the `.toml`, with no running ' +
             'test to attribute it to. The page emits it as a synthetic row keyed on that path ' +
-            "(`next/try.ts:565-580` keeps `c.testPath` unconditionally), so a manifest appears " +
+            "(`site/try.ts:565-580` keeps `c.testPath` unconditionally), so a manifest appears " +
             "in a table of tests. The CLI re-checks the test extension and drops it " +
             '(`cli/commands/try.ts:828`): the path cannot be joined against the central ' +
             'aggregates, so every per-test column the command would print for it — flakiness, ' +
@@ -682,13 +682,13 @@ const DIVERGENCES: Divergence[] = [
             'FOUND BY THIS FILE, and not previously declared. When a `Crash` marker falls inside ' +
             "a test's execution range, the CLI sets `message ??= signature` " +
             '(`cli/commands/try.ts:797`) while the page records the signature only in ' +
-            "`crashSignature` and leaves `message` unset (`next/try.ts:552-556`), so " +
+            "`crashSignature` and leaves `message` unset (`site/try.ts:552-556`), so " +
             '`messagesOf` returns nothing for it. Both do set the message for an *unclaimed* ' +
             'crash, so the two branches disagree with each other as well as across the sides. ' +
             'Measured on this push: 2 of the 4 crash timings, on ' +
             '`test_suspend_media_by_inactive_docshell.html` and ' +
             '`test_nsIEditorSpellCheck_ReplaceWord.html`. Recorded rather than fixed because ' +
-            'the fix is in `next/` or `cli/`, outside this change\'s scope, and because which ' +
+            'the fix is in `site/` or `cli/`, outside this change\'s scope, and because which ' +
             'side is right is a real question: the signature is the only description a crash ' +
             'has, and the CLI\'s `messageComparable` (`try.ts:1015`) already treats a CRASH as ' +
             'comparable without one. It changes no count above — the row set, the execution ' +

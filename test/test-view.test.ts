@@ -1,15 +1,15 @@
 /**
  * `test.html`'s view model, against the checked-in bucket fixtures.
  *
- * ## Why this imports from `next/`
+ * ## Why this imports from `site/`
  *
- * `next/test-view.ts` is **page-local** — it names cell keys, badge classes and
+ * `site/test-view.ts` is **page-local** — it names cell keys, badge classes and
  * column headers, so it is the page's, not `lib/`'s. A node test importing it
  * is the point: the seam is the module boundary, not the directory.
  *
  * The import also enforces the DOM-free rule for free. The root tsconfig
  * compiles `test/**` and has **no DOM lib**, so a `document` reach from the
- * view model is a compile error here even though `tsconfig.next.json` would
+ * view model is a compile error here even though `tsconfig.site.json` would
  * accept it.
  *
  * ## What these tests are for, and the trap they are written to avoid
@@ -24,7 +24,7 @@
  * test.** Where a number is a literal it was read off the fixture with a
  * separate script and is stated with the reasoning that fixes it.
  *
- * The rendering is not tested here. `next/test.ts` turns these structures into
+ * The rendering is not tested here. `site/test.ts` turns these structures into
  * elements and nothing else; asserting on that in node needs a DOM shim that is
  * itself a second implementation of the browser. It is verified where it runs:
  * both pages loaded in Chrome against one pinned snapshot and compared node for
@@ -76,7 +76,7 @@ import {
     runtimeTitleFor,
     splitCellKey,
     summaryStats,
-} from '../next/test-view.ts';
+} from '../site/test-view.ts';
 
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
@@ -101,7 +101,7 @@ function testIdOf(file: BucketFile, path: string): number {
 /**
  * The raw status totals for a test, read straight off the fixture's arrays.
  *
- * **Deliberately not using anything from `lib/` or `next/`.** This is the
+ * **Deliberately not using anything from `lib/` or `site/`.** This is the
  * independent path the expected values below are derived from: if the decoder
  * and the view model were both wrong in the same way, comparing them to each
  * other would agree and comparing them to this would not.
@@ -663,7 +663,7 @@ test('tied rows fall back to the page walk order, not to coverageOf order', () =
     //
     // One of those 186 is in `mochitest-00.json`, so the case is pinned here
     // against real data rather than constructed. It is the same `ccov` pair
-    // the module comment in `next/test-view.ts` uses as its example.
+    // the module comment in `site/test-view.ts` uses as its example.
     const path = 'dom/media/webrtc/tests/mochitests/test_peerConnection_simulcastOffer.html';
     const file = decoded(MOCHITEST);
     const testId = testIdOf(MOCHITEST, path);

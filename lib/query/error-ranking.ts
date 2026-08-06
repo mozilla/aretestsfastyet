@@ -27,7 +27,7 @@
  * *The component is out.* A component is not a property of the message: the
  * message is emitted at a `file:line`, and the component is whichever test
  * happened to be running when it printed. Keying on it would split one message
- * into rows for a reason that says nothing about the message. `next/errors.ts`
+ * into rows for a reason that says nothing about the message. `site/errors.ts`
  * keys the same way for the same reason — it used to key on the generator's
  * `messageId`, which includes the component, and no longer does — so the two
  * sides now agree on the row set and `test/errors-parity.test.ts` compares them
@@ -303,7 +303,7 @@ export function rankErrors(
 
 // --- the component summary ------------------------------------------------
 //
-// This section is shared with `next/errors-view.ts`, which imports the rule
+// This section is shared with `site/errors-view.ts`, which imports the rule
 // rather than restating it. Both sides show the same summary on the same row,
 // and `test/errors-parity.test.ts` asserts it — a check that means something
 // only because the two sides reach the rule by different routes: the page walks

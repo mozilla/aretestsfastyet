@@ -17,12 +17,14 @@ The migrated pages lived in `next/` during the migration, building into
 after it, "next" is simply the site. **Rename before writing the workflow**, so
 the workflow's paths are written once against their final names:
 
-| was | is |
-| --- | --- |
-| `next/` | `site/` |
-| `dist-pages/` | `dist-site/` |
-| `tsconfig.next.json` | `tsconfig.site.json` |
-| the nine superseded root `*.html` | `old/*.html` (see §1) |
+| was | is | |
+| --- | --- | --- |
+| `next/` | `site/` | done |
+| `dist-pages/` | `dist-site/` | done |
+| `tsconfig.next.json` | `tsconfig.site.json` | done |
+| the nine superseded root `*.html` | `old/*.html` (see §1) | outstanding |
+
+The first three landed together as one commit; the `old/` move is still to do.
 
 `dist/` was considered for the output and rejected: it already holds
 `dist/fx-tests.js`, the CLI bundle, which is **committed on purpose** (the `bin`

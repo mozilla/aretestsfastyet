@@ -4,10 +4,10 @@
  *
  * ## The bug, and why 1,333 passing tests did not see it
  *
- * `next/index.ts` fetches a committed sibling — `mochitest-stats-backfill.json`
+ * `site/index.ts` fetches a committed sibling — `mochitest-stats-backfill.json`
  * — from code rather than from a tag. The build discovered siblings by scanning
  * the HTML for `src=`/`href=` attributes, so it never saw that fetch, never
- * copied the file into `dist-pages/`, and the deployed page's request 404'd.
+ * copied the file into `dist-site/`, and the deployed page's request 404'd.
  * The page treats a 404 backfill as "there is no backfill", so nothing threw:
  * the mochitest chart just showed 68 points from 2026-05-29 where it should
  * have shown 200 from 2026-01-17.
@@ -45,7 +45,7 @@ const ROOT = fileURLToPath(new URL('../', import.meta.url));
 /**
  * The file whose absence was the bug.
  *
- * A literal, deliberately. Deriving it by scanning `next/index.ts` with the
+ * A literal, deliberately. Deriving it by scanning `site/index.ts` with the
  * same pattern the build uses would make the test agree with the scanner by
  * construction — it would pass just as happily if `FETCH_SIBLING` matched
  * nothing at all, which is the defect that produced this bug in the first
@@ -79,7 +79,7 @@ test('a fetched sibling is required unless the source says otherwise', () => {
 });
 
 test('the marker names its file, so a multi-line explanation still applies', () => {
-    // The real marker in `next/index.ts` runs to seven comment lines before the
+    // The real marker in `site/index.ts` runs to seven comment lines before the
     // call. A position-based directive would have silently stopped matching.
     const source = [
         '// build-optional: maybe.json — the first line of the reason,',
@@ -263,7 +263,7 @@ async function mochitestChartDates(): Promise<string[]> {
     };
 
     try {
-        const module = (await import(`../next/index.ts?built=${Date.now()}`)) as {
+        const module = (await import(`../site/index.ts?built=${Date.now()}`)) as {
             start(): Promise<void>;
         };
         await module.start();

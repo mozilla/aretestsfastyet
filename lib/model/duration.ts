@@ -9,9 +9,9 @@
  * > model — including anything that names an element id, a CSS class or a
  * > glyph.**
  *
- * It has to be here rather than in `next/` for a second reason: `cli/` and
- * `next/` both need it, and `tsconfig.json` compiles `lib/` and `cli/` against
- * node while `tsconfig.next.json` compiles `next/` against the DOM. `lib/` is
+ * It has to be here rather than in `site/` for a second reason: `cli/` and
+ * `site/` both need it, and `tsconfig.json` compiles `lib/` and `cli/` against
+ * node while `tsconfig.site.json` compiles `site/` against the DOM. `lib/` is
  * the only directory both projects include, so it is the only place one
  * implementation can serve a command and a page at once.
  *
@@ -24,8 +24,8 @@
  *
  * | family | output at 60 s / 1 h / 24 h | members |
  * | --- | --- | --- |
- * | **tiered, em-dash for no data** | `1m` / `1h` / `1d` | `issues.html`, `test.html`, `xpcshell-timings.html`, `next/test-view.ts` |
- * | **floored `Xm Ys`, no hour form** | `1m 0s` / `60m 0s` / `1440m 0s` | `manifests.html`, `next/manifests-view.ts` |
+ * | **tiered, em-dash for no data** | `1m` / `1h` / `1d` | `issues.html`, `test.html`, `xpcshell-timings.html`, `site/test-view.ts` |
+ * | **floored `Xm Ys`, no hour form** | `1m 0s` / `60m 0s` / `1440m 0s` | `manifests.html`, `site/manifests-view.ts` |
  * | **padded `Xm YYs` with an hour form** | `1m 00s` / `1h 00m` / `24h 00m` | `cli/commands/manifests.ts` |
  * | **one-offs, each with a caller-visible quirk** | — | `shared.js`, `xpcshell-histograms.html`, `workers.html`, `job-speed.html`, `resource-use.html`, `reviewbot.html` |
  *
@@ -40,7 +40,7 @@
  * save nine lines, and every one of them changes what a reader sees.
  *
  * The second family — the floored `Xm Ys` with no hour form — is left where it
- * is, in `next/manifests-view.ts`. It is a deliberate transcription of
+ * is, in `site/manifests-view.ts`. It is a deliberate transcription of
  * `manifests.html` that `test/manifests-parity.test.ts` names as divergence 9,
  * and its floored seconds and missing hour form are the *content* of that
  * divergence. Folding it into either function here would delete the comparison.
@@ -76,7 +76,7 @@
  * The shape four pages independently arrived at, verbatim from
  * `test.html:552`, `issues.html:683` and `xpcshell-timings.html:400`, which are
  * character-for-character identical apart from `test.html` writing the em-dash
- * as `—`; `next/test-view.ts:1866` was the transcription of the first.
+ * as `—`; `site/test-view.ts:1866` was the transcription of the first.
  *
  * | input | output |
  * | --- | --- |

@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /**
- * A jsdom page, for the tests of `next/drilldown-render.ts` and the two page
+ * A jsdom page, for the tests of `site/drilldown-render.ts` and the two page
  * controllers.
  *
  * Those three files were 2,598 lines that **no test imported**, because
@@ -14,7 +14,7 @@
  * `common-links.js`, `common-ui.js`, `common-charts.js` and `shared.js` are
  * plain scripts of top-level function declarations that the page loads by
  * `<script src=…>`. They are `eval`'d into the jsdom window here and lifted onto
- * `globalThis` under the names `next/` declares them with.
+ * `globalThis` under the names `site/` declares them with.
  *
  * Stubbing them instead would have been easier and worse, for the reason this
  * project keeps hitting: a stub's return value is a value *the test author
@@ -30,7 +30,7 @@
  *   neither of which jsdom has. It is recorded instead, which also makes "was a
  *   chart drawn, with what series" assertable.
  * - `window.Chart` — the same exception one level down, for
- *   `next/issues.ts`, whose two chart kinds are the old page's own and go to
+ *   `site/issues.ts`, whose two chart kinds are the old page's own and go to
  *   Chart.js directly rather than through `common-charts.js`. Recorded with the
  *   whole configuration, and its `getChart` really does return the last chart
  *   made on a canvas, so a page that stopped destroying a chart before drawing
@@ -48,16 +48,16 @@ import { JSDOM } from 'jsdom';
 /**
  * This file declares no ambient globals, and that is the point.
  *
- * It used to declare `getBugButton`, because `next/failures.ts` called it
- * without declaring it: `tsconfig.next.json` compiles all of `next/**` as one
- * program, so the declaration in `next/test.ts` covered the call, while the
+ * It used to declare `getBugButton`, because `site/failures.ts` called it
+ * without declaring it: `tsconfig.site.json` compiles all of `site/**` as one
+ * program, so the declaration in `site/test.ts` covered the call, while the
  * root project pulls in only the files a test imports and did not. The
- * declaration now lives in `next/failures.ts`'s own `declare global` block,
- * where the call is. Every `next/` module was checked for the same shape —
- * each compiled alone against the DOM lib with no other `next/` file in the
+ * declaration now lives in `site/failures.ts`'s own `declare global` block,
+ * where the call is. Every `site/` module was checked for the same shape —
+ * each compiled alone against the DOM lib with no other `site/` file in the
  * program — and `getBugButton` was the only one.
  *
- * What is still needed to import `next/` from a node test is the DOM half,
+ * What is still needed to import `site/` from a node test is the DOM half,
  * which the `/// <reference lib>` lines at the top of each test file supply.
  */
 
@@ -71,7 +71,7 @@ const SHARED_SCRIPTS = [
 ] as const;
 
 /**
- * The names `next/drilldown-render.ts` declares in its `declare global` block,
+ * The names `site/drilldown-render.ts` declares in its `declare global` block,
  * plus the two the controllers use directly.
  *
  * Listed explicitly rather than copied wholesale off the window so that a
@@ -94,14 +94,14 @@ const GLOBAL_NAMES = [
     'initUrlHashManager',
     'initHarnessSwitcher',
     'getHarnessType',
-    // `next/issues.ts` uses these two directly: `formatNumber` for every stat
+    // `site/issues.ts` uses these two directly: `formatNumber` for every stat
     // cell and `linkifyFailureMessage` for a FAIL line's message. They are the
     // real `common-ui.js` implementations, so an assertion on a rendered
     // number or a linkified message compares against that file rather than
     // against a stub the test author chose.
     'formatNumber',
     'linkifyFailureMessage',
-    // `shared.js`'s. `next/issues.ts` names a run's platform with it for the
+    // `shared.js`'s. `site/issues.ts` names a run's platform with it for the
     // hover tooltips, and using the real one means a test's expected platform
     // names come from that file's rules rather than from a list a test author
     // wrote down.
@@ -111,7 +111,7 @@ const GLOBAL_NAMES = [
 /**
  * The controls both pages carry, by the ids the controllers look up.
  *
- * Trimmed from `next/crashes.html` and `next/failures.html` to the elements the
+ * Trimmed from `site/crashes.html` and `site/failures.html` to the elements the
  * controllers and the shared scripts actually reach for: the `<h1>`
  * `initHarnessSwitcher` rewrites, the `<label>` `initHistoricalToggle` hides
  * through `previousElementSibling`, and the five ids.
@@ -130,13 +130,13 @@ const PAGE_HTML = `<!DOCTYPE html><html><body>
 </body></html>`;
 
 /**
- * `next/issues.html`'s controls, by the ids that page's controller looks up.
+ * `site/issues.html`'s controls, by the ids that page's controller looks up.
  *
  * A second constant rather than a parameterization of the first, because the
  * two pages genuinely disagree about every id — `date-select` against
  * `dateSelect`, `search-box` against `searchBox` — and a shared template with
  * eight substitutions would hide exactly the kind of mismatch this harness
- * exists to catch. This is **copied from `next/issues.html`'s own markup**
+ * exists to catch. This is **copied from `site/issues.html`'s own markup**
  * (`:608-655`), trimmed to the elements the controller and the shared scripts
  * reach for, so an id renamed on the page and not here fails as a null
  * dereference in `start()`.
@@ -192,7 +192,7 @@ export interface ChartCall {
 /**
  * One recorded `new Chart(canvas, config)`.
  *
- * `next/issues.ts` does not go through `common-charts.js` — its two chart kinds
+ * `site/issues.ts` does not go through `common-charts.js` — its two chart kinds
  * are the old page's own `createFailureRateChart` and `createIssueMessageChart`
  * (`issues.html:2743`, `:2813`), which live nowhere but that page. So the seam
  * for those is Chart.js itself, which is genuinely a global from a CDN tag.
@@ -336,7 +336,7 @@ export function setupPage(
 
     // Chart.js. jsdom's `<canvas>` has no 2D context, so the real library
     // cannot run here; this records what it was handed. `getChart` returns the
-    // last chart made on a canvas, because `next/issues.ts` destroys a survivor
+    // last chart made on a canvas, because `site/issues.ts` destroys a survivor
     // before drawing over it and a stub that always returned `undefined` would
     // let a page that never destroyed anything pass.
     const liveCharts = new Map<unknown, { destroy(): void; destroyed: boolean }>();

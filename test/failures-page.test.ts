@@ -1,10 +1,10 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /**
- * `next/failures.ts`, the failures page controller, driven end to end in jsdom.
+ * `site/failures.ts`, the failures page controller, driven end to end in jsdom.
  *
  * The twin of `test/crashes-page.test.ts`, and written to be read against it:
- * the two pages share `next/drilldown-render.ts` and `next/drilldown-view.ts`,
+ * the two pages share `site/drilldown-render.ts` and `site/drilldown-view.ts`,
  * so what matters is where they *differ*, and every one of those differences is
  * asserted from both sides.
  *
@@ -44,7 +44,7 @@ interface Tally {
     tests: Map<string, Set<string>>;
 }
 
-/** The failures in the 21-day fixture, counted without touching `next/`. */
+/** The failures in the 21-day fixture, counted without touching `site/`. */
 function tallyFailures(): Tally {
     const counts = new Map<string, number>();
     const tests = new Map<string, Set<string>>();
@@ -125,7 +125,7 @@ const harness = setupPage({
         'xpcshell-2026-08-03.json': DAILY,
     },
 });
-const { start } = await import('../next/failures.ts');
+const { start } = await import('../site/failures.ts');
 await start();
 
 const list = (): HTMLElement => harness.content.querySelector('.failure-list')!;
@@ -281,7 +281,7 @@ test('the default view is the 21-day file, ranked most failures first', () => {
 
 test('"(no failure message)" is a real, rankable row', () => {
     // Not a placeholder the page skips: on this fixture it is the *largest*
-    // row, which is the point `next/failures-view.ts` makes about it.
+    // row, which is the point `site/failures-view.ts` makes about it.
     const expected = EXPECTED_ROWS.find((row) => row.key === NO_MESSAGE)!;
     assert.equal(EXPECTED_ROWS[0]!.key, NO_MESSAGE, 'and it ranks first here');
 
@@ -323,7 +323,7 @@ test('the total row sums the column above it, overcounting tests as upstream doe
 // =========================================================================
 
 test('a [file : line] message links only its prefix, and the rest stays text', () => {
-    // `messageLink` + `labelNodes` (`next/failures.ts:265`), the element form of
+    // `messageLink` + `labelNodes` (`site/failures.ts:265`), the element form of
     // `linkifyFailureMessage`. The split point and the `#line` are checked
     // against `common-links.js`'s own regex, read here rather than retyped from
     // the view model.
@@ -365,17 +365,17 @@ test('clicking the Searchfox link does not also expand the row', () => {
     // mutation showed the obvious answer is the wrong one. The delegated
     // handler opens with
     // `if (!(target instanceof Element) || target.tagName === 'A') return`
-    // (`next/failures.ts:841`) — but **deleting the `tagName === 'A'` clause
+    // (`site/failures.ts:841`) — but **deleting the `tagName === 'A'` clause
     // changes nothing and survives this suite.** Measured: the label anchor is
     // built by `externalLink`, which attaches its own
-    // `click -> stopPropagation` listener (`next/drilldown-render.ts:310`), so
+    // `click -> stopPropagation` listener (`site/drilldown-render.ts:310`), so
     // the event never reaches `#content` at all. Instrumented, a click on the
     // anchor reaches `#content` 0 times where a click on the cell reaches it 1.
     //
     // So the guard is unreachable defence-in-depth behind `externalLink`, and
     // this test pins the reader-visible behaviour rather than the clause. The
     // same click on the crashes page cannot even arise: its `labelNodes` is
-    // plain text (`next/crashes.ts:244`) and a top-level `.crash-row` holds 0
+    // plain text (`site/crashes.ts:244`) and a top-level `.crash-row` holds 0
     // anchors.
     collapseAll();
     const row = dataRows().find((candidate) => candidate.querySelector('.failure-message a'));
@@ -403,7 +403,7 @@ test('clicking the Searchfox link does not also expand the row', () => {
 });
 
 test('the Searchfox link points at the row"s most-failing test', () => {
-    // `mostFrequentTestPath` (`next/failures-view.ts:146`), reached through
+    // `mostFrequentTestPath` (`site/failures-view.ts:146`), reached through
     // `labelNodes`. The expected path is recomputed from the raw tally, not
     // from the view model.
     let checked = 0;
@@ -426,7 +426,7 @@ test('the Searchfox link points at the row"s most-failing test', () => {
 });
 
 test('every message row carries the whole message as a title, unlike the crashes page', () => {
-    // `labelTitle: (key) => key` (`next/failures.ts:277`). The cell is
+    // `labelTitle: (key) => key` (`site/failures.ts:277`). The cell is
     // `text-overflow: ellipsis`, so a long message is cut off and the tooltip
     // is the only way to read it. The crashes page has no title at all.
     for (const row of dataRows()) {
@@ -475,7 +475,7 @@ test('a row whose message contains a quote is found again after a re-sort', () =
 // =========================================================================
 
 test('a test row carries a 🐛 button filed against the test"s component', () => {
-    // `bugButton` (`next/failures.ts:238`), which is the one place the new page
+    // `bugButton` (`site/failures.ts:238`), which is the one place the new page
     // parses HTML — `getBugButton` returns a string, and it is parsed through a
     // `<template>` rather than assigned into the live tree.
     collapseAll();
@@ -513,7 +513,7 @@ test('a test row carries a 🐛 button filed against the test"s component', () =
 
     // The *omitted* case is not asserted here, and the reason is measured
     // rather than assumed. `bugButton` returns null when the component cannot
-    // be split into the two Bugzilla fields (`next/failures.ts:240`), and this
+    // be split into the two Bugzilla fields (`site/failures.ts:240`), and this
     // fixture cannot reach that branch: its `tables.components` is exactly
     // `["WebExtensions :: General", "Core :: Networking", "Core :: XPConnect"]`
     // — three of three well-formed — and all ten entries of
@@ -597,7 +597,7 @@ test('the failures page puts view-links on the td, with no span', () => {
 });
 
 test('an occurrence gets Profile and Job, and never a Crash link', () => {
-    // `occurrenceLinks` (`next/failures.ts:280`): no crash viewer, because a
+    // `occurrenceLinks` (`site/failures.ts:280`): no crash viewer, because a
     // failure has no minidump. The crashes page emits three links at the same
     // position, so the absent one is a real distinction.
     let checked = 0;
@@ -616,7 +616,7 @@ test('an occurrence gets Profile and Job, and never a Crash link', () => {
 });
 
 test('a single-failure row opens the profiler, and is never inert', () => {
-    // `singleRowHref` (`next/failures.ts:297`) always returns a profiler URL.
+    // `singleRowHref` (`site/failures.ts:297`) always returns a profiler URL.
     // The crashes page returns `null` for a crash with no dump; here there is
     // no such case, so every single row is clickable.
     const opened: string[] = [];
@@ -648,7 +648,7 @@ test('a single-failure row opens the profiler, and is never inert', () => {
 });
 
 test('the job name in a failures row points at the profiler, not a crash viewer', () => {
-    // `jobNameHref` (`next/failures.ts:291`) — the crashes page prefers the
+    // `jobNameHref` (`site/failures.ts:291`) — the crashes page prefers the
     // crash viewer here, which is the pages' other link divergence.
     let checked = 0;
     for (const row of dataRows()) {
@@ -724,7 +724,7 @@ test('a search rewrites a surviving row"s count, unlike the crashes page', async
 test('a row expanded under a search shows only the tests that matched', async () => {
     // The other half, and the mirror of the crashes page's behaviour: this page
     // expands from `expandable`, the search-rewritten tree
-    // (`next/failures.ts:419`), where the crashes page expands from `groups`.
+    // (`site/failures.ts:419`), where the crashes page expands from `groups`.
     const multi = EXPECTED_ROWS.find(
         (row) => row.testCount > 2 && !SEARCHFOX_LINE.test(row.key)
     );
@@ -773,7 +773,7 @@ test('a row expanded under a search shows only the tests that matched', async ()
         'and no path row survives'
     );
 
-    // That covered the **click** path (`toggleMessage`, `next/failures.ts:419`).
+    // That covered the **click** path (`toggleMessage`, `site/failures.ts:419`).
     // The other opener is the **re-attach** in `render()` (`:343`), which runs
     // when the list re-renders with a row already open — reached here by
     // re-sorting while expanded. Both must read `expandable`; measured, wiring
@@ -871,7 +871,7 @@ test('expanding draws one chart, labelled with the message and the failure noun'
 
 test('the chart counts every FAIL* status, not just the bare "FAIL"', () => {
     // `ratesFor` collects the tests that ever produced this message using
-    // `status.startsWith('FAIL')` (`next/failures.ts:596`), matching the
+    // `status.startsWith('FAIL')` (`site/failures.ts:596`), matching the
     // extractor's status universe. Narrowing that to `status === 'FAIL'` used
     // to survive this suite: the chart test above happens to pick a row whose
     // series is dominated by nothing in particular, and the
@@ -952,7 +952,7 @@ test('the chart counts every FAIL* status, not just the bare "FAIL"', () => {
  * Each is a mutation that survives, and the reason is the same shape of the
  * data rather than a missing assertion:
  *
- * - **`openMessage`'s search-filtered chart variant** (`next/failures.ts:394`)
+ * - **`openMessage`'s search-filtered chart variant** (`site/failures.ts:394`)
  *   and **`testIdsOfSubtree`/`testIdsOfPath`** (`:638`, `:657`). Reaching the
  *   filtered variant needs a row that is on screen under a search *without its
  *   own message matching* and that has a chart with events. Counted off the raw
@@ -986,7 +986,7 @@ test('the fixture cannot reach the search-filtered chart variants', () => {
 });
 
 test('the "(no failure message)" row gets an all-zero chart, as upstream does', () => {
-    // `messageId` (`next/failures.ts:547`): the display name is not a table
+    // `messageId` (`site/failures.ts:547`): the display name is not a table
     // entry, so `indexOf` gives -1 and the series has no events. Reproduced
     // rather than special-cased, and worth asserting because the row is the
     // page's largest — a reader sees an empty chart on the top row.
@@ -1056,7 +1056,7 @@ test('toggling back to 21 days restores the full ranked list', async () => {
 
 test('a day that decodes but has no failures shows this page"s empty text', async () => {
     // `VOCAB.emptyText`, only reached when the file parses and
-    // `groups.size === 0` (`next/failures.ts:312`). Derived by stripping the
+    // `groups.size === 0` (`site/failures.ts:312`). Derived by stripping the
     // `FAIL*` status groups out of the daily file, so the decode is unchanged
     // and this is the empty branch rather than the error branch.
     //
@@ -1115,7 +1115,7 @@ test('the failures page DOES clear a stale search box on hashchange', async () =
     // asymmetry with the crashes page, which keeps the bug. Both sides are
     // asserted so the difference is a tested decision.
     //
-    // `next/failures.ts:770` writes `state.q ?? ''`; `next/crashes.ts:744`
+    // `site/failures.ts:770` writes `state.q ?? ''`; `site/crashes.ts:744`
     // guards on `state.q` and so never clears.
     await search('netwerk');
     assert.equal(searchBox().value, 'netwerk');
@@ -1148,7 +1148,7 @@ test('the hash records the 21-day view and the search term', async () => {
 
 test('the focus guard keeps a hashchange from interrupting typing', () => {
     // Kept unchanged by divergence 5: `document.activeElement !== box`
-    // (`next/failures.ts:769`). Asserted because the fix above touches the same
+    // (`site/failures.ts:769`). Asserted because the fix above touches the same
     // line, and losing the guard would delete what a reader is typing.
     searchBox().value = 'half-typed';
     searchBox().focus();

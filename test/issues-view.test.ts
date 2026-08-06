@@ -1,5 +1,5 @@
 /**
- * `next/issues-view.ts` — the view model behind the migrated issues page.
+ * `site/issues-view.ts` — the view model behind the migrated issues page.
  *
  * ## Where the expected values come from
  *
@@ -10,7 +10,7 @@
  *
  * So the numbers below are tallied **by hand off the raw fixture arrays** —
  * `testRuns[t][s].counts`, summed against `tables.statuses` — with no call into
- * `lib/query/issues.ts` or `next/issues-view.ts`. `TALLY` is that hand count,
+ * `lib/query/issues.ts` or `site/issues-view.ts`. `TALLY` is that hand count,
  * written out as literals, and `handTally()` re-derives it from the file so
  * that a fixture swap fails loudly instead of silently comparing a stale
  * constant. The two are asserted equal before anything else runs.
@@ -24,7 +24,7 @@
  *
  * ## Mutation survivors, and why each is left
  *
- * 29 mutations were run against `next/issues-view.ts` and `next/issues.ts`.
+ * 29 mutations were run against `site/issues-view.ts` and `site/issues.ts`.
  * 26 were caught by a named test. The three that survive are recorded here
  * with their measurements rather than papered over:
  *
@@ -73,7 +73,7 @@ import {
     sortComponents,
     sortTests,
     typesOf,
-} from '../next/issues-view.ts';
+} from '../site/issues-view.ts';
 
 const raw = JSON.parse(
     readFileSync(new URL('./fixtures/xpcshell-issues.json', import.meta.url), 'utf8')
@@ -105,7 +105,7 @@ interface Tally {
  * able to tell the page's `computeTestStats` (which folds them into passes)
  * apart from `lib/query/issues.ts` (which names them). Both put them in
  * `runCount`, so the two agree on every displayed number; see the measurement
- * table at the top of `next/issues-view.ts`.
+ * table at the top of `site/issues-view.ts`.
  *
  * `test_ext_always_green.js` has 500 runs and no issue at all — the clean test
  * that keeps `keepClean` honest.

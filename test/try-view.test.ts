@@ -1,15 +1,15 @@
 /**
  * `try.html`'s view model, against a real pinned try push.
  *
- * ## Why this imports from `next/`
+ * ## Why this imports from `site/`
  *
- * `next/try-view.ts` is **page-local** — it names badge classes, count-cell
+ * `site/try-view.ts` is **page-local** — it names badge classes, count-cell
  * thresholds and tooltip prose, so it is the page's, not `lib/`'s. A node test
  * importing it is the point: the seam is the module boundary, not the directory.
  *
  * The import also enforces the DOM-free rule for free. The root tsconfig
  * compiles `test/**` and has **no DOM lib**, so a `document` reach from the view
- * model is a compile error here even though `tsconfig.next.json` would accept it.
+ * model is a compile error here even though `tsconfig.site.json` would accept it.
  *
  * ## The fixture, and why it is what it is
  *
@@ -25,12 +25,12 @@
  * pins a bug as correct.** Nothing below passes a `passRate`, a `failRate` or a
  * count as a literal argument to the function that computes it. Where an
  * expected value is a literal, it was read off the fixture by a path that does
- * not go through `next/try-view.ts` — the helpers at the top of this file — and
+ * not go through `site/try-view.ts` — the helpers at the top of this file — and
  * the reasoning that fixes it is stated.
  *
  * ## What is not tested here
  *
- * The rendering. `next/try.ts` turns these structures into elements and nothing
+ * The rendering. `site/try.ts` turns these structures into elements and nothing
  * else; asserting on that in node needs a DOM shim that is a second
  * implementation of the browser. It is verified where it runs: both pages loaded
  * in Chrome against one pinned snapshot and compared node for node
@@ -92,7 +92,7 @@ import {
     tagIntermittent,
     visibleUnblamedGroups,
     writeUrlState,
-} from '../next/try-view.ts';
+} from '../site/try-view.ts';
 
 // --- the fixture ----------------------------------------------------------
 
@@ -153,7 +153,7 @@ const FAILURES = buildFailures();
 
 // --- independent readings off the fixture ---------------------------------
 //
-// Deliberately not using anything from `next/try-view.ts`. This is the path the
+// Deliberately not using anything from `site/try-view.ts`. This is the path the
 // expected values are derived from: if the view model and these were both wrong
 // in the same way, comparing them to each other would agree and comparing them
 // to the raw fixture would not.
@@ -392,7 +392,7 @@ test("aggregateFailures pre-sorts DESCENDING, which sets the flakiness fetch pri
     const fromMutant = sortTests(mutantOrder, initialSort(), () => null).map((t) => t.path);
     assert.deepEqual(fromMutant, table, 'the stable re-sort should erase the pre-sort direction');
 
-    // What the direction DOES decide: the order `next/try.ts` numbers the tests
+    // What the direction DOES decide: the order `site/try.ts` numbers the tests
     // into `testOrder` and hands to `groupRequestsByChunk`, which is the order
     // the 3.5 MB bucket files are fetched in. Descending puts the most-failing
     // test's bucket first, so the visible top of the table fills in first.

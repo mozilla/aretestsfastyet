@@ -2,7 +2,7 @@
  * Which harness ran a test, inferred from its filename.
  *
  * A data derivation with no UI in it, which is why it lives here rather than in
- * a page or a command: `next/test.ts` uses it to pick which bucket file to
+ * a page or a command: `site/test.ts` uses it to pick which bucket file to
  * fetch, `fx-tests test` uses it to pick which one to read, and `fx-tests try`
  * uses it to classify a failure. Three consumers of one rule.
  *

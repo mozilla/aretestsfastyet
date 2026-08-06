@@ -17,15 +17,15 @@ import assert from 'node:assert/strict';
 import { decodeIssuesWithTaskIds } from '../lib/formats/issues.ts';
 import type { IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
 import { groupCrashesBySignature } from '../lib/query/crashes.ts';
-import { INITIAL_SORT, rowsOf } from '../next/drilldown-view.ts';
-import type { Occurrence } from '../next/drilldown-view.ts';
+import { INITIAL_SORT, rowsOf } from '../site/drilldown-view.ts';
+import type { Occurrence } from '../site/drilldown-view.ts';
 import {
     CRASH_NOUN,
     buildCrashGroups,
     crashLinksOf,
     crashRows,
     singleCrashOpensViewer,
-} from '../next/crashes-view.ts';
+} from '../site/crashes-view.ts';
 
 const file = JSON.parse(
     readFileSync(
@@ -38,7 +38,7 @@ const startTime = file.metadata.startTime;
 
 /**
  * Signature → distinct `dirPath/testName`, and signature → occurrences, read
- * straight off the raw JSON without touching `next/` or `lib/query/`.
+ * straight off the raw JSON without touching `site/` or `lib/query/`.
  */
 function tally(): { tests: Map<string, Set<string>>; counts: Map<string, number> } {
     const tests = new Map<string, Set<string>>();

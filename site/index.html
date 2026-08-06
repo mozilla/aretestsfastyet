@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firefox Test Health</title>
+    <script src="fetch-utils.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="shared.js"></script>
+    <script src="dashboards.js"></script>
+    <link rel="stylesheet" href="shared.css">
+    <style>
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header h1 {
+            margin: 0;
+        }
+
+        .header .controls {
+            background: transparent;
+            padding: 0;
+            margin: 0;
+            box-shadow: none;
+            border-radius: 0;
+        }
+
+        .header .controls label {
+            font-size: 0.85rem;
+            margin-right: 8px;
+        }
+
+        .header .controls .btn-group button {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+        }
+
+        .stats-section {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .stats-section h2 {
+            margin-top: 0;
+        }
+
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .stats-table th {
+            text-align: center;
+            padding: 12px 15px;
+            border-bottom: 2px solid #e0e0e0;
+            font-size: 0.9rem;
+            color: #666;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            width: 20%;
+        }
+
+        .stats-table th:first-child {
+            text-align: left;
+        }
+
+        .stats-table td {
+            padding: 20px 15px;
+            border-bottom: 1px solid #f5f5f5;
+            text-align: center;
+            vertical-align: top;
+        }
+
+        .stats-table td:first-child {
+            text-align: left;
+        }
+
+        .stats-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .stats-table tbody tr:hover {
+            background-color: #fafafa;
+        }
+
+        .harness-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 1.1rem;
+        }
+
+        .stat-cell {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: #333;
+            font-size: 1.8rem;
+            line-height: 1;
+        }
+
+        .stat-link {
+            color: inherit;
+            text-decoration: none;
+            transition: all 0.2s;
+            display: block;
+        }
+
+        .stat-link:hover .stat-value {
+            color: #0060df;
+        }
+
+        .stat-secondary {
+            font-size: 0.85rem;
+            color: #999;
+            white-space: nowrap;
+        }
+
+        .chart-container h2 {
+            display: inline;
+            margin-right: 10px;
+        }
+
+        .info-text {
+            display: inline;
+            font-size: 0.85rem;
+            color: #666;
+            margin: 0 0 15px 0;
+        }
+
+        .chart-header {
+            margin-bottom: 15px;
+        }
+
+        .chart-container {
+            min-height: 0;
+        }
+
+        .chart-container > div[id$="Chart"] {
+            height: 450px;
+        }
+
+        .flavor-row .harness-name {
+            padding-top: 12px;
+            padding-left: 30px;
+            font-size: 0.95rem;
+            font-weight: 400;
+            color: #666;
+        }
+
+        .flavor-row .stat-value {
+            font-size: 1.4rem;
+        }
+
+        .flavor-row td {
+            padding: 0 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Firefox Test Health</h1>
+        <div class="controls">
+            <label>Display:</label>
+            <div class="btn-group">
+                <button onclick="setDisplayMode('percentage')" class="active" id="btnPercentage">Percentage</button>
+                <button onclick="setDisplayMode('count')" id="btnCount">Raw Counts</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="stats-section">
+        <div class="dash-teaser" id="dashboardTeaser"></div>
+    </div>
+
+    <div class="stats-section">
+        <h2 id="summary">Summary (Last 7 Days)</h2>
+        <table class="stats-table">
+            <thead>
+                <tr>
+                    <th>Harness</th>
+                    <th>Flaky Test Failures</th>
+                    <th>Flaky Job Failures</th>
+                    <th>Skip Rate</th>
+                    <th>Invalid Jobs</th>
+                </tr>
+            </thead>
+            <tbody id="statsSummary">
+                <!-- Placeholder rows to reserve layout height and avoid flicker
+                     before JS replaces them. Keep structure and count in sync
+                     with what updateStatsSummary() generates. -->
+                <tr data-harness="xpcshell">
+                    <td class="harness-name">XPCShell</td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                </tr>
+                <tr data-harness="mochitest">
+                    <td class="harness-name">Mochitest</td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                    <td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">0,000 / 0,000,000</div></div></td>
+                </tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+                <tr class="flavor-row"><td class="harness-name">&nbsp;</td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td><td><div class="stat-cell"><div class="stat-value">—</div><div class="stat-secondary">&nbsp;</div></div></td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="charts-grid">
+        <div class="chart-container" id="testFailureContainer">
+            <div class="chart-header">
+                <h2 id="test-failures">Flaky Test Failures</h2>
+                <p class="info-text">Percentage of test runs that failed</p>
+            </div>
+            <div id="testFailureChart"></div>
+        </div>
+
+        <div class="chart-container" id="jobFailureContainer">
+            <div class="chart-header">
+                <h2 id="job-failures">Flaky Job Failures</h2>
+                <p class="info-text">Percentage of jobs that failed due to test flakiness (excludes invalid jobs from infrastructure or harness issues, and failures due to broken patches that were backed out)</p>
+            </div>
+            <div id="jobFailureChart"></div>
+        </div>
+
+        <div class="chart-container" id="skipRateContainer">
+            <div class="chart-header">
+                <h2 id="test-skips">Test Skips</h2>
+                <p class="info-text">Percentage of tests skipped (excluding platform-irrelevant skips like run-if)</p>
+            </div>
+            <div id="skipRateChart"></div>
+        </div>
+
+        <div class="chart-container" id="xpcshellBreakdownContainer">
+            <div class="chart-header">
+                <h2 id="failure-breakdown">Job Failure Breakdown</h2>
+                <p class="info-text">Breakdown of all failed test jobs by category: intermittent test failures, invalid (infrastructure or harness issues), and backout (known broken patches)</p>
+            </div>
+            <h3 id="xpcshell-failure-breakdown">XPCShell</h2>
+            <div id="xpcshellBreakdownChart"></div>
+            <h3 id="mochitest-failure-breakdown">Mochitest</h2>
+            <div id="mochitestBreakdownChart"></div>
+        </div>
+    </div>
+
+    <div id="errorMessage" class="error" style="display: none;"></div>
+
+    <script type="module" src="./index-main.ts"></script>
+    <!--
+        The four fetches that index.html:8-16 starts in an inline <script>
+        before Plotly loads now happen at the top of site/index.ts's start(),
+        which the build inlines into this same position. The ordering property
+        that block existed for is kept: all four requests go out before
+        anything is awaited.
+    -->
+</body>
+</html>

@@ -19,9 +19,9 @@ import assert from 'node:assert/strict';
 import { decodeIssuesWithTaskIds } from '../lib/formats/issues.ts';
 import type { IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
 import { groupFailuresByMessage } from '../lib/query/failures.ts';
-import { INITIAL_SORT, NO_FAILURE_MESSAGE, rowsOf } from '../next/drilldown-view.ts';
-import type { PathNode, TestNode } from '../next/drilldown-view.ts';
-import { buildCrashGroups } from '../next/crashes-view.ts';
+import { INITIAL_SORT, NO_FAILURE_MESSAGE, rowsOf } from '../site/drilldown-view.ts';
+import type { PathNode, TestNode } from '../site/drilldown-view.ts';
+import { buildCrashGroups } from '../site/crashes-view.ts';
 import {
     FAILURE_NOUN,
     buildFailureGroups,
@@ -29,7 +29,7 @@ import {
     hasBugButton,
     messageLink,
     mostFrequentTestPath,
-} from '../next/failures-view.ts';
+} from '../site/failures-view.ts';
 
 const file = JSON.parse(
     readFileSync(
@@ -207,7 +207,7 @@ test('a row dropped by the search is not in the expansion map', () => {
 /**
  * `common-links.js`'s own line-number regex, read out of the shared script.
  *
- * Read rather than retyped so that this test compares `next/failures-view.ts`
+ * Read rather than retyped so that this test compares `site/failures-view.ts`
  * against the *actual* shared behaviour: if `common-links.js` changes its rule,
  * this test starts failing instead of quietly agreeing with a stale copy.
  */

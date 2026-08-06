@@ -1,5 +1,5 @@
 /**
- * `next/errors.html` against `fx-tests errors` — `PARITY.md` §5.
+ * `site/errors.html` against `fx-tests errors` — `PARITY.md` §5.
  *
  * The comparison the migration exists to make: both sides now answer "what is
  * loudest in the logs" from the same file, so a disagreement is a real
@@ -55,7 +55,7 @@ import {
     soloKind,
     sortRows,
     visibleRows,
-} from '../next/errors-view.ts';
+} from '../site/errors-view.ts';
 import { type Divergence, assertDeclaredDivergences, assertSameOrder } from './parity-harness.ts';
 
 /**

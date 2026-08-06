@@ -2,16 +2,16 @@
  * The drill-down view model shared by `crashes.html` and `failures.html`,
  * against real pinned fixtures.
  *
- * ## Why this imports from `next/`
+ * ## Why this imports from `site/`
  *
- * `next/drilldown-view.ts` is **page-local**: it names `path-row`,
+ * `site/drilldown-view.ts` is **page-local**: it names `path-row`,
  * `single-occurrence`, the `📊` totals row and the collapse rule, so it is the
  * pages', not `lib/`'s. A node test importing it is the point — the seam is the
  * module boundary, not the directory.
  *
  * The import also enforces the DOM-free rule for free. The root tsconfig
  * compiles `test/**` and has **no DOM lib**, so a `document` reach from the view
- * model is a compile error here even though `tsconfig.next.json` would accept
+ * model is a compile error here even though `tsconfig.site.json` would accept
  * it.
  *
  * ## Where the expected values come from
@@ -19,7 +19,7 @@
  * This project has shipped four tests whose expected value came from the thing
  * under test; one of them shipped a visibly wrong digit and two pinned bugs as
  * correct. So the rule here is absolute: **every literal below was derived from
- * the fixture by a path that does not call `next/drilldown-view.ts`.**
+ * the fixture by a path that does not call `site/drilldown-view.ts`.**
  *
  * The independent path is `walkFixture()` at the top of this file, which reads
  * the raw JSON the way `crashes.html:225-374` does — by hand, branching on the
@@ -65,7 +65,7 @@ import {
     rowsOf,
     sortRows,
     totalsOf,
-} from '../next/drilldown-view.ts';
+} from '../site/drilldown-view.ts';
 
 const AGGREGATE = 'test/fixtures/xpcshell-issues-with-taskids.json';
 const DAILY = 'test/fixtures/xpcshell-2026-08-03.json';

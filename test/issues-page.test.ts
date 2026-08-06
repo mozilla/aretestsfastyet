@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 /**
- * `next/issues.ts`, the issues page controller, driven end to end in jsdom.
+ * `site/issues.ts`, the issues page controller, driven end to end in jsdom.
  *
  * ## Why this file exists
  *
@@ -22,7 +22,7 @@
  *
  * Not from the code under test. The component totals are tallied off the raw
  * fixture JSON by `handTally()`, which reads `tables`/`testRuns` directly and
- * imports nothing from `next/` or `lib/query/`. Class names and labels are
+ * imports nothing from `site/` or `lib/query/`. Class names and labels are
  * literals taken from `issues.html`'s own markup and CSS. Numbers rendered
  * into cells are compared against `toLocaleString()` of the hand-tallied
  * value, never against a hardcoded separator — this machine renders 1078 as
@@ -76,7 +76,7 @@ interface Group {
 
 /**
  * The component totals in the 21-day fixture, counted without touching
- * `next/` or `lib/query/`.
+ * `site/` or `lib/query/`.
  *
  * Open-coded against `tables.statuses` and `counts` on purpose: this and the
  * page can only agree by both being right about the file.
@@ -237,7 +237,7 @@ test('the two 21-day fixtures are the same window, group for group', () => {
  * A test's FAIL messages in the detailed fixture, with the day each occurred
  * on and the statuses it was recorded under.
  *
- * Open-coded against `testRuns`/`tables`, importing nothing from `next/` — this
+ * Open-coded against `testRuns`/`tables`, importing nothing from `site/` — this
  * and the page can only agree by both being right about the file. The
  * `days` array is delta-encoded, so the day index is a running sum.
  */
@@ -376,7 +376,7 @@ const harness = setupPage({
     url: 'https://tests.firefox.dev/issues.html',
     files: FILES,
 });
-const { start } = await import('../next/issues.ts');
+const { start } = await import('../site/issues.ts');
 await start();
 
 const table = (): HTMLElement => harness.content.querySelector('.tree-table')!;
@@ -948,7 +948,7 @@ test('#date=<a day> loads that day, not the aggregate', async () => {
         files: FILES,
     });
     try {
-        const module = await import(`../next/issues.ts?day=${Date.now()}`);
+        const module = await import(`../site/issues.ts?day=${Date.now()}`);
         await (module as { start: () => Promise<void> }).start();
 
         assert.ok(
@@ -989,7 +989,7 @@ async function freshPage(
     url = 'https://tests.firefox.dev/issues.html'
 ): Promise<ReturnType<typeof setupPage>> {
     const page = setupPage({ page: 'issues', url, files });
-    const module = await import(`../next/issues.ts?${tag}=${Date.now()}-${Math.random()}`);
+    const module = await import(`../site/issues.ts?${tag}=${Date.now()}-${Math.random()}`);
     await (module as { start: () => Promise<void> }).start();
     return page;
 }

@@ -1,5 +1,5 @@
 /**
- * `next/manifests.html` against `fx-tests manifests` — `PARITY.md` §5.
+ * `site/manifests.html` against `fx-tests manifests` — `PARITY.md` §5.
  *
  * The comparison the migration exists to make: both sides now answer "which
  * manifest is eating a job's time budget" from the same file, so a disagreement
@@ -62,7 +62,7 @@ import {
     formatDuration as pageDuration,
     medianOf,
     sortRows,
-} from '../next/manifests-view.ts';
+} from '../site/manifests-view.ts';
 import { type Divergence, assertDeclaredDivergences, assertSameOrder } from './parity-harness.ts';
 
 /**
@@ -528,7 +528,7 @@ test('every declared divergence still diverges', () => {
                 'is on the milliseconds — and the page keeps its own because changing it changes ' +
                 'every cell on a page in daily use. The CLI side is now ' +
                 'lib/model/duration.ts formatDurationPadded, shared with nothing else; the ' +
-                'page keeps its own copy in next/manifests-view.ts precisely because this ' +
+                'page keeps its own copy in site/manifests-view.ts precisely because this ' +
                 'divergence is what the difference between them is.',
             page: '120m 0s',
             cli: '2h 00m',

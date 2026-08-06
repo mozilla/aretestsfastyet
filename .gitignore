@@ -23,8 +23,8 @@ node_modules/
 
 # Built dashboard pages. Unlike dist/fx-tests.js these are never committed:
 # nothing installs them, they are rebuilt by the deploy, and a committed copy
-# would be one more artefact that can go stale against next/.
-dist-pages/
+# would be one more artefact that can go stale against site/.
+dist-site/
 
 # V8 profiling logs
 isolate-*.log

@@ -1,5 +1,5 @@
 /**
- * `next/index-view.ts` — the landing page's view model, driven without a DOM.
+ * `site/index-view.ts` — the landing page's view model, driven without a DOM.
  *
  * The page is 794 lines that read as a table plus four charts, and the things
  * worth testing are the ones that are invisible in that description: three
@@ -44,7 +44,7 @@ import {
     sumSeries,
     testFailedJobSeries,
     unlistedFlavors,
-} from '../next/index-view.ts';
+} from '../site/index-view.ts';
 
 const ROOT = new URL('../', import.meta.url);
 const FIXTURES = new URL('./fixtures/', import.meta.url);
@@ -297,7 +297,7 @@ test('the summary rows are harnesses then flavors, in source order, unsorted', (
 
 test('the four rates match a tally computed independently of the view model', () => {
     // A second implementation, written from `index.html:470-481` rather than
-    // from `next/index-view.ts`, so the assertion is not the code under test
+    // from `site/index-view.ts`, so the assertion is not the code under test
     // compared against itself.
     const stats = toMerged(xpcshell());
     const last7 = (values: (number | null)[]): number =>

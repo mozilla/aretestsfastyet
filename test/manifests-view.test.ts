@@ -1,5 +1,5 @@
 /**
- * `next/manifests-view.ts` — the view model behind `next/manifests.html`.
+ * `site/manifests-view.ts` — the view model behind `site/manifests.html`.
  *
  * ## Where every expected value comes from
  *
@@ -68,7 +68,7 @@ import {
     scatterPoints,
     sortRows,
     splitTaskId,
-} from '../next/manifests-view.ts';
+} from '../site/manifests-view.ts';
 
 // =========================================================================
 // The hand-authored file

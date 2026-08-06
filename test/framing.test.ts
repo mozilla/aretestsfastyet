@@ -135,24 +135,24 @@ const FRAMING: FramingEntry[] = [
     {
         command: 'issues',
         pageFile: 'issues.html',
-        // The page has migrated: `next/issues.html`, built from
-        // `next/issues-view.ts` and `next/issues.ts`. The citations follow it,
+        // The page has migrated: `site/issues.html`, built from
+        // `site/issues-view.ts` and `site/issues.ts`. The citations follow it,
         // because that is now the page this command is compared against — the
         // root `issues.html` is the pre-migration copy and citing it would
         // freeze facts about a file nobody is changing any more.
         pageCitations: {
             rowUnit:
-                'next/issues.ts:render (one row per component), tests only as child rows via ' +
+                'site/issues.ts:render (one row per component), tests only as child rows via ' +
                 'testRows(); issues.html:1933 before the migration',
             grouping:
-                'next/issues-view.ts:buildComponentRows — component, with no view control; ' +
+                'site/issues-view.ts:buildComponentRows — component, with no view control; ' +
                 'issues.html:887-890 hard-coded the same thing',
-            sortKey: 'next/issues-view.ts:INITIAL_SORT (issues.html:663-664 before the migration)',
+            sortKey: 'site/issues-view.ts:INITIAL_SORT (issues.html:663-664 before the migration)',
             window:
-                'next/issues-view.ts:isHistoricalDate — an absent `date` means the 21-day ' +
+                'site/issues-view.ts:isHistoricalDate — an absent `date` means the 21-day ' +
                 'aggregate. This is the deliberate change: issues.html:3709-3712 loaded the ' +
                 'date-select value, one day.',
-            filters: 'next/issues.html:626-638 (four checkboxes, all `checked`)',
+            filters: 'site/issues.html:626-638 (four checkboxes, all `checked`)',
         },
         page: {
             rowUnit: 'Bugzilla component',
@@ -177,8 +177,8 @@ const FRAMING: FramingEntry[] = [
         // Empty, and that is the point: the `window` divergence that lived here
         // was declared RESOLVED-pending-migration and said in as many words
         // that it "closes when the page migrates, not when the CLI changes".
-        // `next/issues.html` now defaults to the 21-day aggregate
-        // (`next/issues.ts` divergence 1), so the two sides agree and the entry
+        // `site/issues.html` now defaults to the 21-day aggregate
+        // (`site/issues.ts` divergence 1), so the two sides agree and the entry
         // had to go — "a declared divergence whose sides have converged is a
         // failure" is asserted below, so leaving it would have failed the suite
         // by design rather than by accident.
@@ -271,10 +271,10 @@ const FRAMING: FramingEntry[] = [
             // up an "issue". So the page framing recorded here is that
             // checkbox's, and the row unit is the page's — component — which is
             // where the one declared divergence comes from.
-            rowUnit: 'next/issues.ts:render (components view); issues.html:1933 before it',
-            filters: 'next/issues.html:626-638 (skips is one of four checked boxes)',
+            rowUnit: 'site/issues.ts:render (components view); issues.html:1933 before it',
+            filters: 'site/issues.html:626-638 (skips is one of four checked boxes)',
             // Follows the migrated page, like the `issues` entry above.
-            window: 'next/issues-view.ts:isHistoricalDate (21-day aggregate by default)',
+            window: 'site/issues-view.ts:isHistoricalDate (21-day aggregate by default)',
         },
         page: {
             rowUnit: 'Bugzilla component',
@@ -892,16 +892,16 @@ test('every divergence carries a reason, and every page fact a citation', () => 
         for (const [field, citation] of Object.entries(entry.pageCitations)) {
             // A citation has to name a file a reader can open. `.html` was the
             // only possibility while every page was one inline `<script>`; a
-            // migrated page's decisions live in its `next/*.ts` modules, and
-            // citing `next/issues.html` for a rule implemented in
-            // `next/issues-view.ts` would point at the wrong file. Both forms
+            // migrated page's decisions live in its `site/*.ts` modules, and
+            // citing `site/issues.html` for a rule implemented in
+            // `site/issues-view.ts` would point at the wrong file. Both forms
             // are accepted, and the check still rejects a citation that names
             // no file at all — which is what it was for.
             assert.match(
                 citation,
-                /\.html|next\/[\w-]+\.ts/,
+                /\.html|site\/[\w-]+\.ts/,
                 `${entry.command}/${field}: a citation must name the page file — either a ` +
-                    '`.html` page or, for a migrated page, the `next/*.ts` module that ' +
+                    '`.html` page or, for a migrated page, the `site/*.ts` module that ' +
                     'implements the decision'
             );
         }
@@ -1001,7 +1001,7 @@ test('issues reads the 21-day aggregate, and so does the migrated page', async (
     assert.equal(
         header.singleDay,
         false,
-        'fx-tests issues covers the whole window, and next/issues.html now defaults to the ' +
+        'fx-tests issues covers the whole window, and site/issues.html now defaults to the ' +
             'same one. If this became single-day the two sides would disagree again and the ' +
             'window divergence would have to be re-declared in FRAMING.'
     );
@@ -1015,12 +1015,12 @@ test('issues reads the 21-day aggregate, and so does the migrated page', async (
     // Asserted against the real function, not against a copy of its rule — an
     // assertion that reimplemented `isHistoricalDate` here would pass whatever
     // the page did.
-    const { isHistoricalDate, HISTORICAL_DATE } = await import('../next/issues-view.ts');
+    const { isHistoricalDate, HISTORICAL_DATE } = await import('../site/issues-view.ts');
     assert.equal(
         isHistoricalDate(undefined),
         true,
         'no `date` in the hash must mean the 21-day aggregate — this is the migration\'s ' +
-            'deliberate change (next/issues.ts divergence 1). issues.html:3709-3712 loaded the ' +
+            'deliberate change (site/issues.ts divergence 1). issues.html:3709-3712 loaded the ' +
             'date-select value instead.'
     );
     assert.equal(isHistoricalDate(HISTORICAL_DATE), true);
@@ -1030,7 +1030,7 @@ test('issues reads the 21-day aggregate, and so does the migrated page', async (
         'a named day must still select that day, or the migration removed a working control'
     );
 
-    const source = await readFile(new URL('../next/issues.ts', import.meta.url), 'utf8');
+    const source = await readFile(new URL('../site/issues.ts', import.meta.url), 'utf8');
     assert.match(
         source,
         /historicalDataFile: `\$\{harness\}-issues\.json`/,
