@@ -363,23 +363,31 @@ function checkSafe(name: string, bundles: readonly string[]): void {
     }
 }
 
-const sources = (await readdir(sourceDir).catch(() => [])).filter((name) => name.endsWith('.html'));
+// An empty `site/` was a valid state while the migration had not started. It is
+// not one now: nine pages are checked in, so finding none means a broken
+// checkout or a wrong path, and the deploy must not treat that as success.
+// Exiting 0 here once let a typo in this file — `join(root, 'next')` surviving
+// the rename to `site/` — print "nothing to build" and report success.
+const entries = await readdir(sourceDir).catch((cause: unknown) => {
+    throw new Error(`Cannot read the page sources at ${sourceDir}`, { cause });
+});
+const sources = entries.filter((name) => name.endsWith('.html'));
 if (sources.length === 0) {
-    console.log('No pages in site/ yet; nothing to build.');
-} else {
-    await mkdir(outDir, { recursive: true });
-    const built: BuiltPage[] = [];
-    for (const name of sources) {
-        built.push(await buildPage(name));
-    }
-    for (const page of built) {
-        const kb = (page.bytes / 1024).toFixed(1);
-        const assets = page.assets.length > 0 ? `, ${page.assets.length} assets copied` : '';
-        const workers = page.workers
-            .map(([worker, bytes]) => `, ${worker} worker ${(bytes / 1024).toFixed(1)} kB`)
-            .join('');
-        console.log(
-            `Built ${join(outDir, page.name)} (${kb} kB, ${page.inlined} script inlined${workers}${assets})`
-        );
-    }
+    throw new Error(`No .html pages in ${sourceDir}. Expected the migrated pages to be there.`);
+}
+
+await mkdir(outDir, { recursive: true });
+const built: BuiltPage[] = [];
+for (const name of sources) {
+    built.push(await buildPage(name));
+}
+for (const page of built) {
+    const kb = (page.bytes / 1024).toFixed(1);
+    const assets = page.assets.length > 0 ? `, ${page.assets.length} assets copied` : '';
+    const workers = page.workers
+        .map(([worker, bytes]) => `, ${worker} worker ${(bytes / 1024).toFixed(1)} kB`)
+        .join('');
+    console.log(
+        `Built ${join(outDir, page.name)} (${kb} kB, ${page.inlined} script inlined${workers}${assets})`
+    );
 }
