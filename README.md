@@ -86,8 +86,10 @@ The repository holds the pages in three places:
   script inlined. That is the only thing the build buys, and it touches nothing
   in the root — see the header comment in
   [`tools/build-pages.ts`](tools/build-pages.ts) for why the output is a single
-  file. A page in `site/` is still valid HTML a browser can load directly, so
-  the edit-and-reload loop survives the migration.
+  file. Unlike a root page, a page in `site/` cannot be opened straight from
+  the tree: its entry point is a `.ts` file, which a server labels
+  `video/mp2t`, so the browser refuses the module outright. Editing one means
+  re-running `npm run pages` and loading the built copy from `dist-site/`.
 - **`old/`** — the 9 superseded root pages the migrated ones replace, kept for
   comparison until the new ones have been trusted.
 

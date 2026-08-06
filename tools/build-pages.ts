@@ -54,9 +54,17 @@ const outDir = process.env['FX_PAGES_BUILD_OUT'] ?? join(root, 'dist-site');
  *
  * A page writes `<script type="module" src="./main.ts"></script>` and the build
  * replaces that whole tag with an inline `<script type="module">` holding the
- * bundled result. Matching the tag rather than a bespoke comment means the
- * source page is still valid HTML that a browser can load directly — see the
- * note on the development loop at the bottom of this file.
+ * bundled result. Matching a real script tag rather than a bespoke comment
+ * keeps the source page well-formed HTML, so an editor treats it as a page and
+ * the markup can be diffed against the built output.
+ *
+ * That is a statement about the *markup*, not about the page working: the
+ * source page cannot be loaded from the tree, because its entry point is a
+ * `.ts` file that a server labels `video/mp2t` and the browser then refuses as
+ * a module. Editing a page in `site/` means re-running `npm run pages`. This
+ * paragraph replaces a pointer to a "note on the development loop at the bottom
+ * of this file" that was never written, and which a reader followed to the
+ * opposite conclusion.
  */
 const MODULE_SCRIPT = /<script\s+type="module"\s+src="\.\/([\w.-]+\.ts)"\s*><\/script>/g;
 
