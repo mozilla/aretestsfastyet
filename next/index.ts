@@ -1066,6 +1066,13 @@ export async function start(): Promise<void> {
     // not a published artifact, so it does not go through `fetchData`.
     const xpcshellLive = fetchData('xpcshell-stats.json');
     const mochitestLive = fetchData('mochitest-stats.json');
+    // build-optional: xpcshell-stats-backfill.json — no xpcshell backfill is
+    // committed and none is expected. The backfill repairs a mochitest-only
+    // data loss, so this request has 404'd on every load since the page was
+    // written, and `tools/page-assets.ts` would otherwise fail the build over a
+    // file that is meant to be absent. `mochitest-stats-backfill.json` has no
+    // such marker, so the build copies it into `dist-pages/` and stops if it
+    // ever goes missing — which is the bug this marker's absence used to hide.
     const xpcshellBackfill = fetch('./xpcshell-stats-backfill.json');
     const mochitestBackfill = fetch('./mochitest-stats-backfill.json');
 

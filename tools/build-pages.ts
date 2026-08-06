@@ -27,12 +27,21 @@
  * It also keeps the deployed artefact the same *kind* of thing as the pages it
  * sits next to — a static HTML file with its CSS and JS inside it — so the
  * migration does not change how the site is served.
+ *
+ * ## What is *not* inlined, and why that needs its own scan
+ *
+ * The shared `.js`, the CSS and the committed data files stay separate files
+ * and are copied next to the built page. Which ones a page needs is worked out
+ * by `tools/page-assets.ts`, over both the markup and the bundled code — see
+ * that file for the bug that forced the second half of that.
  */
 
 import { build } from 'esbuild';
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { type SiblingAsset, findSiblingAssets } from './page-assets.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceDir = join(root, 'next');
@@ -85,25 +94,6 @@ const WORKER_DIRECTIVE = /<!--\s*worker:\s*\.\/([\w.-]+\.ts)\s*-->/g;
 /** The global the built page reads its worker sources off. */
 const WORKER_GLOBAL = '__workers';
 
-/**
- * Sibling assets a page pulls in with a plain tag: `shared.js`, `shared.css`,
- * the favicons, and the rest of the scripts the unmigrated pages share.
- *
- * These are *not* inlined. `shared.js` and friends are loaded by up to 22 pages
- * that are not being migrated, so they stay exactly where they are and keep
- * being served as themselves; a migrated page goes on loading them by name. The
- * duplication the migration removes is the *data* logic — `computeTestStats`,
- * `getChunkIndex` and the rest of `common-test-data.js`, which `lib/` already
- * has typed and tested — not the UI plumbing, which has no `lib/` equivalent
- * and no reason to grow one yet.
- *
- * They do have to be *reachable*, though: the built page sits in `dist-pages/`,
- * so a relative `src="shared.js"` resolves next to it and 404s unless the file
- * is copied there. crash-viewer.html did not catch this because it is entirely
- * self-contained.
- */
-const SIBLING_ASSET = /(?:src|href)="(?!https?:|\/\/|\.\/|data:|#)([\w.-]+\.(?:js|css|svg|json))"/g;
-
 interface BuiltPage {
     name: string;
     bytes: number;
@@ -111,6 +101,13 @@ interface BuiltPage {
     assets: string[];
     /** `name -> bundled bytes`, for the build log. */
     workers: [string, number][];
+}
+
+/** One esbuild run: the program, and every source that went into it. */
+interface Bundle {
+    code: string;
+    /** Repo-relative paths, as esbuild's metafile reports them. */
+    inputs: string[];
 }
 
 /**
@@ -121,10 +118,15 @@ interface BuiltPage {
  * than at page load. Nothing in `lib/model` or `lib/formats` imports one today,
  * which is what makes them shareable at all.
  */
-async function bundleEntry(entry: string, format: 'esm' | 'iife' = 'esm'): Promise<string> {
+async function bundleEntry(entry: string, format: 'esm' | 'iife' = 'esm'): Promise<Bundle> {
     const result = await build({
         entryPoints: [entry],
         bundle: true,
+        // Names every file that went into the bundle, which is how the sibling
+        // scan finds the `build-optional` markers: esbuild strips ordinary
+        // comments, so they have to be read back out of the sources, and only
+        // esbuild knows which sources those were.
+        metafile: true,
         // Workers are created from a Blob with no `type: 'module'`, so they are
         // *classic* workers and an `export` at top level is a syntax error in
         // one. `iife` is what makes the bundle a plain program; the page's own
@@ -147,7 +149,7 @@ async function bundleEntry(entry: string, format: 'esm' | 'iife' = 'esm'): Promi
     if (file === undefined) {
         throw new Error(`esbuild produced no output for ${entry}`);
     }
-    return file.text;
+    return { code: file.text, inputs: Object.keys(result.metafile.inputs) };
 }
 
 /** Builds one page, returning what it produced. */
@@ -162,15 +164,15 @@ async function buildPage(name: string): Promise<BuiltPage> {
         workerNames.map((worker) => bundleEntry(join(sourceDir, worker), 'iife'))
     );
     for (const [index, worker] of workerNames.entries()) {
-        checkWorkerSelfContained(name, worker, workerSources[index]!);
+        checkWorkerSelfContained(name, worker, workerSources[index]!.code);
     }
     const workers: [string, number][] = workerNames.map((worker, index) => [
         worker,
-        workerSources[index]!.length,
+        workerSources[index]!.code.length,
     ]);
 
     let inlined = 0;
-    const replacements: Promise<string>[] = [];
+    const replacements: Promise<Bundle>[] = [];
     // `String.replace` cannot await, so collect the bundles first and splice
     // them in afterwards. The regex is stateful (`g`), hence the explicit reset.
     MODULE_SCRIPT.lastIndex = 0;
@@ -192,7 +194,7 @@ async function buildPage(name: string): Promise<BuiltPage> {
               workerNames
                   .map(
                       (worker, index) =>
-                          `  ${JSON.stringify(worker)}: ${JSON.stringify(workerSources[index]!)},`
+                          `  ${JSON.stringify(worker)}: ${JSON.stringify(workerSources[index]!.code)},`
                   )
                   .join('\n') +
               '\n};\n';
@@ -206,7 +208,7 @@ async function buildPage(name: string): Promise<BuiltPage> {
         // left is the check that this holds, in `checkSafe`.
         output = output.replace(
             match[0],
-            `<script type="module">\n${workerPrelude}${bundles[index]!}\n</script>`
+            `<script type="module">\n${workerPrelude}${bundles[index]!.code}\n</script>`
         );
         inlined++;
     }
@@ -221,13 +223,21 @@ async function buildPage(name: string): Promise<BuiltPage> {
         );
     }
 
+    // Every source that went into any of this page's bundles, for the
+    // `build-optional` markers esbuild strips out of the generated code.
+    const inputs = [...new Set([...bundles, ...workerSources].flatMap((bundle) => bundle.inputs))];
+    const sources = await Promise.all(inputs.map((input) => readFile(join(root, input), 'utf8')));
+
     // Validate before writing, not after. Writing first means a build that
     // fails still replaces the previous good artefact with the broken one, so
-    // the deploy ships it and the non-zero exit is the only clue.
-    checkSafe(name, [...bundles, ...workerSources]);
+    // the deploy ships it and the non-zero exit is the only clue. That applies
+    // to the sibling check too: a page whose data file is missing is broken,
+    // and must not overwrite the working copy of itself.
+    checkSafe(name, [...bundles, ...workerSources].map((bundle) => bundle.code));
+    const assets = await resolveAssets(name, output, sources);
     await writeFile(join(outDir, name), output);
-    const assets = await copyAssets(name, output);
-    return { name, bytes: output.length, inlined, assets, workers };
+    await copyAssets(assets);
+    return { name, bytes: output.length, inlined, assets: assets.map((a) => a.name), workers };
 }
 
 /**
@@ -261,25 +271,51 @@ function checkWorkerSelfContained(page: string, worker: string, bundle: string):
 }
 
 /**
- * Copies the sibling files a built page references, so its relative URLs work.
+ * Works out which siblings this page needs and checks they all exist.
  *
- * A missing one is a hard error rather than a warning: the symptom of a page
- * that cannot load `shared.js` is a dashboard that renders its markup and then
- * does nothing, which looks far more like a data problem than a build problem.
+ * A missing one is a hard error rather than a warning, and the reason is the
+ * whole point of `tools/page-assets.ts`: the symptom of a page that cannot load
+ * `shared.js` is a dashboard that renders its markup and then does nothing, and
+ * the symptom of one that cannot load its committed data file is worse still —
+ * `next/index.ts` treats a 404 backfill as "there is no backfill" and drew six
+ * months less history for a week without anything failing.
+ *
+ * Returns the assets that should actually be copied: everything required, plus
+ * the `build-optional` ones that happen to exist.
  */
-async function copyAssets(name: string, html: string): Promise<string[]> {
-    SIBLING_ASSET.lastIndex = 0;
-    const wanted = [...new Set([...html.matchAll(SIBLING_ASSET)].map((match) => match[1]!))];
+async function resolveAssets(
+    name: string,
+    html: string,
+    sources: readonly string[]
+): Promise<SiblingAsset[]> {
+    const wanted = findSiblingAssets(html, sources);
+    const present: SiblingAsset[] = [];
     for (const asset of wanted) {
         try {
-            await copyFile(join(root, asset), join(outDir, asset));
+            await access(join(root, asset.name));
         } catch (error) {
+            if (!asset.required) {
+                // Declared `build-optional` at the fetch site and genuinely
+                // absent — nothing to copy, and the page already handles the
+                // 404 it will get.
+                continue;
+            }
             throw new Error(
-                `${name} references ${asset}, which is not in the repository root: ${String(error)}`
+                `${name} references ${asset.name}, which is not in the repository root: ` +
+                    `${String(error)}. If the page fetches it and it is allowed to be ` +
+                    "missing, put a `// build-optional:` comment before the fetch."
             );
         }
+        present.push(asset);
     }
-    return wanted.sort();
+    return present;
+}
+
+/** Copies the resolved siblings next to the built page. */
+async function copyAssets(assets: readonly SiblingAsset[]): Promise<void> {
+    for (const asset of assets) {
+        await copyFile(join(root, asset.name), join(outDir, asset.name));
+    }
 }
 
 /**
