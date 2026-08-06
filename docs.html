@@ -105,8 +105,12 @@
         // Documents available to this viewer. Only these names can be loaded, so
         // that ?doc= can't be pointed at an arbitrary path.
         const DOCS = [
+            { file: 'README.md', title: 'Project overview' },
             { file: 'docs/PLAN.md', title: 'CLI implementation plan' },
             { file: 'docs/CLI.md', title: 'fx-tests CLI reference' },
+            { file: 'docs/PARITY.md', title: 'Page migration and parity checking' },
+            { file: 'docs/DEPLOY.md', title: 'Deploying the migrated pages' },
+            { file: 'lib/formats/FORMATS.md', title: 'What the published files contain' },
         ];
 
         const content = document.getElementById('content');
@@ -118,16 +122,41 @@
                 .replace(/\s+/g, '-');
         }
 
+        // Resolve a link target against the directory of the document it appears
+        // in, collapsing "." and ".." so that "../lib/formats/FORMATS.md" seen in
+        // docs/PARITY.md becomes "lib/formats/FORMATS.md". Paths that climb above
+        // the repo root, and anything that isn't a plain relative path, return ''.
+        function resolveDocPath(href, currentFile) {
+            // Only plain relative paths name a document in this repo. Absolute
+            // URLs (https://…/JSON_FORMAT.md) and root-relative paths are links
+            // out of the viewer and must be left alone.
+            if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//') ||
+                href.startsWith('/')) {
+                return '';
+            }
+            const dir = currentFile.includes('/')
+                ? currentFile.slice(0, currentFile.lastIndexOf('/')).split('/') : [];
+            const parts = dir.slice();
+            for (const segment of href.split('/')) {
+                if (segment === '' || segment === '.') continue;
+                if (segment === '..') {
+                    if (!parts.length) return '';
+                    parts.pop();
+                } else {
+                    parts.push(segment);
+                }
+            }
+            return parts.join('/');
+        }
+
         // Rewrite links between documents so they stay inside the viewer:
         // "PLAN.md" and "docs/PLAN.md" both become "?doc=docs/PLAN.md".
         function rewriteDocLinks(container, currentFile) {
-            const dir = currentFile.includes('/')
-                ? currentFile.slice(0, currentFile.lastIndexOf('/') + 1) : '';
             for (const a of container.querySelectorAll('a[href]')) {
                 const href = a.getAttribute('href');
                 if (!href.endsWith('.md')) continue;
-                const resolved = href.includes('/') ? href : dir + href;
-                if (DOCS.some(d => d.file === resolved)) {
+                const resolved = resolveDocPath(href, currentFile);
+                if (resolved && DOCS.some(d => d.file === resolved)) {
                     a.setAttribute('href', `?doc=${encodeURIComponent(resolved)}`);
                 }
             }
