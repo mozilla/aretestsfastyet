@@ -4,7 +4,7 @@
  *
  * **Per-date only.** No multi-day aggregate is published;
  * `{harness}-errors-with-taskids.json` 404s, and the branches in
- * `errors.html:1098` that would read one are dead. So there is no `days` axis
+ * `old/errors.html:1098` that would read one are dead. So there is no `days` axis
  * here, and "was this error present when the test passed?" is answered by
  * comparing two files, not by joining inside one.
  *

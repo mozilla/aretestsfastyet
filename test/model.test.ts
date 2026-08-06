@@ -99,7 +99,7 @@ test('every observed status classifies to exactly one kind and mode', () => {
 });
 
 test('CRASH is its own kind, and aggregating it into failures is the caller’s', () => {
-    // The one live disagreement (`PLAN.md` §1): `issues.html:1350` and
+    // The one live disagreement (`PLAN.md` §1): `old/issues.html:1350` and
     // `xpcshell-timings.html:656` fold crashes into failures, the other six
     // sites count them separately. The library reports the parts, because a
     // caller can take the union and cannot take it apart.
@@ -116,9 +116,9 @@ test('CRASH is its own kind, and aggregating it into failures is the caller’s'
 });
 
 test('UNKNOWN is its own kind and is never folded into pass or fail', () => {
-    // `issues.html:1024` and `xpcshell-timings.html:684` guess an UNKNOWN run
+    // `old/issues.html:1024` and `xpcshell-timings.html:684` guess an UNKNOWN run
     // into a pass from its duration, which inflates a pass rate.
-    // `common-test-data.js:323` ignores it. `test.html:1897` skips it. This
+    // `common-test-data.js:323` ignores it. `old/test.html:1897` skips it. This
     // library counts it, separately, so a returning UNKNOWN becomes visible.
     const classified = classifyStatus('UNKNOWN');
     assert.equal(classified.kind, 'unknown');

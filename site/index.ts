@@ -34,7 +34,7 @@
  * ## The three time windows are now labelled on the page
  *
  * The single most confusing property of the original, and it was invisible: the
- * summary table is 7 days (`index.html:524`), the four charts are the *entire*
+ * summary table is 7 days (`old/index.html:524`), the four charts are the *entire*
  * file unsliced (`:632-640`, `:649-668`, `:677-686`, `:695-723`), and the
  * summary's own links go to a 21-day view (`:487`). Measured on the pinned
  * files, the table covers **7** dates and the charts cover **199** (xpcshell)
@@ -55,7 +55,7 @@
  *     bug fix, and the largest number on this page that changes.
  *
  *     Upstream computes `(failedJobs − invalidJobs) / processedJobCount`
- *     (`index.html:476`, `:479`), removing the invalid jobs from the numerator
+ *     (`old/index.html:476`, `:479`), removing the invalid jobs from the numerator
  *     while also leaving them out of the denominator. The generator says the
  *     numerator never contained them: `failedJobs` is counted over every
  *     non-ignored job of the day (`fetch-test-data.js:1821`), and
@@ -97,7 +97,7 @@
  *     match.** Listed because a reader diffing `fx-tests summary` against this
  *     page across this change will see the CLI's number move.
  *
- *     Upstream divides by `totalTestRuns` (`index.html:480`) and that is right:
+ *     Upstream divides by `totalTestRuns` (`old/index.html:480`) and that is right:
  *     `totalTestRuns += runCount` runs *before* the status dispatch
  *     (`fetch-test-data.js:2733`) and `SKIP` is one of the branches below it,
  *     so the skips are already inside it. The CLI's
@@ -116,7 +116,7 @@
  *     rather than a number.
  *
  *     `getRecentStats` narrows to `Math.min(days, dates.length)`
- *     (`index.html:445`) while the heading keeps saying "Summary (Last 7 Days)"
+ *     (`old/index.html:445`) while the heading keeps saying "Summary (Last 7 Days)"
  *     (`:203`), so a file with 5 dates shows 5 days of data under a 7-day
  *     heading with nothing indicating it. The arithmetic is unchanged here; the
  *     heading is rewritten to `Summary (Last 5 Days)` when the window actually
@@ -130,7 +130,7 @@
  *
  *     `markerCounts` is an object of named series. Upstream's merge excludes
  *     only `metadata`, `dates` and `flavors` from its per-day array handling
- *     (`index.html:353-354`), so `markerCounts` is passed to `mergeArray` and
+ *     (`old/index.html:353-354`), so `markerCounts` is passed to `mergeArray` and
  *     indexed as if it were an array. Measured: the merged mochitest
  *     `markerCounts` is **an array of 198 `null`s**, having been an object of 5
  *     named series.
@@ -191,7 +191,7 @@
  *     markup now throw once each.** The same arrangement `site/crashes.html`,
  *     `site/failures.html` and `site/errors.html` already ship, for the same
  *     reason: the markup is byte-identical, so `onclick="setDisplayMode(…)"` on
- *     the two toggle buttons (`index.html:192-193`) is still an attribute, and
+ *     the two toggle buttons (`old/index.html:192-193`) is still an attribute, and
  *     a module has no globals — so the attribute handler is a `ReferenceError`
  *     and the listener attached by this file does the work.
  *
@@ -207,7 +207,7 @@
  *     emits none there either, so this is a change of mechanism and not of DOM.
  *
  *  8. **`green.html#${kind}` still does not carry the dev parameters, and that
- *     is reproduced.** `index.html:487` wraps the issues link in
+ *     is reproduced.** `old/index.html:487` wraps the issues link in
  *     `withDevParams()` and `:495` builds the green link without it, on the
  *     same row, two lines apart.
  *
@@ -356,7 +356,7 @@ function el(
  * and another here is the double-round that shipped `14.37%` where the page
  * showed `14.38%`.
  *
- * `null` renders as `0.00%`, which is upstream's behaviour (`index.html:478-481`
+ * `null` renders as `0.00%`, which is upstream's behaviour (`old/index.html:478-481`
  * returns the string `'0.00'` when the denominator is zero) and is reproduced
  * even though the view model distinguishes the two cases.
  */
@@ -364,14 +364,14 @@ function percent(value: number | null): string {
     return `${(value ?? 0).toFixed(2)}%`;
 }
 
-/** `n / N`, both localized. `index.html:490`. */
+/** `n / N`, both localized. `old/index.html:490`. */
 function counts(numerator: number, denominator: number): string {
     return `${numerator.toLocaleString()} / ${denominator.toLocaleString()}`;
 }
 
 // --- the summary table ----------------------------------------------------
 
-/** The four column tooltips, in column order. `index.html:486`, `:494`, `:502`, `:508`. */
+/** The four column tooltips, in column order. `old/index.html:486`, `:494`, `:502`, `:508`. */
 const COLUMN_TITLES = [
     'Percentage of test runs that failed',
     // The second half is appended only on a harness row, as upstream does.
@@ -462,7 +462,7 @@ function statCell(value: string, secondary: string | null): HTMLElement {
 
 /**
  * One cell, wrapped in a link on a harness row and bare on a flavor row.
- * `index.html:487`, `:492`, `:495`, `:500`.
+ * `old/index.html:487`, `:492`, `:495`, `:500`.
  */
 function linkedCell(cell: HTMLElement, href: string | null): Node {
     if (href === null) {
@@ -473,7 +473,7 @@ function linkedCell(cell: HTMLElement, href: string | null): Node {
     return anchor;
 }
 
-/** One row of the summary table. A port of `renderSummaryRow`, `index.html:469-515`. */
+/** One row of the summary table. A port of `renderSummaryRow`, `old/index.html:469-515`. */
 function renderSummaryRow(row: SummaryRow): HTMLElement {
     const tr = el('tr', row.isFlavor ? { className: 'flavor-row' } : {});
     tr.append(el('td', { className: 'harness-name', text: row.name }));
@@ -541,7 +541,7 @@ function renderSummaryRow(row: SummaryRow): HTMLElement {
 
 /**
  * Rebuilds the summary table. A port of `updateStatsSummary`,
- * `index.html:517-556`.
+ * `old/index.html:517-556`.
  *
  * Also rewrites the heading when the window narrowed (divergence 3) and warns
  * when the merge left a hole in the window — see `sumSeries` for why a hole
@@ -619,7 +619,7 @@ function rateTrace(
 }
 
 /**
- * Restyles a trace as a per-flavor one. `index.html:621-624`, `:663-666`.
+ * Restyles a trace as a per-flavor one. `old/index.html:621-624`, `:663-666`.
  *
  * `visible: 'legendonly'` is what makes the eight flavor traces start hidden
  * and appear on a legend click — the interaction the browser run exercises.
@@ -633,7 +633,7 @@ function asFlavorTrace(trace: Record<string, unknown>): Record<string, unknown> 
     };
 }
 
-/** The shared layout. A port of `chartLayout`, `index.html:593-610`. */
+/** The shared layout. A port of `chartLayout`, `old/index.html:593-610`. */
 function chartLayout(yLabel: string): Record<string, unknown> {
     return {
         xaxis: { title: 'Date', type: 'date' },
@@ -674,7 +674,7 @@ function yLabel(percentageLabel: string, countLabel: string): string {
 
 /**
  * The per-flavor traces for a chart keyed on two top-level series names.
- * A port of `addMochitestFlavorTraces`, `index.html:612-627`.
+ * A port of `addMochitestFlavorTraces`, `old/index.html:612-627`.
  */
 function flavorTraces(
     numeratorKey: 'failedTestRuns' | 'skippedTestRuns' | 'failedJobs',
@@ -705,7 +705,7 @@ function flavorTraces(
     return traces;
 }
 
-/** Flaky Test Failures. `index.html:629-645`. */
+/** Flaky Test Failures. `old/index.html:629-645`. */
 function createTestFailureChart(): void {
     const traces: Record<string, unknown>[] = [];
     for (const [name, stats] of namedStats()) {
@@ -723,7 +723,7 @@ function createTestFailureChart(): void {
     draw('testFailureChart', traces, yLabel('Failure Percentage (%)', 'Failed Test Runs'));
 }
 
-/** Flaky Job Failures. `index.html:647-673`. */
+/** Flaky Job Failures. `old/index.html:647-673`. */
 function createJobFailureChart(): void {
     const traces: Record<string, unknown>[] = [];
     for (const [name, stats] of namedStats()) {
@@ -743,7 +743,7 @@ function createJobFailureChart(): void {
     draw('jobFailureChart', traces, yLabel('Failure Percentage (%)', 'Failed Jobs'));
 }
 
-/** Test Skips. `index.html:675-691`. */
+/** Test Skips. `old/index.html:675-691`. */
 function createSkipRateChart(): void {
     const traces: Record<string, unknown>[] = [];
     for (const [name, stats] of namedStats()) {
@@ -761,7 +761,7 @@ function createSkipRateChart(): void {
     draw('skipRateChart', traces, yLabel('Skip Percentage (%)', 'Skipped Test Runs'));
 }
 
-/** The legend label for a harness. `index.html:634`, `:639`. */
+/** The legend label for a harness. `old/index.html:634`, `:639`. */
 function harnessLabel(harness: string): string {
     return harness === 'xpcshell' ? 'XPCShell' : 'Mochitest';
 }
@@ -810,13 +810,13 @@ function createBreakdownChart(chartId: string, stats: MergedStats | null): void 
     );
 }
 
-/** Both breakdown charts, drawn by one observer entry. `index.html:727-730`. */
+/** Both breakdown charts, drawn by one observer entry. `old/index.html:727-730`. */
 function createBreakdownCharts(): void {
     createBreakdownChart('xpcshellBreakdownChart', xpcshellStats);
     createBreakdownChart('mochitestBreakdownChart', mochitestStats);
 }
 
-/** Container id → the function that draws its chart. `index.html:734-739`. */
+/** Container id → the function that draws its chart. `old/index.html:734-739`. */
 const CHART_CREATORS = new Map<string, () => void>([
     ['testFailureContainer', createTestFailureChart],
     ['jobFailureContainer', createJobFailureChart],
@@ -859,7 +859,7 @@ function labelChartWindows(): void {
  * Fetches one harness's stats and merges its committed backfill.
  *
  * Both fetches are started by the caller before this is awaited, matching the
- * page's own arrangement (`index.html:8-16`): the four requests go out before
+ * page's own arrangement (`old/index.html:8-16`): the four requests go out before
  * Plotly's CDN script has loaded, so the merge costs no extra latency.
  *
  * The backfill is best-effort — a 404 or a parse failure yields the live data
@@ -931,7 +931,7 @@ function updateDisplay(): void {
         updateStatsSummary();
         labelChartWindows();
         // Recreate the visible charts; reset the created set so an off-screen
-        // one is rebuilt when it scrolls in. `index.html:770-776`.
+        // one is rebuilt when it scrolls in. `old/index.html:770-776`.
         createdCharts.clear();
         setTimeout(() => {
             for (const id of visibleContainers) {
@@ -967,7 +967,7 @@ function setupInteractions(): void {
         ?.addEventListener('click', () => setDisplayMode('percentage'));
     document.getElementById('btnCount')?.addEventListener('click', () => setDisplayMode('count'));
 
-    // Writes a hash; reads none. `index.html:781-787`. The two `<h3>` in the
+    // Writes a hash; reads none. `old/index.html:781-787`. The two `<h3>` in the
     // breakdown container are deliberately not included — see the note above
     // the divergence list.
     for (const header of document.querySelectorAll('h2[id]')) {
@@ -1062,7 +1062,7 @@ export async function start(): Promise<void> {
     window.__displayMode = (): DisplayMode => currentDisplayMode;
 
     // All four requests go out before anything is awaited, matching
-    // `index.html:8-16`. The backfill is a plain `fetch` of a committed sibling,
+    // `old/index.html:8-16`. The backfill is a plain `fetch` of a committed sibling,
     // not a published artifact, so it does not go through `fetchData`.
     const xpcshellLive = fetchData('xpcshell-stats.json');
     const mochitestLive = fetchData('mochitest-stats.json');

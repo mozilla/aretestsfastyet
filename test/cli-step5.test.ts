@@ -983,7 +983,7 @@ test('issues --group-by component and directory aggregate rather than list tests
 });
 
 test('issues counts all four outcomes by default, as the dashboard does', async () => {
-    // `issues.html:626-638` has four "Count as issues" checkboxes — failures,
+    // `old/issues.html:626-638` has four "Count as issues" checkboxes — failures,
     // timeouts, crashes and skips — and every one of them is `checked` on load.
     // The CLI used to omit skips, which ranked components against a different
     // definition of "issue" than the page the data comes from. Skips are the
@@ -1015,7 +1015,7 @@ test('issues counts all four outcomes by default, as the dashboard does', async 
 
 test('issues defaults to the component ranking, not a flat list of tests', async () => {
     // The reported bug: `fx-tests issues` printed "a few random tests" because
-    // it led with a per-test list, while `issues.html:888` hardcodes the
+    // it led with a per-test list, while `old/issues.html:888` hardcodes the
     // components view ("Always use components view for issues page") and sorts
     // it by issue count (`:663`). Triage starts by finding the area to look at.
     const { stdout } = await invoke(['issues', '--json', '--limit', '0']);
@@ -1502,7 +1502,7 @@ test('--json and text agree on the numbers they both report', async () => {
  * random tests, without sorting", because nothing in the output said so. A
  * reader who does not already know cannot tell an ordered list from an
  * arbitrary one, so the header carries the marker — the same `▼`/`▲` the
- * dashboards put on their sort buttons (`failures.html:632`).
+ * dashboards put on their sort buttons (`old/failures.html:632`).
  */
 test('every ranked command marks the column it is ordered by', async () => {
     const commands = [
@@ -1781,7 +1781,7 @@ test('an empty result says what was searched, not just "no match"', async () => 
 /**
  * The issue rate's denominator, which four mutation survivors showed unpinned.
  *
- * `issues.html:1079` adds skipped runs back to the denominator only when skips
+ * `old/issues.html:1079` adds skipped runs back to the denominator only when skips
  * are one of the enabled types, because `runCount` excludes them (`:1061`). Get
  * this wrong and the numerator counts a skip the denominator does not, which
  * inflates every rate — measured on the real file, 8.74% became 9.53%. Nothing
@@ -1881,7 +1881,7 @@ test('--type skip removes skips from the denominator as well as the count', asyn
 });
 
 test('the grouped views ask for the clean tests the denominator needs', async () => {
-    // `issues.html:2010` accumulates a component's runs over every test in it,
+    // `old/issues.html:2010` accumulates a component's runs over every test in it,
     // and only then (`:2016`) decides which tests to list. The CLI gets those
     // clean tests by passing `keepClean` for the grouped views only, so the
     // per-test list still shows only tests worth listing. Both halves are

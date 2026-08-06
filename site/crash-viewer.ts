@@ -30,7 +30,7 @@
  * what forces its two worst quirks: `onclick="toggleThreadFrames(7)"` attributes
  * needing global functions, and the truncation splice
  * `html = html.slice(0, -16)` that removes a literal `</tbody></table>` so more
- * rows can be appended to the same table (`crash-viewer.html:794`).
+ * rows can be appended to the same table (`old/crash-viewer.html:794`).
  *
  * Building nodes removes the need for both — a row is appended to the `tbody`
  * that already exists, and a listener is attached to the element it belongs to.
@@ -50,7 +50,7 @@
  *     table, one `tbody`, the hidden rows inside it — verified by comparing
  *     the rendered row lists of all 61 truncated threads on a real dump.
  *  2. **"Show N more" toggles both ways.** `toggleThreadFrames`
- *     (`crash-viewer.html:988`) only ever *adds* the `expanded` class and then
+ *     (`old/crash-viewer.html:988`) only ever *adds* the `expanded` class and then
  *     hides its own button, so a thread cannot be re-collapsed without a
  *     reload. Here the control stays and flips between `▸ Show N more` and
  *     `▾ Hide N`. This is a **behaviour change**, argued in `renderThread`.
@@ -62,7 +62,7 @@
  *     record `{"address": "0x00007fff7365b170"}`. A bug fix, and the only
  *     divergence that changes text a reader sees on a non-hang dump.
  *  4. **Clicking a frame opens *that* frame's registers.** Upstream's
- *     `toggleFrameDetails(rowId)` (`crash-viewer.html:958`) looks the details
+ *     `toggleFrameDetails(rowId)` (`old/crash-viewer.html:958`) looks the details
  *     row up with `getElementById`, and the id is `frame-${frame.frame}-details`
  *     — a per-*thread* index. Two rendered threads whose frame 0 carries
  *     registers therefore produce two `id="frame-0-details"`, and
@@ -213,7 +213,7 @@ function renderExtraData(view: CrashView): HTMLElement | null {
 /**
  * The red box above the crashing thread's stack.
  *
- * Node for node against `crash-viewer.html:717-753`, whitespace included. Two
+ * Node for node against `old/crash-viewer.html:717-753`, whitespace included. Two
  * details here were found by diffing the rendered DOM against the old page's
  * rather than by reading the source, and neither is visible in a screenshot:
  *
@@ -418,7 +418,7 @@ function renderFrameRow(row: FrameRow): HTMLElement[] {
 
     const locationCell = el('td', { class: 'frame-location' });
     if (row.locationText !== '') {
-        // The offset goes **outside** the link (`crash-viewer.html:924-934`):
+        // The offset goes **outside** the link (`old/crash-viewer.html:924-934`):
         // upstream closes the `</a>` and only then appends ` +${offset}`, so
         // the offset is neither clickable nor underlined. Folding it into the
         // link text renders the same characters, which is why a `textContent`
@@ -497,7 +497,7 @@ function renderThread(thread: ThreadView): Node[] {
         return nodes;
     }
 
-    // **Declared divergence.** `toggleThreadFrames` (`crash-viewer.html:988`)
+    // **Declared divergence.** `toggleThreadFrames` (`old/crash-viewer.html:988`)
     // only adds `expanded` and then hides its own button, so a thread that has
     // been opened cannot be closed short of reloading the page, and the
     // control that opened it disappears. Measured on the linux-a11y dump: 61
@@ -667,7 +667,7 @@ function requireElement(id: string): HTMLElement {
  * and **a missing one is not an error**: the harness uploads it for some
  * crashes and not others, and the page must render either way. Both the
  * non-OK response and a rejected fetch resolve to `null`, matching
- * `crash-viewer.html:600`.
+ * `old/crash-viewer.html:600`.
  *
  * The two are fetched concurrently rather than in sequence — upstream's
  * `Promise.all` — because the sidecar is small and serializing them would

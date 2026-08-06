@@ -50,11 +50,11 @@ indexes:
 Two of these carry real domain logic that the CLI needs and that would be
 error-prone to re-derive:
 
-- **Crash signature generation** (`crash-viewer.html:520`): walk the crashing
+- **Crash signature generation** (`old/crash-viewer.html:520`): walk the crashing
   thread's frames, skip abort/assertion frames to find the first meaningful one,
   strip parameter lists. It also detects null-pointer dereferences from the
   faulting address (`:729`).
-- **Manifest skip detection** (`manifests.html:415`): a manifest whose durations
+- **Manifest skip detection** (`old/manifests.html:415`): a manifest whose durations
   are all zero on a config was skipped there, not run instantly. Miss this and
   every skipped config reads as infinitely fast.
 
@@ -71,14 +71,14 @@ the same job. `try.html` tracks this (`isRetry` at `:1022`, `passedOnRetry` at
 intermittent, while failed-in-both is much closer to a real breakage. Note this
 is a *within-job* rerun and is distinct from a **job-level retry**, the
 `retryId`/`runs/<n>` axis — two different things that both get called "retry" and
-must not be conflated in the model. `try.html:1381` keys runs by
+must not be conflated in the model. `old/try.html:1381` keys runs by
 `${taskId}.${retryId}` to keep them apart.
 
 **Parallel vs sequential execution.** Statuses are suffixed `-PARALLEL` /
 `-SEQUENTIAL` (`PASS-PARALLEL`, `FAIL-PARALLEL`, `TIMEOUT-PARALLEL`, …), so a
 failure carries information about whether it happened under parallel load. A test
 that only fails in parallel is likely racing with its neighbours rather than
-broken on its own. `issues.html:1216` surfaces this, but only inside a tooltip
+broken on its own. `old/issues.html:1216` surfaces this, but only inside a tooltip
 and only aggregated per platform.
 
 Consequences for the design: `model/status.ts` must decompose a status string
@@ -141,13 +141,13 @@ gets the answer backwards.
 | Location | `UNKNOWN` lands in | `CRASH` in `isFail`? |
 | --- | --- | --- |
 | `common-test-data.js:296` | **ignored** — `else if (status === 'UNKNOWN') {}` at `:323`, before the fail branch | no |
-| `issues.html:995` | **pass / skip / timeout, guessed from duration** (`:1024`); with no durations, all **pass** | no |
+| `old/issues.html:995` | **pass / skip / timeout, guessed from duration** (`:1024`); with no durations, all **pass** | no |
 | `xpcshell-timings.html:656` | **pass / skip / timeout, guessed from duration** (`:684`) | yes |
-| `issues.html:1350` | fail (no interception in this path) | yes — scope never defines `isCrash` |
+| `old/issues.html:1350` | fail (no interception in this path) | yes — scope never defines `isCrash` |
 | `perma-fails.html:483` | excluded via status list | no |
 | `variant.html:555` | excluded via status list | no |
-| `test.html:2625` | excluded via status list | no |
-| `test.html:1897` | **skipped** — explicit `continue` at `:1895` | no |
+| `old/test.html:2625` | excluded via status list | no |
+| `old/test.html:1897` | **skipped** — explicit `continue` at `:1895` | no |
 
 So the real disagreement is three-way — ignore it, guess it from duration, or
 exclude it by name — and the two pages that guess can score an `UNKNOWN` run as a
@@ -164,7 +164,7 @@ stopped encountering it, so nothing visibly broke. All of the above is therefore
 The `run-if` filter is a smaller and different divergence than an earlier draft of
 this plan claimed. All the sites agree on a skip with *no* message: they count it.
 `msg?.startsWith('run-if')` yields `undefined` for a null message, which is falsy,
-so `perma-fails.html:511`, `variant.html:575` and `test.html:2642` fall through and
+so `perma-fails.html:511`, `variant.html:575` and `old/test.html:2642` fall through and
 count rather than `continue`. The genuine difference is structural — one group
 iterates `messageIds` counting one skip per entry
 (`common-test-data.js:303`, `xpcshell-timings.html:666`), the other iterates
@@ -179,7 +179,7 @@ consolidation to fix visible numbers.
 
 ### Other constraints found in the code
 
-- `try.html:2584` ships shared functions into a Web Worker by
+- `old/try.html:2584` ships shared functions into a Web Worker by
   `Function.prototype.toString()`-ing them and concatenating the source. Real
   modules make this unnecessary, but the worker path must keep working.
 - `fetch-utils.js` is browser-coupled but only *incidentally*: it reads
@@ -188,7 +188,7 @@ consolidation to fix visible numbers.
 - `try.html` also hits Treeherder (`TH_BASE`, `/api/project/try/push/`,
   `/api/jobs/?push_id=` with pagination) — that logic is needed by
   `fx-tests try` and is currently entangled with rendering.
-- `try.html:3711` already exposes `formatForPrompt()` + a console API for
+- `old/try.html:3711` already exposes `formatForPrompt()` + a console API for
   pasting failures into a Claude prompt. The CLI is the better home for that
   need; keep the page affordance until the CLI replaces it.
 
@@ -228,7 +228,7 @@ lib/                        # the shared library — no DOM, no Node-only APIs
   query/
     test-stats.ts           # computeTestStats, from common-test-data.js
     config-stats.ts         # computeConfigStats, from common-test-data.js
-    coverage.ts             # per-config ran/passed/skipped matrix (test.html:2610)
+    coverage.ts             # per-config ran/passed/skipped matrix (old/test.html:2610)
     issues.ts  failures.ts  crashes.ts  summary.ts
     manifest-stats.ts       # per-manifest/per-config durations + skip detection
     error-ranking.ts        # occurrences and test-spread per message
@@ -391,13 +391,13 @@ heuristics are dead code. Three things remain:
   kind that is counted and reported separately — never silently folded into pass
   or fail. A job without structured logging did not report an outcome, so putting
   its runs in either bucket invents information. This matters because
-  `issues.html:1024` and `xpcshell-timings.html:684` currently guess such runs
+  `old/issues.html:1024` and `xpcshell-timings.html:684` currently guess such runs
   into **passes**, which inflates the landing page's pass rate; if the status ever
   returns, the library should make it visible instead of absorbing it.
 - **Do not port the duration heuristics** (`xpcshell-timings.html:684`, `:1213`,
-  `issues.html:1024`): `<100ms` → skip, `>300s` → timeout, else pass. Guessing an
+  `old/issues.html:1024`): `<100ms` → skip, `>300s` → timeout, else pass. Guessing an
   outcome from a runtime is not something to carry into a tested library.
-- **Decide `CRASH` explicitly.** The one live disagreement: `issues.html:1350` and
+- **Decide `CRASH` explicitly.** The one live disagreement: `old/issues.html:1350` and
   `xpcshell-timings.html:656` fold crashes into failures, everything else counts
   them separately. The library reports `crash` as its own kind and lets callers
   aggregate — which is what the disagreement was actually about.
@@ -414,7 +414,7 @@ before deleting code on the strength of it.
   reasoning comments (the recent-window logic is subtle and correct; it should
   be moved, not rewritten).
 - `query/coverage.ts`: the per-config ran/passed/skipped matrix, ported from
-  `test.html:2610`. New as a *library* function, not new logic — but it is what
+  `old/test.html:2610`. New as a *library* function, not new logic — but it is what
   `fx-tests test --coverage` needs, and the reason a failure-only view cannot
   answer "does this test run on Android?". Like the page it is ported from, it
   reports only the configs the test was scheduled on; a missing platform is the
@@ -441,7 +441,7 @@ before deleting code on the strength of it.
   profile is a fixed path under `/task/<id>/runs/<retry>/artifacts/public/test_info/`,
   while the per-test failure profile's filename only appears in the failure
   message (`profile uploaded in profile_<name>.json`, parsed at
-  `try.html:2900`). The library should expose both, and return nothing rather
+  `old/try.html:2900`). The library should expose both, and return nothing rather
   than guess when no profile was uploaded.
 - Tests: golden-file tests for the query layer against fixtures. `sources/`
   gets a fake byte-source; no test hits the network.
@@ -563,7 +563,7 @@ half of what the generator already did. No streaming parser, no heap flags.
 Two things do follow. Prefer the 64-bucket files for single-test queries — what
 `fx-tests test` does, and why it is fast. And aggregate in a single pass over
 integer-indexed arrays rather than materializing per-occurrence objects, the way
-`errors.html:275` already does, since 103M markers is where object-per-occurrence
+`old/errors.html:275` already does, since 103M markers is where object-per-occurrence
 would stop being viable.
 
 The binding limit is on *aggregating across days*: several days of mochitest

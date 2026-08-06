@@ -19,7 +19,7 @@
  *
  * ## What the migration removes
  *
- * **A second, private `computeTestStats`.** `issues.html:944-1097` is a
+ * **A second, private `computeTestStats`.** `old/issues.html:944-1097` is a
  * 150-line fork that is not `common-test-data.js`'s — the page never loads that
  * file (`grep -c common-test-data issues.html` is 0; its `<script>` tags are
  * `:7-10`). The fork and `lib/query/issues.ts` were compared per test and field
@@ -37,7 +37,7 @@
  * `dashboards.js`, `common-ui.js`, `common-links.js` and `shared.js`. They are
  * UI plumbing with no `lib/` equivalent and up to 22 unmigrated pages depend on
  * them; `tools/build-pages.ts` copies them next to the built page. Chart.js
- * comes from the same CDN tag the old page uses (`issues.html:3820`), moved
+ * comes from the same CDN tag the old page uses (`old/issues.html:3820`), moved
  * ahead of the module script because a `type="module"` script is deferred and
  * the CDN one is not — so `Chart` is defined before any of this runs, which is
  * the ordering the old page gets for free from an inline `<script>`.
@@ -51,7 +51,7 @@
  * `{harness}-issues-with-taskids.json` is the same 21 days at 15.9 MB, with
  * `taskIdIds` on the non-passing groups and a `taskInfo` to resolve them
  * through. `loadDetailedData` fetches it in the background when a component is
- * opened and swaps it in, which is what upstream does (`issues.html:3403`) and
+ * opened and swaps it in, which is what upstream does (`old/issues.html:3403`) and
  * what three features need: the run list under a failure message, the
  * per-issue-message chart, and the platform tooltips. Without it those three
  * have nothing to show.
@@ -160,7 +160,7 @@
  *     the code sees a different mechanism.
  *
  *  4. **`buildTotalSummaryRow` is not ported, because nothing calls it.**
- *     `issues.html:1833-1875` builds a `📊 Total` row. Verified rather than
+ *     `old/issues.html:1833-1875` builds a `📊 Total` row. Verified rather than
  *     assumed, as the brief asked: `grep -n "buildTotalSummaryRow" issues.html`
  *     returns **exactly one line — the definition at `:1833`** and no call
  *     site; and driving the old page in Chrome through first paint, expansion,
@@ -349,12 +349,12 @@ let startTime = 0;
 /**
  * Whether `{harness}-issues-with-taskids.json` has been merged in.
  *
- * `detailedData !== null` upstream (`issues.html:668`). Only the fact is kept:
+ * `detailedData !== null` upstream (`old/issues.html:668`). Only the fact is kept:
  * the object itself is held by `decoded`, so keeping a second reference to a
  * 15.9 MB parse would double the page's peak footprint for nothing.
  */
 let detailedLoaded = false;
-/** `isLoadingDetailedData` (`issues.html:669`) — one fetch at a time. */
+/** `isLoadingDetailedData` (`old/issues.html:669`) — one fetch at a time. */
 let loadingDetailed = false;
 /**
  * Resolves when the in-flight detailed fetch settles, for the tests.
@@ -368,7 +368,7 @@ let detailedLoad: Promise<void> | null = null;
 
 let filters: IssueFilters = { ...ALL_FILTERS };
 let currentSort: SortState = { ...INITIAL_SORT };
-/** Which component rows are open. Keyed by component name. `issues.html:662`. */
+/** Which component rows are open. Keyed by component name. `old/issues.html:662`. */
 const expandedComponents = new Set<string>();
 
 /** The rows of the last render, for the parity seam. */
@@ -388,7 +388,7 @@ const statusText = (): HTMLElement => document.getElementById('status-text')!;
 const dateSelect = (): HTMLSelectElement =>
     document.getElementById('date-select') as HTMLSelectElement;
 
-/** `showError` (`issues.html:865`). */
+/** `showError` (`old/issues.html:865`). */
 function showError(message: string, showNoData = false): void {
     const box = errorBox();
     box.style.display = 'block';
@@ -398,13 +398,13 @@ function showError(message: string, showNoData = false): void {
     }
 }
 
-/** `hideError` (`issues.html:875`). */
+/** `hideError` (`old/issues.html:875`). */
 function hideError(): void {
     errorBox().style.display = 'none';
     noDataBox().style.display = 'none';
 }
 
-/** `setStatusText` (`issues.html:881`). */
+/** `setStatusText` (`old/issues.html:881`). */
 function setStatusText(text: string): void {
     statusText().textContent = text;
 }
@@ -414,7 +414,7 @@ function setStatusText(text: string): void {
 /**
  * One `<div class="stat-item">` with its label and value.
  *
- * `generateStatItem` (`issues.html:805-810`) in element form. The `hideable-zero`
+ * `generateStatItem` (`old/issues.html:805-810`) in element form. The `hideable-zero`
  * container class is what fades a zero to 15% opacity until the row is hovered
  * (`:62-70`), which is how seven columns stay readable on a row where five of
  * them are zero.
@@ -440,7 +440,7 @@ function statItem(
 /**
  * The seven stat cells shared by a component row and a test row.
  *
- * `generateStatsHtml` (`issues.html:813-840`) and the component header's own
+ * `generateStatsHtml` (`old/issues.html:813-840`) and the component header's own
  * copy (`:2121-2127`) unified — they emit the same seven cells in the same
  * order with the same colour rules, and the two differences are parameters:
  *
@@ -557,7 +557,7 @@ function bindTooltip(cell: HTMLElement, test: IssueRow, type: TooltipType): void
 /**
  * Puts one tooltip on the page, positioned above the cell.
  *
- * `showTooltip` (`issues.html:2271-2313`) — appended to `<body>` rather than to
+ * `showTooltip` (`old/issues.html:2271-2313`) — appended to `<body>` rather than to
  * the cell so it is not clipped by the row's `overflow`, positioned in page
  * coordinates, and nudged back inside the viewport on all four edges.
  */
@@ -582,7 +582,7 @@ function showTooltip(
         );
     }
     // The second half of a skips or failures tooltip: the messages behind the
-    // count, with their own counts (`issues.html:1670-1702`). Built from
+    // count, with their own counts (`old/issues.html:1670-1702`). Built from
     // `issueEntries`, which is the same list the test's expansion renders — so
     // the tooltip and the rows under the row cannot disagree.
     if (test !== undefined && decoded !== null && type !== 'timeouts') {
@@ -648,7 +648,7 @@ function showTooltip(
     tooltip.style.top = `${top}px`;
 }
 
-/** `hideTooltip` (`issues.html:2260-2265`). */
+/** `hideTooltip` (`old/issues.html:2260-2265`). */
 function hideTooltip(): void {
     document.querySelector('.dynamic-tooltip')?.remove();
 }
@@ -658,7 +658,7 @@ function hideTooltip(): void {
 /**
  * The header row of eight sort buttons.
  *
- * `buildSortHeader` (`issues.html:1148-1184`). The arrow is `↑`/`↓` on the
+ * `buildSortHeader` (`old/issues.html:1148-1184`). The arrow is `↑`/`↓` on the
  * active column and a **space** on every other (`:1151`) — a space rather than
  * an empty string so the label does not shift by the arrow's width when the
  * sort moves, which is why it is reproduced exactly rather than omitted.
@@ -701,7 +701,7 @@ function sortHeader(): HTMLElement {
 
 // --- rendering ------------------------------------------------------------
 
-/** `renderComponentsView` (`issues.html:1933`). */
+/** `renderComponentsView` (`old/issues.html:1933`). */
 function render(): void {
     if (decoded === null) {
         noDataBox().style.display = 'block';
@@ -742,7 +742,7 @@ function render(): void {
     target.append(table);
 }
 
-/** One component header row. `issues.html:2094-2130`. */
+/** One component header row. `old/issues.html:2094-2130`. */
 function componentHeader(
     row: ComponentRow,
     searchTerm: string,
@@ -789,12 +789,12 @@ function componentHeader(
     return element;
 }
 
-/** The test rows under an expanded component. `issues.html:2144-2177`. */
+/** The test rows under an expanded component. `old/issues.html:2144-2177`. */
 function testRows(row: ComponentRow): HTMLElement[] {
     return sortTests(row.tests, currentSort).map((test) => testRow(test));
 }
 
-/** One test row. `issues.html:2166-2176`. */
+/** One test row. `old/issues.html:2166-2176`. */
 function testRow(test: IssueRow): HTMLElement {
     const indent = el('span', { class: 'tree-indent' });
     indent.style.width = '20px';
@@ -825,7 +825,7 @@ function testRow(test: IssueRow): HTMLElement {
     return element;
 }
 
-/** The 📋 copy button. `generateCopyButton` (`issues.html:843-845`). */
+/** The 📋 copy button. `generateCopyButton` (`old/issues.html:843-845`). */
 function copyButton(testPath: string): HTMLElement {
     const button = el('button', {
         class: 'action-button',
@@ -839,7 +839,7 @@ function copyButton(testPath: string): HTMLElement {
     return button;
 }
 
-/** The 🔍 Searchfox link. `generateSearchfoxButton` (`issues.html:848-851`). */
+/** The 🔍 Searchfox link. `generateSearchfoxButton` (`old/issues.html:848-851`). */
 function searchfoxButton(testPath: string): HTMLElement {
     const link = externalLink(
         `https://searchfox.org/mozilla-central/source/${testPath}`,
@@ -853,7 +853,7 @@ function searchfoxButton(testPath: string): HTMLElement {
 /**
  * Copies a test path and flashes the button.
  *
- * `copyTestName` (`issues.html:3300-3316`) and `showCopySuccess` (`:3289`).
+ * `copyTestName` (`old/issues.html:3300-3316`) and `showCopySuccess` (`:3289`).
  * Upstream reaches for the implicit global `event` to find the button; here the
  * listener has it. The `document.execCommand` fallback for non-HTTPS origins
  * (`:3318-3341`) is kept, because the dashboards are opened from `file://` and
@@ -893,7 +893,7 @@ async function copyTestPath(testPath: string, button: HTMLElement): Promise<void
 // --- expansion ------------------------------------------------------------
 
 /**
- * Opens or closes a component. `toggleFolder` (`issues.html:2317-2339`).
+ * Opens or closes a component. `toggleFolder` (`old/issues.html:2317-2339`).
  *
  * Upstream re-renders the whole table and then restores `window.scrollY`,
  * because its renderer is one `innerHTML` assignment. Here the rows are
@@ -927,7 +927,7 @@ function toggleComponent(key: string): void {
         void loadDetailedData();
     }
 
-    // The chart slot goes in **before** the test rows (`issues.html:2135-2141`
+    // The chart slot goes in **before** the test rows (`old/issues.html:2135-2141`
     // emits it first), and is drawn into **after** it is in the document
     // (`:2186-2197` is a second pass over the same components, for the reason
     // Chart.js needs: a detached canvas has no size to lay a chart out in).
@@ -946,7 +946,7 @@ function toggleComponent(key: string): void {
 /**
  * Opens or closes one test's issue list.
  *
- * `toggleIssueDetails` (`issues.html:2342-2370`), including its two rules:
+ * `toggleIssueDetails` (`old/issues.html:2342-2370`), including its two rules:
  * clicking an open test closes it, and opening one **closes every other**
  * (`:2349-2351`) — so at most one test is expanded at a time, unlike the
  * components, of which any number can be open.
@@ -965,7 +965,7 @@ function toggleTestDetails(row: HTMLElement, test: IssueRow): void {
     }
     insertAfter(row, [issueDetails(test)]);
     // After insertion, for the same reason the component chart is: Chart.js
-    // measures the canvas. `issues.html:2361-2368` does it in the same order.
+    // measures the canvas. `old/issues.html:2361-2368` does it in the same order.
     if (isHistoricalMode) {
         drawOutcomeCharts(
             testChartId(test.testId),
@@ -977,7 +977,7 @@ function toggleTestDetails(row: HTMLElement, test: IssueRow): void {
 /**
  * One test's expanded issue list.
  *
- * `generateIssueDetailsHtml` (`issues.html:2951-3108`). The two "nothing to
+ * `generateIssueDetailsHtml` (`old/issues.html:2951-3108`). The two "nothing to
  * show" messages are upstream's and are distinct on purpose: a test with no
  * issues at all reads differently from one whose issues are all of unchecked
  * types (`:3034` and `:3049`).
@@ -1022,7 +1022,7 @@ function issueDetails(test: IssueRow): HTMLElement {
     return el('div', { class: 'issue-details-row', children: [content] });
 }
 
-/** The badge class for an issue type. `issues.html:3054-3056`. */
+/** The badge class for an issue type. `old/issues.html:3054-3056`. */
 const BADGE_CLASS: Record<IssueEntry['type'], string> = {
     SKIP: 'badge-skip',
     FAIL: 'badge-fail',
@@ -1033,7 +1033,7 @@ const BADGE_CLASS: Record<IssueEntry['type'], string> = {
 /**
  * One issue line: a count, a type badge and the message.
  *
- * `issues.html:3070-3093`. Two details are upstream's:
+ * `old/issues.html:3070-3093`. Two details are upstream's:
  *
  * - **Only a FAIL line's count carries a tooltip** (`:3063`), and its
  *   denominator is `runCount` rather than the Issue% denominator — see
@@ -1100,7 +1100,7 @@ function issueLine(test: IssueRow, entry: IssueEntry): HTMLElement {
     });
 
     // The per-message chart slot and the run table, both hidden until the line
-    // is clicked. `issues.html:3131-3141` toggles the two together.
+    // is clicked. `old/issues.html:3131-3141` toggles the two together.
     const chartId = isHistoricalMode ? messageChartId(test.testId, entry) : null;
     const chart = chartId === null ? null : renderChartSlot(`${chartId}-canvas`);
     if (chart !== null) {
@@ -1129,7 +1129,7 @@ function issueLine(test: IssueRow, entry: IssueEntry): HTMLElement {
  * Opens or closes the per-run table and the per-message chart under one issue
  * line.
  *
- * `toggleIssueRuns` (`issues.html:3111-3145`). Collapsing hides both without
+ * `toggleIssueRuns` (`old/issues.html:3111-3145`). Collapsing hides both without
  * clearing them, and expanding rebuilds the run table each time — which matters
  * now that the detailed file can arrive between two clicks: the second click
  * shows the runs the first could not.
@@ -1181,7 +1181,7 @@ function toggleIssueRuns(
 /**
  * The per-run rows for one issue line.
  *
- * `getIssueRuns` (`issues.html:3148-3261`). Upstream branches on the issue type
+ * `getIssueRuns` (`old/issues.html:3148-3261`). Upstream branches on the issue type
  * to pick the status groups to walk and then reads `taskIdIds` out of each;
  * `runsOfTest` has resolved the shape already, so the branch is `matchesEntry`
  * and the rest is one loop.
@@ -1294,7 +1294,7 @@ function runRows(test: IssueRow, entry: IssueEntry): HTMLElement[] {
 // --- the charts -----------------------------------------------------------
 
 /**
- * The DOM id of a component's chart pair. `issues.html:2136`.
+ * The DOM id of a component's chart pair. `old/issues.html:2136`.
  *
  * Ids are still built and still collide the same way upstream's do: two
  * components differing only in punctuation map to the same id, because every
@@ -1307,13 +1307,13 @@ function componentChartId(component: string): string {
     return `component-chart-${component.replace(/[^a-zA-Z0-9]/g, '-')}`;
 }
 
-/** The DOM id of a test's chart pair. `issues.html:2364`, `:2957`. */
+/** The DOM id of a test's chart pair. `old/issues.html:2364`, `:2957`. */
 function testChartId(testId: number): string {
     return `test-chart-${testId}`;
 }
 
 /**
- * The DOM id of one issue line's chart. `issues.html:3057`.
+ * The DOM id of one issue line's chart. `old/issues.html:3057`.
  *
  * Upstream keys it on the test *path* and the line's index within the rendered
  * list (`issue-${path…}-${index}`), which changes when a checkbox reorders the
@@ -1327,7 +1327,7 @@ function messageChartId(testId: number, entry: IssueEntry): string {
 /**
  * The two-canvas slot a component or test chart draws into.
  *
- * `issues.html:2137-2140` and `:2958-2961` — one `.historical-chart` holding
+ * `old/issues.html:2137-2140` and `:2958-2961` — one `.historical-chart` holding
  * `{id}-canvas` and `{id}-skips-canvas`. `renderChartSlot` builds the one-canvas
  * version the crashes page uses, so the second canvas is appended to it rather
  * than the whole thing being rebuilt.
@@ -1346,7 +1346,7 @@ function outcomeChartSlot(chartId: string, marginLeft?: string): HTMLElement {
 /**
  * Draws a component's or a test's two charts.
  *
- * `createFailureRateChart` (`issues.html:2813-2941`). The stacked
+ * `createFailureRateChart` (`old/issues.html:2813-2941`). The stacked
  * failure/timeout/crash chart and the skips chart are independent: each canvas
  * is shown only if the window holds something for it (`:2827-2828`), and the
  * skips canvas loses its x-axis when the other one above it already has one
@@ -1475,7 +1475,7 @@ function drawOutcomeCharts(chartId: string, series: DailyOutcomes[]): void {
     });
 }
 
-/** The colours and the y-axis label for one issue type. `issues.html:2750-2771`. */
+/** The colours and the y-axis label for one issue type. `old/issues.html:2750-2771`. */
 const MESSAGE_CHART_STYLE: Record<IssueEntry['type'], [string, string, string]> = {
     SKIP: ['rgba(108, 117, 125, 0.7)', '#6c757d', '% skips'],
     FAIL: ['rgba(255, 140, 0, 0.7)', '#ff8c00', '% failures'],
@@ -1483,7 +1483,7 @@ const MESSAGE_CHART_STYLE: Record<IssueEntry['type'], [string, string, string]> 
     CRASH: ['rgba(220, 53, 69, 0.7)', '#dc3545', '% crashes'],
 };
 
-/** The plural noun one issue type's tooltip uses. `issues.html:2789-2801`. */
+/** The plural noun one issue type's tooltip uses. `old/issues.html:2789-2801`. */
 const MESSAGE_CHART_NOUN: Record<IssueEntry['type'], [string, string]> = {
     SKIP: ['skip', 'skips'],
     FAIL: ['failure', 'failures'],
@@ -1491,7 +1491,7 @@ const MESSAGE_CHART_NOUN: Record<IssueEntry['type'], [string, string]> = {
     CRASH: ['crash', 'crashes'],
 };
 
-/** Draws one issue line's chart. `createIssueMessageChart` (`issues.html:2743`). */
+/** Draws one issue line's chart. `createIssueMessageChart` (`old/issues.html:2743`). */
 function drawMessageChart(
     canvasId: string,
     series: DailyMessageRate[],
@@ -1542,7 +1542,7 @@ interface ChartTooltipContext {
 /**
  * The chart options every chart on this page shares.
  *
- * `getCommonChartOptions` (`issues.html:2700-2740`), including
+ * `getCommonChartOptions` (`old/issues.html:2700-2740`), including
  * `animation: false` on both the chart and the tooltip — the old page turns
  * animation off so a chart appearing under an expanded row does not shift the
  * rows below it while it grows.
@@ -1623,7 +1623,7 @@ function drawChart(canvas: HTMLCanvasElement, config: Record<string, unknown>): 
 /**
  * Re-reads the four checkboxes and re-renders.
  *
- * `updateIssueFilters` (`issues.html:3455-3472`). Upstream also deletes every
+ * `updateIssueFilters` (`old/issues.html:3455-3472`). Upstream also deletes every
  * cached `stats` object (`:3462-3466`) because it memoizes them onto
  * `aggregatedData`; here `buildComponentRows` recomputes from the decoded file
  * each time, so there is no cache to invalidate — which is what makes it
@@ -1643,7 +1643,7 @@ function updateIssueFilters(): void {
 
 // --- data loading ---------------------------------------------------------
 
-/** `loadData` (`issues.html:3475-3513`). */
+/** `loadData` (`old/issues.html:3475-3513`). */
 async function loadSelectedDate(): Promise<void> {
     setStatusText('Loading data...');
     hideError();
@@ -1673,7 +1673,7 @@ async function loadSelectedDate(): Promise<void> {
 /**
  * Fetches `{harness}-issues-with-taskids.json` and merges it in.
  *
- * `loadDetailedData` (`issues.html:3403-3452`), and the reason this page has it
+ * `loadDetailedData` (`old/issues.html:3403-3452`), and the reason this page has it
  * at all: the 21-day aggregate the page opens on carries **no task
  * attribution** — `{harness}-issues.json` is the `counts` shape throughout —
  * so without this file a failure message has no runs to list and the
@@ -1759,7 +1759,7 @@ async function loadDetailedData(): Promise<void> {
  *
  * The button, the date selector's disabled state and the status text are
  * `common-ui.js`'s `initHistoricalToggle`; this is the data half of the
- * callback. `issues.html:3516-3598`.
+ * callback. `old/issues.html:3516-3598`.
  *
  * Note which file this is: `{harness}-issues.json`, the counts-only aggregate
  * (`:3555`) — a **different file with a different shape** from the daily
@@ -1797,7 +1797,7 @@ async function onHistoricalToggled(isHistorical: boolean, data: unknown): Promis
 /**
  * `?try=<rev>`, which short-circuits everything else.
  *
- * `loadTryRevision` (`issues.html:3359-3400`), reached from the startup branch
+ * `loadTryRevision` (`old/issues.html:3359-3400`), reached from the startup branch
  * at `:3699-3701` before the date selector is even populated. The file is a
  * daily-shaped one, so it decodes the same way.
  */
@@ -1836,7 +1836,7 @@ function updateUrlHash(): void {
 }
 
 /**
- * Applies the hash to the page. `loadFromUrlHash` (`issues.html:3747-3777`).
+ * Applies the hash to the page. `loadFromUrlHash` (`old/issues.html:3747-3777`).
  *
  * The one behavioural change is here: `isHistoricalDate` treats an **absent**
  * `date` as the 21-day view, where upstream treats it as "use the date select".

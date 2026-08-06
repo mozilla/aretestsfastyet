@@ -22,7 +22,7 @@
  *
  * | what | window | upstream |
  * | --- | --- | --- |
- * | the summary table | **last 7 dates** | `getRecentStats(stats, 7)`, `index.html:524`, `:534`, `:541-544` |
+ * | the summary table | **last 7 dates** | `getRecentStats(stats, 7)`, `old/index.html:524`, `:534`, `:541-544` |
  * | the four Plotly charts | **the entire file**, unsliced | `:632-640`, `:649-668`, `:677-686`, `:695-723` |
  * | the summary's own links | **21 days** | `issues.html?kind=…#date=21days`, `:487` |
  *
@@ -64,7 +64,7 @@
 import type { StatsCounters, StatsFile } from '../lib/formats/stats.ts';
 
 /**
- * The summary table's window, in dates. `index.html:524`, `:534`, `:541-544`.
+ * The summary table's window, in dates. `old/index.html:524`, `:534`, `:541-544`.
  *
  * Equal to `lib/query/summary.ts`'s `DEFAULT_SUMMARY_DAYS`, and the two are
  * checked against each other in `test/index-parity.test.ts` rather than one
@@ -78,7 +78,7 @@ import type { StatsCounters, StatsFile } from '../lib/formats/stats.ts';
 export const SUMMARY_DAYS = 7;
 
 /**
- * The hash the summary's test-failure links carry. `index.html:487`.
+ * The hash the summary's test-failure links carry. `old/index.html:487`.
  *
  * A **third** window, and not this page's: it asks `issues.html` for its 21-day
  * aggregate. Named so the difference from `SUMMARY_DAYS` is greppable rather
@@ -88,7 +88,7 @@ export const SUMMARY_LINK_HASH = '#date=21days';
 
 /**
  * The mochitest flavors the summary sub-rows and the chart traces use, in the
- * order the page lists them. `index.html:288-297`.
+ * order the page lists them. `old/index.html:288-297`.
  *
  * **This is a hardcoded list and it is kept hardcoded**, which is worth
  * defending because `lib/formats/stats.ts` says flavor names are data and
@@ -126,7 +126,7 @@ export interface FlavorSpec {
     color: string;
 }
 
-/** The two harnesses' series colours. `index.html:634`, `:639`. */
+/** The two harnesses' series colours. `old/index.html:634`, `:639`. */
 export const HARNESS_COLORS: Readonly<Record<string, string>> = {
     xpcshell: '#0060df',
     mochitest: '#ff6b6b',
@@ -180,13 +180,13 @@ export interface MergeResult {
     warnings: MergeWarning[];
 }
 
-/** The keys never merged as a per-day array. `index.html:354`. */
+/** The keys never merged as a per-day array. `old/index.html:354`. */
 const NON_SERIES_KEYS = new Set(['metadata', 'dates', 'flavors']);
 
 /**
  * Merges a committed backfill file into the freshly-fetched live artifact.
  *
- * A port of `index.html:319-385`, rule for rule, and the rules are upstream's:
+ * A port of `old/index.html:319-385`, rule for rule, and the rules are upstream's:
  * union of dates sorted ascending, live wins wherever both have a date, the
  * backfill fills only what live lacks, and a disagreement over an overlapping
  * date is reported rather than swallowed.
@@ -259,7 +259,7 @@ export function mergeBackfillStats(
     }
 
     // The one `.sort()` on this page, and it is lexicographic on `YYYY-MM-DD`,
-    // which is chronological for that format. `index.html:323-324`.
+    // which is chronological for that format. `old/index.html:323-324`.
     const dates = [...new Set([...backfill.dates, ...live.dates])].sort();
     const backfillAt = new Map(backfill.dates.map((date, i) => [date, i]));
     const liveAt = new Map(live.dates.map((date, i) => [date, i]));
@@ -363,7 +363,7 @@ export interface WindowTotals {
 
 /**
  * Sums a series, treating a `null` as **absent from the numerator but present
- * in the count of days**. A port of `sumArray`, `index.html:459-467`.
+ * in the count of days**. A port of `sumArray`, `old/index.html:459-467`.
  *
  * Upstream's loop skips a `null` when adding, and every caller then divides one
  * such sum by another — so a date the merge could not fill contributes 0 to
@@ -416,7 +416,7 @@ export function holeCount(values: readonly (number | null)[]): number {
 
 /**
  * The last `days` dates of a merged file. A port of `getRecentStats`,
- * `index.html:442-457`.
+ * `old/index.html:442-457`.
  *
  * **Two upstream behaviours preserved, both worth naming:**
  *
@@ -516,7 +516,7 @@ function rate(numerator: number, denominator: number): number | null {
 }
 
 /**
- * Builds one summary row. A port of `renderSummaryRow`, `index.html:470-481`,
+ * Builds one summary row. A port of `renderSummaryRow`, `old/index.html:470-481`,
  * with the job failure rate corrected — see below.
  *
  * ## The job failure rate does not use upstream's expression
@@ -659,7 +659,7 @@ export interface RatePoint {
 
 /**
  * A rate series over the **whole file**. A port of `createPercentageTrace`'s
- * data half, `index.html:558-591`.
+ * data half, `old/index.html:558-591`.
  *
  * No window argument, deliberately: this is the second of the page's three
  * windows and it is "everything". See the header table — the charts show 199
@@ -699,7 +699,7 @@ export function droppedDates(
 
 /**
  * The per-day test-failure-job counts a job chart plots.
- * `index.html:651-652`, `:695-696`.
+ * `old/index.html:651-652`, `:695-696`.
  *
  * `failedJobs − invalidJobs` per day, and a day where either is `null` keeps
  * the raw `failedJobs` — which is upstream's expression exactly, including the
@@ -715,7 +715,7 @@ export function testFailedJobSeries(stats: MergedStats): (number | null)[] {
 
 /**
  * One point of the stacked failure-breakdown chart.
- * A port of `makeStackTrace`'s data half, `index.html:698-710`.
+ * A port of `makeStackTrace`'s data half, `old/index.html:698-710`.
  *
  * **This chart uses the other job denominator**, and that is the point of
  * giving it its own function: `processedJobCount + invalidJobs + ignoredJobs`
@@ -784,7 +784,7 @@ export function breakdownSeries(
 }
 
 /**
- * Which display mode the charts are in. `index.html:286`.
+ * Which display mode the charts are in. `old/index.html:286`.
  *
  * Affects **the charts only**: the summary table always shows both a percentage
  * and a raw `n / N`, so the toggle does nothing to it. Upstream's
@@ -794,10 +794,10 @@ export function breakdownSeries(
  */
 export type DisplayMode = 'percentage' | 'count';
 
-/** The mode the page starts in. `index.html:286`, `#btnPercentage` is `active` at `:192`. */
+/** The mode the page starts in. `old/index.html:286`, `#btnPercentage` is `active` at `:192`. */
 export const INITIAL_DISPLAY_MODE: DisplayMode = 'percentage';
 
-/** The y value a rate point contributes in each mode. `index.html:566`. */
+/** The y value a rate point contributes in each mode. `old/index.html:566`. */
 export function displayValue(point: RatePoint, mode: DisplayMode): number {
     return mode === 'percentage' ? point.percentage : point.numerator;
 }

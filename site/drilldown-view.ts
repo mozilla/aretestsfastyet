@@ -21,7 +21,7 @@
  * `path-row`, `test-row`, `single-occurrence`, `direct-child`, `total-row` and
  * the `📊` of the totals row; and no non-page consumer wants it, because what
  * it computes is *how many rows the table has* — the path level disappears when
- * a path has one test (`crashes.html:700`, `failures.html:790`), and that is a
+ * a path has one test (`old/crashes.html:700`, `old/failures.html:790`), and that is a
  * judgement about what a reader should see, not a fact about crashes.
  *
  * `fx-tests crashes` and `fx-tests failures` ask the same underlying question
@@ -45,9 +45,9 @@
  * | **the search** | *not* a parameter — two functions, `filterGroupsByMatch` and `rewriteGroupsBySearch`, because the two pages genuinely do different things (see below) |
  * | the row label (plain vs linkified) | not here at all; the renderer's job |
  *
- * The search is the case that justifies the rule. `crashes.html:508-526` keeps
+ * The search is the case that justifies the rule. `old/crashes.html:508-526` keeps
  * or drops whole rows and leaves each surviving row's numbers alone;
- * `failures.html:560-592` *rewrites* the counts, so a row shows a smaller number
+ * `old/failures.html:560-592` *rewrites* the counts, so a row shows a smaller number
  * under a search than without one. Serving both from one function would have
  * taken a boolean that changes what every number on the page means. They are
  * two functions with two names, and each page's comment says which it uses.
@@ -70,7 +70,7 @@ import { parseTaskId } from '../lib/formats/tables.ts';
  * One occurrence: a single run of one test that produced the group's key.
  *
  * Field-for-field what the old pages push into `testData.crashes` /
- * `testData.failures` (`crashes.html:292`, `failures.html:280`), minus
+ * `testData.failures` (`old/crashes.html:292`, `old/failures.html:280`), minus
  * `timestamp`. The old pages compute `timestamp` and then use it only to derive
  * `date` — `prepareRunsForDisplay` (`common-ui.js:489`) sorts on `date`, and
  * nothing else reads the number — so carrying it would be carrying a field with
@@ -109,7 +109,7 @@ export interface TestNode {
      * Kept alongside `occurrences` rather than derived from it because the two
      * can legitimately differ: a file with no task attribution yields a count
      * with no occurrence rows behind it, which is the `else` branch at
-     * `crashes.html:364` / `failures.html:350`. Both pages test
+     * `old/crashes.html:364` / `old/failures.html:350`. Both pages test
      * `totalCount === 1 && occurrences.length > 0` before rendering an
      * occurrence inline, and that guard only means something if the two are
      * tracked separately.
@@ -155,7 +155,7 @@ export interface GroupExtractor {
 /**
  * `crashes.html`'s extractor: `CRASH` runs with a symbolized signature.
  *
- * Two exclusions, both deliberate and both matching `crashes.html:230-242`:
+ * Two exclusions, both deliberate and both matching `old/crashes.html:230-242`:
  *
  * - **`status === 'CRASH'` exactly**, by table lookup, not a prefix test. The
  *   page does `statuses.indexOf('CRASH')`, and the xpcshell file's statuses are
@@ -171,7 +171,7 @@ export interface GroupExtractor {
  *   scheme really does grow suffixed variants, so a future `CRASH-PARALLEL`
  *   should be a deliberate decision rather than something a prefix test silently
  *   absorbs.
- * - **A null signature is dropped** (`crashes.html:270`: `if (sigId === null)
+ * - **A null signature is dropped** (`old/crashes.html:270`: `if (sigId === null)
  *   return;`). This diverges from `lib/query/crashes.ts`, which keeps null as a
  *   group because "a crash that could not be symbolized is still a crash". The
  *   page's choice is reproduced here and the difference is a declared
@@ -199,7 +199,7 @@ export const NO_FAILURE_MESSAGE = '(no failure message)';
 /**
  * `failures.html`'s extractor: every status starting `FAIL`, message or not.
  *
- * Both halves matter and both are `failures.html:213-218` and `:263`:
+ * Both halves matter and both are `old/failures.html:213-218` and `:263`:
  *
  * - **A prefix test, not an exact one.** `FAIL`, `FAIL-PARALLEL` and
  *   `FAIL-SEQUENTIAL` are all present in the pinned file and all three are
@@ -210,7 +210,7 @@ export const NO_FAILURE_MESSAGE = '(no failure message)';
  *   1,990 tests, ahead of the next message's 5,326. Mapping it to a key rather
  *   than dropping it is the whole reason this page's top row exists.
  *
- * The `messageIds`-presence guard (`failures.html:234`) needs no counterpart:
+ * The `messageIds`-presence guard (`old/failures.html:234`) needs no counterpart:
  * `FORMATS.md` records that `FAIL*` groups always carry `messageIds`, so the
  * guard never fires for a status this extractor accepts — and where it would,
  * `entry.message` is `undefined` and maps to the same `'(no failure message)'`
@@ -238,8 +238,8 @@ export interface BuildOptions {
 /**
  * Walks the file once and builds the *key → path → test → occurrence* tree.
  *
- * This is `processCrashData` (`crashes.html:225`) and `processFailureData`
- * (`failures.html:207`) unified. What the unification buys, beyond one copy
+ * This is `processCrashData` (`old/crashes.html:225`) and `processFailureData`
+ * (`old/failures.html:207`) unified. What the unification buys, beyond one copy
  * instead of two, is that the **five status-group shapes** are now
  * `lib/formats/status-entries.ts`'s problem rather than each page's: both pages
  * open-code a two-branch `isBucketedFormat` test and decode `days` or
@@ -343,8 +343,8 @@ export function buildGroups(
  *
  * An entry is a *bucket*, not a run: the `task-ids` shape holds one entry per
  * (day, message, signature) with `count` task IDs inside it, and both pages
- * expand that bucket into one displayed row per task ID (`crashes.html:284`,
- * `failures.html:273`). An entry with no task attribution — the `counts` shape,
+ * expand that bucket into one displayed row per task ID (`old/crashes.html:284`,
+ * `old/failures.html:273`). An entry with no task attribution — the `counts` shape,
  * which is what `{harness}-issues.json` uses throughout — yields no rows at
  * all, and its `count` is carried by `totalCount` instead. That is the
  * `Array.isArray(crashes)` false branch the old pages have and, on the files
@@ -392,7 +392,7 @@ function appendOccurrences(
  * `entry.timestamps` is the daily files' per-run absolute time and is preferred
  * where it exists. Otherwise the entry carries a day index into the 21-day
  * window and the date is `startTime + day * 86400`, which is exactly the
- * arithmetic at `crashes.html:266` and `failures.html:259`.
+ * arithmetic at `old/crashes.html:266` and `old/failures.html:259`.
  *
  * `toISOString().split('T')[0]` is kept rather than replaced with a formatter:
  * it is what both pages do, it is UTC, and a local-time formatter would shift
@@ -428,13 +428,13 @@ export interface SortState {
 /**
  * The sort both pages start on: most occurrences first.
  *
- * `crashes.html:120` and `failures.html:102`, identical.
+ * `old/crashes.html:120` and `old/failures.html:102`, identical.
  *
  * Both pages' comparators have a third branch — `'signature'` on crashes,
  * `'message'` on failures — that sorts the key with `localeCompare`. **Both are
  * dead**, and this is a measurement rather than a reading: the only writers of
  * `currentSort.column` are the two `sortBy(…)` calls in each page's header
- * markup (`crashes.html:558`/`:564`, `failures.html:631`/`:637`), which pass
+ * markup (`old/crashes.html:558`/`:564`, `old/failures.html:631`/`:637`), which pass
  * `'tests'` and `'count'`. `grep -o "sortBy('[a-z]*')"` over both files returns
  * exactly those four call sites and no fifth. There is no control that can
  * produce the branch, no URL parameter that sets it, and `SortColumn` therefore
@@ -446,7 +446,7 @@ export const INITIAL_SORT: SortState = { column: 'count', ascending: false };
 /**
  * The next sort state after clicking a column header.
  *
- * `crashes.html:963` and `failures.html:1074`, identical: same column flips the
+ * `old/crashes.html:963` and `old/failures.html:1074`, identical: same column flips the
  * direction, a new column starts descending.
  */
 export function nextSort(current: SortState, column: SortColumn): SortState {
@@ -465,7 +465,7 @@ export interface GroupRow {
      * ## This is a distinct count, and that took measuring
      *
      * Both pages compute it by summing `pathData.tests.size` across paths
-     * (`crashes.html:496`, `failures.html:538`) under a comment saying "unique
+     * (`old/crashes.html:496`, `old/failures.html:538`) under a comment saying "unique
      * tests", and a sum-of-sizes is the shape of a double-count. It is not one
      * here, and the reason is a property of the data rather than of the loop:
      * a test node is keyed `(dirPath, testName)`, and **every `(testPath,
@@ -511,14 +511,14 @@ function countTests(paths: Map<string, PathNode>): number {
 /**
  * `crashes.html`'s search: **keep or drop whole rows, never change a number.**
  *
- * `crashes.html:508-526`. A row survives if the signature, any of its directory
+ * `old/crashes.html:508-526`. A row survives if the signature, any of its directory
  * paths, or any of its test names contains the term; a surviving row keeps the
  * counts it had with no search at all, including the tests and occurrences that
  * did not match. Expanding it shows everything.
  *
  * The visible consequence, which is reproduced rather than fixed: the **Total
  * row does change**, because it is summed over the surviving rows
- * (`crashes.html:545-548`, after the filter). So searching narrows the total
+ * (`old/crashes.html:545-548`, after the filter). So searching narrows the total
  * while every row above it keeps its full number, and the total is no longer
  * the sum of what a reader can see expanded — it is the sum of the *whole* of
  * each matching row.
@@ -549,7 +549,7 @@ export function filterGroupsByMatch(rows: GroupRow[], searchTerm: string): Group
 /**
  * `failures.html`'s search: **rewrite each row to only what matched.**
  *
- * `failures.html:550-596`, and a genuinely different operation from
+ * `old/failures.html:550-596`, and a genuinely different operation from
  * `filterGroupsByMatch` — which is why it is a second function rather than a
  * flag on the first.
  *
@@ -617,7 +617,7 @@ export function rewriteGroupsBySearch(rows: GroupRow[], searchTerm: string): Gro
 /**
  * Ranks the rows.
  *
- * `crashes.html:529-539` and `failures.html:602-612`, identical once the dead
+ * `old/crashes.html:529-539` and `old/failures.html:602-612`, identical once the dead
  * key-name branch is dropped (see `INITIAL_SORT`). `Array.prototype.sort` is
  * stable, so ties keep the walk order — which for these pages is the order
  * `testRuns` first produced each key.
@@ -642,7 +642,7 @@ export interface Totals {
 /**
  * Totals the visible rows.
  *
- * `crashes.html:545-548` and `failures.html:618-621`, identical.
+ * `old/crashes.html:545-548` and `old/failures.html:618-621`, identical.
  *
  * ## `tests` counts a test once per group it appears in
  *
@@ -708,19 +708,19 @@ export type SubRow =
 /**
  * The rows under an expanded group, in display order.
  *
- * `generateCrashExpandedContent` (`crashes.html:681`) and
- * `generateFailureExpandedContent` (`failures.html:771`) unified. Three
+ * `generateCrashExpandedContent` (`old/crashes.html:681`) and
+ * `generateFailureExpandedContent` (`old/failures.html:771`) unified. Three
  * decisions, all shared:
  *
- * 1. **Paths rank by occurrence count, descending** (`crashes.html:696`).
+ * 1. **Paths rank by occurrence count, descending** (`old/crashes.html:696`).
  * 2. **A path holding exactly one test disappears** — the test is emitted
  *    directly, with the `direct-child` class and its *full* path in the label
- *    (`crashes.html:700`, `failures.html:790`). This is the rule that makes
+ *    (`old/crashes.html:700`, `old/failures.html:790`). This is the rule that makes
  *    `dirPath` part of every `SubRow`: a direct child shows `dir/name` and a
  *    child under a path row shows only `name`.
  * 3. **A test with exactly one occurrence, and that occurrence in hand, is
- *    rendered inline** rather than being expandable (`crashes.html:704`,
- *    `failures.html:794`). The second half of the condition is load-bearing on a
+ *    rendered inline** rather than being expandable (`old/crashes.html:704`,
+ *    `old/failures.html:794`). The second half of the condition is load-bearing on a
  *    file with no task attribution, where `totalCount` is 1 and there is no
  *    occurrence to show.
  */
@@ -748,7 +748,7 @@ export function expandGroup(paths: Map<string, PathNode>): SubRow[] {
 /**
  * The rows under an expanded path.
  *
- * `generatePathExpandedContent` (`crashes.html:742`, `failures.html:839`).
+ * `generatePathExpandedContent` (`old/crashes.html:742`, `old/failures.html:839`).
  * Tests rank by occurrence count, descending, and none of them is a
  * `direct-child` — the path row is above them.
  */
@@ -798,7 +798,7 @@ export function occurrenceRows(test: TestNode): { occurrence: Occurrence; showDa
 /**
  * The `title` on a test row's count cell, or `''` when the run total is unknown.
  *
- * `crashes.html:719-721` and `failures.html:816-818`, which differ in exactly
+ * `old/crashes.html:719-721` and `old/failures.html:816-818`, which differ in exactly
  * one word — "of this signature" against "of this message" — hence `noun`.
  *
  * Two details are upstream's and are kept because a reader compares this
@@ -808,7 +808,7 @@ export function occurrenceRows(test: TestNode): { occurrence: Occurrence; showDa
  *   from an already-rounded intermediate.
  * - **`totalRuns` is 0 unless the 21-day file is loaded.** `getTestTotalRuns`
  *   is called with `historicalData`, which is `null` in single-day mode
- *   (`crashes.html:718`), so every tooltip on a single-day view is empty. That
+ *   (`old/crashes.html:718`), so every tooltip on a single-day view is empty. That
  *   is upstream's behaviour and is reproduced by the caller passing 0.
  */
 export function occurrenceTooltip(count: number, totalRuns: number, noun: string): string {
@@ -828,15 +828,15 @@ export interface UrlState {
     q: string;
 }
 
-/** The window `crashes.html:994` / `failures.html:1105` default to. */
+/** The window `old/crashes.html:994` / `old/failures.html:1105` default to. */
 export const HISTORICAL_DATE = '21days';
 
 /**
  * Whether a hash's `date` means the 21-day view.
  *
  * Absent and `21days` both do, which is what makes historical the **default**
- * despite `isHistoricalMode = false` at `crashes.html:121` and
- * `failures.html:103`. Those initializers describe the state before the first
+ * despite `isHistoricalMode = false` at `old/crashes.html:121` and
+ * `old/failures.html:103`. Those initializers describe the state before the first
  * load, not the view a reader gets: `loadFromUrlHash` runs before any render and
  * toggles into historical mode when the hash says nothing.
  */

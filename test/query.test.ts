@@ -1241,7 +1241,7 @@ function syntheticFile(
 }
 
 test('keepClean gives a group the runs of its issue-free tests', () => {
-    // `issues.html:2010` accumulates a component's `runCount` over **every**
+    // `old/issues.html:2010` accumulates a component's `runCount` over **every**
     // test in it and only then (`:2016`) decides which to list, so a clean test
     // is in the denominator but not in the list. Dropping it first inflates the
     // rate — measured on the real file, WebExtensions :: General reported
@@ -1318,7 +1318,7 @@ test('keepClean gives a group the runs of its issue-free tests', () => {
 });
 
 test('a skip-only test does not report a 0% issue rate', () => {
-    // The sharp case for the row-level denominator (`issues.html:1079`):
+    // The sharp case for the row-level denominator (`old/issues.html:1079`):
     // `runCount` excludes skips, so a test that only ever skipped has 0 runs.
     // Dividing by `runCount` alone gives 0/0 → 0%, reporting the healthiest
     // possible number for a test that never ran once. The real file has such
@@ -1333,7 +1333,7 @@ test('a skip-only test does not report a 0% issue rate', () => {
 });
 
 test('groupIssues rates divide by the runs the numerator could come from', () => {
-    // `issues.html:1079` / `:2046-2048`: skips are added back to the
+    // `old/issues.html:1079` / `:2046-2048`: skips are added back to the
     // denominator exactly when they are counted in the numerator.
     const rows = findIssues(bucket, { keepClean: true });
     for (const group of groupIssues(rows, 'component')) {

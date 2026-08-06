@@ -30,7 +30,7 @@
  * like a typo — which is why both consumers have a fallback: `fx-tests test`
  * says the harness was inferred in its not-found message, and `test.html`
  * retries the *other* harness's bucket at the same index
- * (`test.html:3058-3072`) before giving up.
+ * (`old/test.html:3058-3072`) before giving up.
  *
  * Reproduced rather than improved for the reason `cli/options.ts` gave when it
  * held this: the CLI and the dashboards disagreeing about which file to read

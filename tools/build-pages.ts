@@ -77,7 +77,7 @@ const MODULE_SCRIPT = /<script\s+type="module"\s+src="\.\/([\w.-]+\.ts)"\s*><\/s
  *
  * That leaves the question of where the text comes from, and the answer cannot
  * be `.toString()` on the imported functions — which is what `try.html` does
- * today (`try.html:2584`) and what forced this build change. `.toString()`
+ * today (`old/try.html:2584`) and what forced this build change. `.toString()`
  * returns the *bundled* source of a function: esbuild has renamed its
  * identifiers, and its transitive dependencies are other renamed functions that
  * a `.toString()` of the top one does not include. The concatenated program

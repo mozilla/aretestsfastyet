@@ -2,7 +2,7 @@
 # Mutation campaign for the try/try.html divergence fixes:
 #
 #   1. the default ordering — failing executions descending, as the page's
-#      `{ column: 'count', ascending: false }` default sorts (try.html:744),
+#      `{ column: 'count', ascending: false }` default sorts (old/try.html:744),
 #      with a deterministic path tiebreak the page cannot have
 #   2. the rerun sentence scoped to the configurations it applies to, so a
 #      perma-fail row does not appear to contradict itself

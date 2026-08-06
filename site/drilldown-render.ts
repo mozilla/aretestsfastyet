@@ -49,7 +49,7 @@
  * Both pages write their row key into an attribute with `escapeAttr`
  * (`common-ui.js:14`) and then *find the row again by selector* built with the
  * same function — `document.querySelector('[data-message="' + escapeAttr(msg) +
- * '"]')` (`failures.html:683`, `crashes.html:597`). That round-trip is what
+ * '"]')` (`old/failures.html:683`, `old/crashes.html:597`). That round-trip is what
  * re-attaches an expanded row's subtree after a re-render. It does not survive a
  * quote: `escapeAttr` turns `"` into `&quot;`, the HTML parser decodes that back
  * to `"` in the attribute *value*, and the CSS selector — which does no entity
@@ -415,8 +415,8 @@ export interface RenderedList {
 /**
  * Renders the whole ranked list: header, total row, one row per group.
  *
- * `renderCrashList` (`crashes.html:551-592`) and `renderFailureList`
- * (`failures.html:624-678`), which are the same markup with different names in
+ * `renderCrashList` (`old/crashes.html:551-592`) and `renderFailureList`
+ * (`old/failures.html:624-678`), which are the same markup with different names in
  * it.
  */
 export function renderList(
@@ -463,7 +463,7 @@ export function renderList(
     return { root, rowsByKey };
 }
 
-/** The sortable column header. `crashes.html:554-569`. */
+/** The sortable column header. `old/crashes.html:554-569`. */
 function renderHeader(
     sort: SortState,
     vocab: Vocabulary,
@@ -487,7 +487,7 @@ function renderHeader(
  * One sortable column button.
  *
  * The arrow is a `<span class="sort-arrow">` that is **present but empty** on
- * the inactive column, which is upstream's markup (`crashes.html:559`) and is
+ * the inactive column, which is upstream's markup (`old/crashes.html:559`) and is
  * what keeps the two columns the same width.
  *
  * Upstream's button text is the label preceded by whitespace and a newline, from
@@ -514,7 +514,7 @@ function sortItem(
     return el('div', { class: 'stat-item', children: [button] });
 }
 
-/** The `📊 Total` row. `crashes.html:572-577`. */
+/** The `📊 Total` row. `old/crashes.html:572-577`. */
 function renderTotalRow(totals: Totals, vocab: Vocabulary): HTMLElement {
     return el('div', {
         class: `${vocab.rowClass} total-row`,
@@ -577,10 +577,10 @@ export function renderSubRows(
 }
 
 /**
- * A directory row. `crashes.html:730-735`.
+ * A directory row. `old/crashes.html:730-735`.
  *
  * `'(root)'` is what an empty path displays as — a test file directly at the
- * repository root — and is upstream's (`crashes.html:731`).
+ * repository root — and is upstream's (`old/crashes.html:731`).
  */
 function renderPathRow(
     subRow: Extract<SubRow, { kind: 'path' }>,
@@ -604,7 +604,7 @@ function renderPathRow(
     return row;
 }
 
-/** An expandable test row. `crashes.html:723-726` / `:780-783`. */
+/** An expandable test row. `old/crashes.html:723-726` / `:780-783`. */
 function renderTestRow(
     dirPath: string,
     test: TestNode,
@@ -619,7 +619,7 @@ function renderTestRow(
 
     // A direct child shows its full path because the directory row that would
     // have carried it was collapsed away; a row under a path row shows only the
-    // file name. `crashes.html:724` against `:781`.
+    // file name. `old/crashes.html:724` against `:781`.
     const label = direct ? `${dirPath}/${test.testName}` : test.testName;
     const suffix = hooks.testNameSuffix(dirPath, test, key);
     row.append(el('div', { class: 'test-name', children: [label, suffix] }));
@@ -645,7 +645,7 @@ function renderTestRow(
 /**
  * A test row whose single occurrence is shown inline.
  *
- * `crashes.html:707-715` / `failures.html:799-811`. The two differ in what the
+ * `old/crashes.html:707-715` / `old/failures.html:799-811`. The two differ in what the
  * row does when clicked and in which links it carries, both of which are hooks.
  */
 function renderSingleRow(
@@ -668,8 +668,8 @@ function renderSingleRow(
     const href = hooks.singleRowHref(occurrence, test.testName);
     if (href !== null) {
         // Upstream expresses this two different ways — a `data-crash-url` the
-        // delegated handler reads (`crashes.html:707`) and an inline
-        // `onclick="window.open(…)"` (`failures.html:799`) — for the same
+        // delegated handler reads (`old/crashes.html:707`) and an inline
+        // `onclick="window.open(…)"` (`old/failures.html:799`) — for the same
         // behaviour. One listener does both, and the inert case (a crash with no
         // dump) is `null` rather than an empty attribute.
         row.addEventListener('click', () => window.open(href, '_blank'));
@@ -701,9 +701,9 @@ function renderSingleRow(
  *
  * - **crashes** calls `renderCrashLinks` (`common-links.js:76`), which returns
  *   `<span class="view-links">View: …</span>`, and drops it into a **bare**
- *   `<td>` (`crashes.html:713`). So the class is on a `span` inside the cell.
+ *   `<td>` (`old/crashes.html:713`). So the class is on a `span` inside the cell.
  * - **failures** builds the links inline and puts them in a
- *   `<td class="view-links">` (`failures.html:809`), with no `span`.
+ *   `<td class="view-links">` (`old/failures.html:809`), with no `span`.
  *
  * `common-data-view.css` styles `.inline-instance .view-links` either way, so
  * the two render alike — but the trees differ by one element, which a parsed-DOM
@@ -726,8 +726,8 @@ function inlineLinksCell(links: readonly HTMLElement[], vocab: Vocabulary): HTML
 /**
  * The occurrence table under an expanded test.
  *
- * `generateTestExpandedContent` (`crashes.html:804-823`,
- * `failures.html:908-922`). Identical structure; the links differ.
+ * `generateTestExpandedContent` (`old/crashes.html:804-823`,
+ * `old/failures.html:908-922`). Identical structure; the links differ.
  */
 export function renderOccurrenceTable(
     test: TestNode,
@@ -739,7 +739,7 @@ export function renderOccurrenceTable(
         const jobCell = el('td', { class: vocab.jobNameClass });
         // Deliberately *not* an `externalLink`: upstream's job-name anchor in
         // this table has no `onclick="event.stopPropagation()"`
-        // (`crashes.html:819` against `:712`), and on the crashes page the row
+        // (`old/crashes.html:819` against `:712`), and on the crashes page the row
         // itself is clickable, so the difference is observable — clicking the
         // job name there both follows the link and opens the crash viewer. It is
         // reproduced rather than tidied.
@@ -751,7 +751,7 @@ export function renderOccurrenceTable(
         jobCell.append(anchor);
 
         // Always a `<td class="view-links">` here, on both pages
-        // (`crashes.html:820`, `failures.html:919`) — unlike the inline
+        // (`old/crashes.html:820`, `old/failures.html:919`) — unlike the inline
         // single-occurrence cell, which they build differently. See
         // `inlineLinksCell`.
         const linksCell = el('td', { class: 'view-links' });
@@ -826,7 +826,7 @@ export function noData(text: string): HTMLElement {
  *
  * Both pages walk `nextElementSibling` and delete until they reach a row that
  * belongs to a higher level, with a slightly different stop condition at each
- * of the three levels (`crashes.html:841`, `:888`, `:929`). Reproduced as one
+ * of the three levels (`old/crashes.html:841`, `:888`, `:929`). Reproduced as one
  * function taking the class names that *end* the run, because the walk itself
  * is the same and getting it subtly wrong at one level is how an expansion
  * leaks rows.

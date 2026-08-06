@@ -36,7 +36,7 @@
  * When a test fails, the harness reruns it **within the same job**. This is
  * distinct from a **job-level retry**, the `retryId`/`runs/<n>` axis — two
  * different things that both get called "retry" and that
- * `try.html:1381` keeps apart by keying runs on `${taskId}.${retryId}`.
+ * `old/try.html:1381` keeps apart by keying runs on `${taskId}.${retryId}`.
  * `lib/formats/tables.ts` owns the job-level axis (`parseTaskId`); this module
  * owns the within-job one.
  *
@@ -182,7 +182,7 @@ export function countRerunsByTask(entries: Iterable<StatusEntry>): RerunCounts {
  *
  * Within one job a fail and a pass for the same test means the harness reran
  * it and it passed the second time — the "passed on rerun" signal
- * (`try.html:1408`), and the strongest available evidence for an intermittent.
+ * (`old/try.html:1408`), and the strongest available evidence for an intermittent.
  * A pass with no fail is just a pass; a fail with no pass is a job where every
  * attempt failed.
  *

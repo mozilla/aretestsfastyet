@@ -435,7 +435,7 @@ function resetFilters(): void {
 // =========================================================================
 
 test('with no hash the page loads the 21-day aggregate, not a single day', () => {
-    // The whole point of sequencing this page last. `issues.html:3709-3712`
+    // The whole point of sequencing this page last. `old/issues.html:3709-3712`
     // called `loadData()`, which fetches `{harness}-<date>.json`; this must
     // fetch `{harness}-issues.json` instead.
     //
@@ -453,7 +453,7 @@ test('with no hash the page loads the 21-day aggregate, not a single day', () =>
 });
 
 test('the status text names the 21-day window', () => {
-    // What a reader sees, rather than what was fetched. `issues.html:3584`
+    // What a reader sees, rather than what was fetched. `old/issues.html:3584`
     // formats it as `N days (start to end)`.
     const status = harness.document.getElementById('status-text')!.textContent ?? '';
     assert.match(status, /^21 days \(2026-07-14 to 2026-08-03\)$/, `status text was "${status}"`);
@@ -485,7 +485,7 @@ test('a component row shows the seven stat columns with the tallied numbers', ()
     assert.deepEqual(
         [...stats.keys()],
         ['Runs', 'Issue %', 'Issues', 'Skips', 'Failures', 'Timeouts', 'Crashes'],
-        'the seven columns, in the order issues.html:2121-2127 emits them'
+        'the seven columns, in the order old/issues.html:2121-2127 emits them'
     );
     // Built with `toLocaleString()`, never a hardcoded separator.
     assert.equal(stats.get('Runs'), expected.runCount.toLocaleString());
@@ -499,7 +499,7 @@ test('a component row shows the seven stat columns with the tallied numbers', ()
 });
 
 test('the header says how many tests have issues, out of how many', () => {
-    // `issues.html:2106`. WebExtensions has 7 tests, 6 with an issue.
+    // `old/issues.html:2106`. WebExtensions has 7 tests, 6 with an issue.
     const row = componentRows()[0]!;
     const expected = TALLY.get('WebExtensions :: General')!;
     const text = row.querySelector('.tree-name')?.textContent ?? '';
@@ -521,7 +521,7 @@ test('the header says how many tests have issues, out of how many', () => {
 });
 
 test('a zero stat is faded and a populated one is not', () => {
-    // The `hideable-zero` rule (`issues.html:62-70`), which is what keeps a
+    // The `hideable-zero` rule (`old/issues.html:62-70`), which is what keeps a
     // seven-column row readable. Core :: Networking has 0 crashes.
     const networking = componentRows().find(
         (row) => row.querySelector('strong')?.textContent === 'Core :: Networking'
@@ -576,7 +576,7 @@ test('a zero stat is faded and a populated one is not', () => {
 });
 
 test('there is no total row, because the old page never rendered one', () => {
-    // `buildTotalSummaryRow` (`issues.html:1833`) is defined and never called
+    // `buildTotalSummaryRow` (`old/issues.html:1833`) is defined and never called
     // — divergence 4. Asserted so that "we did not port it" cannot quietly
     // become "we forgot it and nobody noticed".
     assert.equal(table().querySelectorAll('.total-row').length, 0);
@@ -704,7 +704,7 @@ test('two components can be open at once', () => {
 });
 
 test('a component with no tests to show is not clickable', () => {
-    // `issues.html:2094` marks it `non-clickable`, and `:2200` attaches the
+    // `old/issues.html:2094` marks it `non-clickable`, and `:2200` attaches the
     // listener only to rows without that class. Reached by turning every
     // filter off.
     for (const id of ['filter-failures', 'filter-timeouts', 'filter-crashes', 'filter-skips']) {
@@ -775,7 +775,7 @@ test('expanding a test lists its issues, badged and count-ordered', () => {
 });
 
 test('opening one test closes any other', () => {
-    // `issues.html:2349-2351`, and the opposite of the component behaviour.
+    // `old/issues.html:2349-2351`, and the opposite of the component behaviour.
     collapseAll();
     componentRows()[0]!.click();
     const rows = testRows();
@@ -1006,7 +1006,7 @@ test('the fetch happens on expansion, once, and never blocks a render', async ()
     try {
         // On load: not asked for. The 15.9 MB file is not part of opening the
         // page — upstream fetches it only when a component is expanded
-        // (`issues.html:2330-2332`).
+        // (`old/issues.html:2330-2332`).
         assert.deepEqual(
             page.requested,
             ['index.json', 'xpcshell-issues.json'],
@@ -1038,7 +1038,7 @@ test('the fetch happens on expansion, once, and never blocks a render', async ()
         );
 
         // And once merged, expanding more components asks for nothing further.
-        // 15.9 MB is not a request to make twice; `issues.html:3408` guards it
+        // 15.9 MB is not a request to make twice; `old/issues.html:3408` guards it
         // with two flags and this asserts the guard from outside.
         const before = page.requested.length;
         for (const row of [...page.document.querySelectorAll<HTMLElement>('.folder-row')]) {
@@ -1181,7 +1181,7 @@ test('clicking a failure message lists its runs, once the detailed file is in', 
 
 test('a failure message with no detailed file still lists nothing, and does not throw', async () => {
     // The old page's fallback, which the merge must not have replaced with a
-    // crash: `loadDetailedData` warns and carries on (`issues.html:3417`).
+    // crash: `loadDetailedData` warns and carries on (`old/issues.html:3417`).
     const warnings: unknown[][] = [];
     const realWarn = console.warn;
     console.warn = (...args: unknown[]): void => void warnings.push(args);
@@ -1235,7 +1235,7 @@ test('a failure message with no detailed file still lists nothing, and does not 
 /**
  * A test's runs bucketed by day and outcome, counted off the raw fixture.
  *
- * The same five buckets `issues.html:2380-2388` initialises, filled by the same
+ * The same five buckets `old/issues.html:2380-2388` initialises, filled by the same
  * five-way classification (`:2404-2414`) — note that `EXPECTED-FAIL` matches
  * none of the five and is therefore counted nowhere, which is upstream's
  * behaviour and has to be reproduced here or the denominators disagree.
@@ -1344,7 +1344,7 @@ test('expanding a component draws its two charts, from its listed tests', async 
         }
 
         // The chart covers the tests the component *listed*, which is
-        // `group.tests` — those with an issue (`issues.html:2192`, `:2016`) —
+        // `group.tests` — those with an issue (`old/issues.html:2192`, `:2016`) —
         // and not the component's whole population. The two differ here, which
         // is what makes the choice observable.
         const listedIds = [...page.document.querySelectorAll<HTMLElement>('.test-row')].map(
@@ -1371,7 +1371,7 @@ test('expanding a component draws its two charts, from its listed tests', async 
         );
 
         // The three stacked series, each over the runs that executed — passes
-        // plus the three non-skip outcomes (`issues.html:2819-2823`).
+        // plus the three non-skip outcomes (`old/issues.html:2819-2823`).
         const executed = expected.map(
             (day) => day.passes + day.failures + day.timeouts + day.crashes
         );
@@ -1459,7 +1459,7 @@ test('expanding a test draws its own chart, over that test alone', async () => {
         );
 
         // The chart slot precedes the issue list inside the details row, which
-        // is where `issues.html:2956-2962` puts it.
+        // is where `old/issues.html:2956-2962` puts it.
         const details = row.nextElementSibling!;
         const content = details.querySelector('.issue-details-content')!;
         assert.equal(content.firstElementChild?.className, 'historical-chart');
@@ -1499,7 +1499,7 @@ test('a failure message charts every status it was recorded under', async () => 
         );
 
         // The bars are `count / totalRuns * 100` per day, where `totalRuns` is
-        // every non-skip run of the test that day (`issues.html:2534-2570`).
+        // every non-skip run of the test that day (`old/issues.html:2534-2570`).
         const outcomes = handDailyOutcomes(FAIL_TEST_ID, DETAILED);
         const expectedFailRuns = DETAILED.testRuns[FAIL_TEST_ID]!;
         // `EXPECTED-FAIL` is in this denominator and in no other on the page,
@@ -1603,7 +1603,7 @@ test('hovering a Failures cell names the platforms, once the detailed file is in
             ![...header.querySelectorAll('.stat-item')].some((item) =>
                 item.classList.contains('lazy-tooltip')
             ),
-            'only test rows are hoverable, as issues.html:824-833 has it'
+            'only test rows are hoverable, as old/issues.html:824-833 has it'
         );
 
         // Before the merge the aggregate attributes no run to a job, so there

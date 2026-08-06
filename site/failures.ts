@@ -15,7 +15,7 @@
  * ## What the migration removes
  *
  * **The inline decoding of the status-group shapes.** `processFailureData`
- * (`failures.html:207-360`) is 150 lines branching on `isBucketedFormat`, which
+ * (`old/failures.html:207-360`) is 150 lines branching on `isBucketedFormat`, which
  * covers two of the five shapes `FORMATS.md` documents.
  * `lib/formats/status-entries.ts` resolves all five and throws on a sixth.
  *
@@ -86,7 +86,7 @@
  *     opposite — it leaves the numbers alone and drops whole rows — and the
  *     difference between the two pages is upstream's, not this migration's.
  *
- *  5. **A stale search box is now cleared on hashchange.** `failures.html:1100`
+ *  5. **A stale search box is now cleared on hashchange.** `old/failures.html:1100`
  *     is `if (document.activeElement !== searchBox && state.q)`, so a hash with
  *     no `q` never *clears* the box: navigating from `#q=netwerk` to
  *     `#date=2026-08-04` leaves `netwerk` in the box and the list filtered by a
@@ -100,7 +100,7 @@
  *     new page writes `state.q ?? ''`, so an absent `q` clears the box, and the
  *     focus guard is kept unchanged so typing is never interrupted.
  *
- *     `crashes.html:989` has the identical bug. It is **not** fixed there — see
+ *     `old/crashes.html:989` has the identical bug. It is **not** fixed there — see
  *     that file's list — because the crashes page's search only hides rows,
  *     while this page's search rewrites every number on screen, so the stale
  *     state is far more misleading here. Fixing one and not the other is a
@@ -209,7 +209,7 @@ let page: DrilldownController;
  * The ranked rows, and the search-rewritten subtree every expansion reads.
  *
  * `failureList` already returns both, because `filteredFailureData`
- * (`failures.html:101`) is what makes this page's search consistent: expanding a
+ * (`old/failures.html:101`) is what makes this page's search consistent: expanding a
  * row under a search shows only the tests that matched, and the counts on the
  * row are the counts of what expanding it will reveal.
  *
@@ -238,7 +238,7 @@ function treeherderUrl(occurrence: Occurrence): string | null {
 /**
  * The 🐛 bug-filing button for a test row, or `null`.
  *
- * `generateBugButton` (`failures.html:749`). The markup comes from
+ * `generateBugButton` (`old/failures.html:749`). The markup comes from
  * `getBugButton` (`common-links.js:216`), which returns a string — so this is
  * the one place the new page parses HTML, and it does so through a `<template>`
  * rather than by assigning into the live tree. Building the anchor here instead
@@ -269,7 +269,7 @@ const hooks: RenderHooks = {
      *
      * `linkifyFailureMessage` (`common-ui.js:22`) in element form. The test path
      * the link points at is the most-failing test of the row
-     * (`failures.html:659`), which is why this is a closure over the current
+     * (`old/failures.html:659`), which is why this is a closure over the current
      * rows rather than a pure function of the key.
      */
     labelNodes(key) {
@@ -283,13 +283,13 @@ const hooks: RenderHooks = {
         return [externalLink(href, split.linked), split.rest];
     },
 
-    // `failures.html:671` puts the whole message in a `title`, because the cell
+    // `old/failures.html:671` puts the whole message in a `title`, because the cell
     // is `text-overflow: ellipsis` and a long message is cut off.
     labelTitle: (key) => key,
 
     occurrenceLinks(occurrence, testName) {
         // Profile always, Job when the revision is known. No crash viewer: a
-        // failure has no minidump. `failures.html:801-805`.
+        // failure has no minidump. `old/failures.html:801-805`.
         const links = [externalLink(getProfilerUrl(occurrence, testName), 'Profile')];
         const jobUrl = treeherderUrl(occurrence);
         if (jobUrl !== null) {
@@ -303,7 +303,7 @@ const hooks: RenderHooks = {
     testNameSuffix: (dirPath, test, key) => bugButton(`${dirPath}/${test.testName}`, key, test),
 
     // A failure row always has a profiler URL, so unlike a crash row it is
-    // never inert. `failures.html:799`.
+    // never inert. `old/failures.html:799`.
     singleRowHref: (occurrence, testName) => getProfilerUrl(occurrence, testName),
 
     totalRunsOf: (dirPath, testName) =>
@@ -340,7 +340,7 @@ interface HistoricalRaw {
  *
  * `'(no failure message)'` is a *display* name this page invents, not a table
  * entry, so `indexOf` returns -1 for it and its chart is all zeroes. That is
- * upstream's behaviour (`failures.html:368` on a message that is not in
+ * upstream's behaviour (`old/failures.html:368` on a message that is not in
  * `tables.messages`) and is reproduced: the top row of the page has an empty
  * chart on both.
  */
@@ -415,7 +415,7 @@ const pathDailyRates = (message: string, dirPath: string): DailySeries | null =>
  *
  * As on the crashes page, upstream does not reuse the walk here: it finds the
  * one test by path and name without checking that it ever had the message
- * (`failures.html:489-513`). Reproduced.
+ * (`old/failures.html:489-513`). Reproduced.
  */
 function testDailyRates(message: string, dirPath: string, testName: string): DailySeries | null {
     if (page.historicalData === null) {
@@ -448,7 +448,7 @@ function testIdsOfSubtree(paths: Map<string, PathNode>): Set<string> {
 /**
  * The test IDs of one path's tests.
  *
- * Upstream's `calculateFilteredPathDailyFailureRates` (`failures.html:462`) does
+ * Upstream's `calculateFilteredPathDailyFailureRates` (`old/failures.html:462`) does
  * this as a nested loop over every test in the file *per test name*, which is
  * O(tests × names). One pass over the file with a name set is the same answer;
  * the difference is only in how long it takes, and on the 4,838-test xpcshell
@@ -490,7 +490,7 @@ function nameOf(testId: string): string {
  * search, a row whose own text did not match gets a chart restricted to the
  * tests that did, so the chart agrees with the count the search rewrote onto the
  * row. `crashes.html` has no equivalent because its search leaves the numbers
- * alone. Upstream's two guards are `failures.html:966-974` and `:1013-1021`, and
+ * alone. Upstream's two guards are `old/failures.html:966-974` and `:1013-1021`, and
  * there is deliberately none at the test level (`:1063`) because a single test
  * either matched or is not on screen.
  */
@@ -499,7 +499,7 @@ function chartSeries(request: ChartRequest): DailySeries | null {
 
     switch (request.level) {
         case 'key': {
-            // `failures.html:966-974`, in upstream's own phrasing: a row whose
+            // `old/failures.html:966-974`, in upstream's own phrasing: a row whose
             // message did not itself match gets the restricted chart.
             const filtered = term !== '' && !message.toLowerCase().includes(term);
             const paths = request.paths as Map<string, PathNode>;
@@ -508,7 +508,7 @@ function chartSeries(request: ChartRequest): DailySeries | null {
                 : messageDailyRates(message);
         }
         case 'path': {
-            // `failures.html:1013-1021`: the filtered variant applies when
+            // `old/failures.html:1013-1021`: the filtered variant applies when
             // neither the message nor the path matched the search.
             const dirPath = request.dirPath!;
             const filtered =
@@ -527,7 +527,7 @@ function chartSeries(request: ChartRequest): DailySeries | null {
 // --- URL state ------------------------------------------------------------
 
 /**
- * Applies the hash to the page. `loadFromUrlHash` (`failures.html:1092`).
+ * Applies the hash to the page. `loadFromUrlHash` (`old/failures.html:1092`).
  *
  * **Kept out of the shared controller on purpose**, for the reason given in
  * `site/crashes.ts`'s copy: the only line that differs between the two pages is

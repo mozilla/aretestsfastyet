@@ -195,7 +195,7 @@ test('the function offset is OUTSIDE the location link, not part of its text', (
     // it reported 110 differing cells on `win32-mfcdm` alone and 902 on
     // `rustpanic`.
     //
-    // Upstream (`crash-viewer.html:924-934`) writes:
+    // Upstream (`old/crash-viewer.html:924-934`) writes:
     //     <a href=… class="file-link" target="_blank">a/b.cpp:12</a> +0x4c
     // so the two are separate fields here and the renderer appends the second
     // as a bare text node after the `</a>`.

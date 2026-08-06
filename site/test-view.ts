@@ -17,7 +17,7 @@
  * | from | replaces | verified against the old page |
  * | --- | --- | --- |
  * | `computeTestStats` (`lib/query/test-stats.ts`) | `common-test-data.js:267` | 775 tests across 4 real bucket files, every field equal |
- * | `coverageOf` (`lib/query/coverage.ts`) | `calculateJobNameBreakdown` (`test.html:2607`) | same 775 tests, every job name and count equal |
+ * | `coverageOf` (`lib/query/coverage.ts`) | `calculateJobNameBreakdown` (`old/test.html:2607`) | same 775 tests, every job name and count equal |
  * | `bucketIndexForPath` (`lib/formats/buckets.ts`) | `getChunkIndex` (`common-test-data.js:26`) | same hash, `\| 0` and all |
  * | `decoded.findTest` (`lib/formats/tables.ts`) | `findTest` (`common-test-data.js:53`) | same linear path join |
  * | `detectHarness` (`lib/model/harness.ts`) | `common-test-data.js:9` | moved out of `cli/options.ts`; see that module |
@@ -180,7 +180,7 @@ function coverageInPageOrder(
     for (const entry of file.runsOfTest(testId)) {
         const { kind } = classifyStatus(entry.status);
         // `run-if` skips never create a row: `calculateJobNameBreakdown`
-        // `continue`s before `ensureJob` (`test.html:2642`), so a config known
+        // `continue`s before `ensureJob` (`old/test.html:2642`), so a config known
         // only from a `run-if` skip is absent from the table entirely rather
         // than present with zeroes.
         if (kind === 'skip' && skipReason(entry.message) === 'run-if') {
@@ -217,7 +217,7 @@ function coverageInPageOrder(
 /**
  * The display variant of a job name, before any collapsing.
  *
- * `test.html:588`, unchanged. Three rules, and the second and third exist
+ * `old/test.html:588`, unchanged. Three rules, and the second and third exist
  * because of what they make visible:
  *
  * ```
@@ -344,7 +344,7 @@ function addOutcomes(into: Outcomes, from: Outcomes): void {
 /**
  * What the table shows for a cell, reduced to the axes a collapse compares on.
  *
- * `outcomeSig` (`test.html:660`). A cell with no runs at all is `absent`, one
+ * `outcomeSig` (`old/test.html:660`). A cell with no runs at all is `absent`, one
  * with only skips is `skip`, and anything else is the set of outcome letters it
  * saw — so two configs that both fail sometimes and pass sometimes have the
  * same signature regardless of the rates. Deliberately coarse: the question a
@@ -382,7 +382,7 @@ interface CollapseStep {
 /**
  * The collapse steps, in the order they run.
  *
- * `test.html:686`, order included — and the order is load-bearing, in one
+ * `old/test.html:686`, order included — and the order is load-bearing, in one
  * place upstream calls out: `nofis` sits **before** `geckoview` so that
  * `X-geckoview-Y-nofis` can collapse against the still-present
  * `X-geckoview-Y` before `geckoview` is itself collapsed away. Reversing them
@@ -443,7 +443,7 @@ export function emptyDisplayMappings(): DisplayMappings {
 /**
  * Computes the collapse mappings from a test's per-config coverage.
  *
- * `computeDisplayMappings` (`test.html:625`), which re-aggregates
+ * `computeDisplayMappings` (`old/test.html:625`), which re-aggregates
  * `calculateJobNameBreakdown`'s per-job counts into variant × detailedPlatform
  * and then runs the two collapse passes. Here the per-job counts come from
  * `coverageOf`, which was verified to produce the same ones — see the module
@@ -561,7 +561,7 @@ export function computeDisplayMappings(configs: readonly ConfigCoverage[]): Disp
  * `passes`. `lib/model/status.ts` splits `EXPECTED-FAIL` out on purpose — a
  * `fail-if` annotation that fires is neither a pass nor a failure — while
  * `calculateJobNameBreakdown` puts it in the pass bucket by listing it among
- * the non-failures (`test.html:2625`). Folding it back here is what keeps every
+ * the non-failures (`old/test.html:2625`). Folding it back here is what keeps every
  * cell's badge percentage identical to the old page's; splitting it out would
  * be a behaviour change this migration is not making, and one with no UI to
  * show it in.
@@ -648,7 +648,7 @@ export interface JobCell {
      * day filter leaves the cell with passes and no issues.
      *
      * Emitted only for a cell that has both issues and passes, matching
-     * `test.html:2751`: a cell that never had an issue has nothing to fall back
+     * `old/test.html:2751`: a cell that never had an issue has nothing to fall back
      * from, and one with no passes has nothing to fall back to.
      */
     hasPassPrefixLayer: boolean;
@@ -681,14 +681,14 @@ export interface JobTable {
  * Builds the pivot from a test's coverage.
  *
  * **The row unit is one job variant; platforms are columns**
- * (`test.html:2670`). This is a per-test detail page, not a ranked list, and
+ * (`old/test.html:2670`). This is a per-test detail page, not a ranked list, and
  * the framing audit flags it as the thing most easily lost in a port: a
  * migration that emitted one row per configuration would produce the same
  * numbers and answer a different question.
  *
  * ## The sort, which is two levels and has no UI
  *
- * `test.html:2717-2731`. Variants are grouped by their prefix — the text before
+ * `old/test.html:2717-2731`. Variants are grouped by their prefix — the text before
  * the first `-`, so `opt-xpcshell` and `opt-xpcshell-1proc` share the prefix
  * `opt` — and then:
  *
@@ -696,7 +696,7 @@ export interface JobTable {
  * 2. within a group, variants are ordered by their **own** total runs,
  *    descending.
  *
- * "Total runs" here **includes skips** (`test.html:2720`), unlike every
+ * "Total runs" here **includes skips** (`old/test.html:2720`), unlike every
  * percentage on the page. That is deliberate on upstream's part and preserved:
  * the sort is asking "how much CI does this variant account for", and a
  * variant scheduled everywhere and skipped everywhere accounts for a lot of it.
@@ -705,7 +705,7 @@ export interface JobTable {
  * runs.
  *
  * Platform columns are plain lexicographic on the *key*, not the display name
- * (`test.html:2698`), so `mac-64` sorts before `mac-aarch64` and `Win 32`
+ * (`old/test.html:2698`), so `mac-64` sorts before `mac-aarch64` and `Win 32`
  * before `Win 64`. Neither axis is user-sortable; there is no sort control on
  * this page at all.
  */
@@ -804,7 +804,7 @@ export function buildJobTable(
                 badges,
                 hasPassPrefixLayer: issues > 0 && outcomes.passes > 0,
                 // Upstream computes this from the rendered DOM after the fact
-                // (`test.html:3168`): a cell with no fail/crash/timeout/skip
+                // (`old/test.html:3168`): a cell with no fail/crash/timeout/skip
                 // badge gets `no-hover`. Same predicate, from the values.
                 noHover: !badges.some((badge) => badge.kind !== 'pass'),
             };
@@ -824,11 +824,11 @@ export function buildJobTable(
  *
  * ## The denominator excludes skips
  *
- * `test.html:2740`: `total = passes + failures + timeouts + crashes`. A skip is
+ * `old/test.html:2740`: `total = passes + failures + timeouts + crashes`. A skip is
  * not a run, so a test skipped on 90% of its scheduled jobs and failing on half
  * of the rest reads as 50%, not 5%. This is the same denominator
  * `computeTestStats().runCount` uses, and the framing audit flags it because
- * `issues.html:1060` computes its Issue% over a denominator that *includes*
+ * `old/issues.html:1060` computes its Issue% over a denominator that *includes*
  * skips — same word, two definitions. Verified against `lib/`: `runCount`
  * there is pass + fail + timeout + crash + expected-fail, skips excluded, so
  * the page's meaning is the one that carried over.
@@ -836,7 +836,7 @@ export function buildJobTable(
  * ## Why there is one tooltip shared by three badges
  *
  * The fail, crash and timeout badges all carry the *same* text, listing every
- * outcome the cell saw (`test.html:2765`). Upstream builds it once and
+ * outcome the cell saw (`old/test.html:2765`). Upstream builds it once and
  * interpolates it into each; reproduced, because hovering the CRASH badge to
  * be told only about crashes would hide that the cell also failed 40 times.
  * The PASS and SKIP badges have their own, narrower tooltips.
@@ -913,7 +913,7 @@ function cellBadges(d: Outcomes, skipMessages: Map<string, number>): CellBadge[]
 /**
  * The SKIP badge's tooltip: the count, then the reasons.
  *
- * `test.html:2784`. One message is shown bare; several are listed with their
+ * `old/test.html:2784`. One message is shown bare; several are listed with their
  * counts, ordered by count descending — the reason a test is most often
  * skipped is the one worth reading first. No messages at all leaves just the
  * count, which happens when the skips recorded no reason.
@@ -953,7 +953,7 @@ export interface DailyRate {
  * The date a day index falls on.
  *
  * `metadata.startTime` is a Unix timestamp in seconds and days are 86,400
- * seconds apart, which is upstream's arithmetic (`test.html:1102`) and is
+ * seconds apart, which is upstream's arithmetic (`old/test.html:1102`) and is
  * correct here because the values are UTC midnights — a local-time calculation
  * would shift by a day either side of a DST boundary.
  */
@@ -964,12 +964,12 @@ export function dateOfDay(startTime: number, day: number): string {
 /**
  * Per-day pass/fail/timeout/crash/skip totals across every configuration.
  *
- * `calculateDailyFailureRates` (`test.html:1094`). Two things about it are
+ * `calculateDailyFailureRates` (`old/test.html:1094`). Two things about it are
  * worth stating because they differ from the rest of the page:
  *
  * **Skips are counted here without the `run-if` filter.** Every other skip
- * count on the page drops `run-if` (`test.html:2642`, `common-test-data.js:303`),
- * and this one does not (`test.html:1133`). On a **bucket** file that is a
+ * count on the page drops `run-if` (`old/test.html:2642`, `common-test-data.js:303`),
+ * and this one does not (`old/test.html:1133`). On a **bucket** file that is a
  * distinction without a difference — the 21-day aggregates have already dropped
  * `run-if` skips upstream, which `lib/query/test-stats.ts` documents and
  * `runIfSkipCount` reports as always 0 for an aggregate — and this page only
@@ -1044,7 +1044,7 @@ export interface ChartPresence {
 /**
  * Which charts the page draws.
  *
- * `test.html:2482`. The section appears only when there is something to plot,
+ * `old/test.html:2482`. The section appears only when there is something to plot,
  * and each canvas is emitted only if its own series is non-empty — a test that
  * is skipped but never fails gets the skip chart alone, and then that chart
  * keeps its x-axis because there is no failure chart above it to carry one.
@@ -1058,7 +1058,7 @@ export function chartPresence(rates: readonly DailyRate[]): ChartPresence {
 
 // --- issues ---------------------------------------------------------------
 
-/** The placeholder for a failure that recorded no message. `test.html:777`. */
+/** The placeholder for a failure that recorded no message. `old/test.html:777`. */
 export const FAILURE_NO_MESSAGE =
     'Failure details not recorded (likely Android or platform logging issue)';
 
@@ -1079,13 +1079,13 @@ export interface Issue {
     id: string;
     /**
      * Whether clicking expands a run list. False for SKIP only
-     * (`test.html:2562`) — a skip has no task IDs to list, because the run
+     * (`old/test.html:2562`) — a skip has no task IDs to list, because the run
      * never happened.
      */
     expandable: boolean;
     /**
      * The count's tooltip, or `null`. Only FAIL rows get one
-     * (`test.html:2565`), and it divides by `stats.runCount`, which **excludes
+     * (`old/test.html:2565`), and it divides by `stats.runCount`, which **excludes
      * skips** — so it reads as a share of runs that happened, not of jobs
      * scheduled.
      */
@@ -1095,9 +1095,9 @@ export interface Issue {
 /**
  * The Issue Details list, ordered by count descending.
  *
- * `renderIssueDetails` (`test.html:2513`). Assembled from four sources in a
+ * `renderIssueDetails` (`old/test.html:2513`). Assembled from four sources in a
  * fixed order — skips, failures, crashes, timeouts — and then sorted purely by
- * count (`test.html:2551`), so the assembly order only decides ties. `Array.sort`
+ * count (`old/test.html:2551`), so the assembly order only decides ties. `Array.sort`
  * is stable in every engine this runs in, so a skip and a failure with the same
  * count keep the skip first, and that is reproduced by building the list in the
  * same order.
@@ -1107,7 +1107,7 @@ export interface Issue {
  * A failure recorded with no message and a crash with no signature would each
  * otherwise vanish from a list keyed on message text. Upstream adds one row per
  * kind carrying the **difference** between the status total and the sum of the
- * messages it could name (`test.html:2530`, `:2540`). So the list's counts
+ * messages it could name (`old/test.html:2530`, `:2540`). So the list's counts
  * always add up to the totals in the summary bar, which is what makes the two
  * readable together.
  *
@@ -1197,7 +1197,7 @@ function sortedByCountDesc(counts: Map<string, number>): [string, number][] {
 /**
  * Skip counts by display message.
  *
- * `getSkipMessageCounts` (`test.html:780`), which drops `run-if` **and** drops
+ * `getSkipMessageCounts` (`old/test.html:780`), which drops `run-if` **and** drops
  * entries with no message at all — the `if (messageId !== null)` guard at
  * `:791`. That second exclusion is not the same rule as `computeTestStats`'s,
  * which counts a null-message skip (`lib/model/skips.ts` explains why every
@@ -1228,7 +1228,7 @@ function skipCountsByMessage(file: DecodedTimingFile, testId: number): Map<strin
 /**
  * Failure counts by message.
  *
- * `getFailureMessageCounts` (`test.html:807`). Only `FAIL*` statuses, and only
+ * `getFailureMessageCounts` (`old/test.html:807`). Only `FAIL*` statuses, and only
  * entries carrying a message — the ones without are the synthetic row's
  * business.
  */
@@ -1246,7 +1246,7 @@ function failureCountsByMessage(file: DecodedTimingFile, testId: number): Map<st
     return counts;
 }
 
-/** Crash counts by signature. `getCrashData` (`test.html:838`). */
+/** Crash counts by signature. `getCrashData` (`old/test.html:838`). */
 function crashCountsBySignature(file: DecodedTimingFile, testId: number): Map<string, number> {
     const counts = new Map<string, number>();
     for (const entry of file.runsOfTest(testId)) {
@@ -1284,12 +1284,12 @@ export const NO_SELECTION: Selection = { cells: new Set(), days: new Set() };
 /**
  * Per-day, per-cell outcome counts: the matrix every filtered view reads.
  *
- * `buildDayJobMatrix` (`test.html:1877`). Indexed `[day][cellKey]`, and built
+ * `buildDayJobMatrix` (`old/test.html:1877`). Indexed `[day][cellKey]`, and built
  * once because the interactions are hover-driven — recomputing it per mouse
  * move on a test with 21 days and 60 cells would be doing the whole decode
  * again on every frame.
  *
- * `run-if` skips are excluded here (`test.html:1920`), matching the job table.
+ * `run-if` skips are excluded here (`old/test.html:1920`), matching the job table.
  */
 export function buildDayCellMatrix(
     file: DecodedTimingFile,
@@ -1410,7 +1410,7 @@ export interface FilteredCell {
 /**
  * Recomputes one cell for a day selection.
  *
- * `updateTableHighlight` (`test.html:2190`), which mutates the DOM in place;
+ * `updateTableHighlight` (`old/test.html:2190`), which mutates the DOM in place;
  * here it is a value, which is what lets a test assert on a filtered cell
  * without a browser.
  *
@@ -1468,7 +1468,7 @@ export function filteredCell(
                 visible: count > 0,
                 // Upstream recomputes the percentage only when the badge is
                 // visible and leaves the stale text in place otherwise
-                // (`test.html:2253`). Since the badge is hidden either way,
+                // (`old/test.html:2253`). Since the badge is hidden either way,
                 // the value is unobservable; `null` says so rather than
                 // preserving a number nobody can see.
                 percentText:
@@ -1486,7 +1486,7 @@ export function filteredCell(
         allIssuesHidden,
         badgesHidden: noData || (cell.hasPassPrefixLayer && allIssuesHidden),
         badges,
-        // Upstream's `hasVisibleIssues` (`test.html:2263`) — note it counts
+        // Upstream's `hasVisibleIssues` (`old/test.html:2263`) — note it counts
         // skips, so a skip-only cell stays hoverable while a pass-only one does
         // not.
         noHover: !(f.failures > 0 || f.crashes > 0 || f.timeouts > 0 || f.skips > 0),
@@ -1496,7 +1496,7 @@ export function filteredCell(
 /**
  * Per-issue day and cell attribution, for filtering the issue list.
  *
- * `buildIssueFilterData` (`test.html:1959`). For each issue, how many
+ * `buildIssueFilterData` (`old/test.html:1959`). For each issue, how many
  * occurrences fell on each day, in each cell, and in each (day, cell) pair —
  * the third is not derivable from the first two, which is why it is stored:
  * "3 on Monday" and "3 on linux" do not tell you whether the Monday ones were
@@ -1554,7 +1554,7 @@ export function buildIssueAttribution(
 /**
  * Whether one run entry is an occurrence of one issue.
  *
- * `matchesEntry` (`test.html:1988`). The three message-bearing types compare
+ * `matchesEntry` (`old/test.html:1988`). The three message-bearing types compare
  * their display text; TIMEOUT matches any timeout entry, because the whole
  * timeout count is one issue row.
  *
@@ -1579,7 +1579,7 @@ function entryMatchesIssue(entry: RunEntry, issue: Issue): boolean {
                 return false;
             }
             // Upstream applies no `skip-if:` strip on the FAIL branch — the
-            // `clean` it compares is the raw message (`test.html:1993`).
+            // `clean` it compares is the raw message (`old/test.html:1993`).
             const message = entry.message ?? '';
             return issue.message === FAILURE_NO_MESSAGE ? message === '' : message === issue.message;
         }
@@ -1606,11 +1606,11 @@ export interface FilteredIssue {
 /**
  * The issue list under a selection.
  *
- * `updateIssueListFilter` (`test.html:2273`). With both a day and a cell filter
+ * `updateIssueListFilter` (`old/test.html:2273`). With both a day and a cell filter
  * the counts come from `byDayCell`, which is the intersection; with one filter
  * they come from that filter's own map. An issue with no occurrences in the
  * selection is hidden, and a hidden row shows its **unfiltered** count
- * (`test.html:2346`) — because zero, next to a badge, reads as "this never
+ * (`old/test.html:2346`) — because zero, next to a badge, reads as "this never
  * happened" rather than "not in this selection".
  */
 export function filterIssues(
@@ -1657,7 +1657,7 @@ export function filterIssues(
 /**
  * The `— 3 of 17 shown (2026-08-01, opt-xpcshell on Linux)` notice.
  *
- * `test.html:2372`. Dates collapse to a range once there are more than three,
+ * `old/test.html:2372`. Dates collapse to a range once there are more than three,
  * and cells collapse to a count once there is more than one — the notice has to
  * fit on the `Issue Details` heading line, and a list of nine job names does
  * not.
@@ -1716,7 +1716,7 @@ export interface DurationStats {
 /**
  * A percentile by linear interpolation on a pre-sorted array.
  *
- * `computePercentile` (`test.html:1660`). Interpolating rather than
+ * `computePercentile` (`old/test.html:1660`). Interpolating rather than
  * nearest-rank, which differs from `cli/commands/test.ts`'s `quantile()` — that
  * one takes `ceil(q * n)`. Both are defensible and they disagree by up to one
  * sample; this one is reproduced because it is what the panel shows today, and
@@ -1759,7 +1759,7 @@ export function computeDurationStats(durations: readonly number[]): DurationStat
 /**
  * Every passing run's duration, overall and per cell.
  *
- * `collectAllDurations` (`test.html:1618`) plus `buildCellDurationMap`
+ * `collectAllDurations` (`old/test.html:1618`) plus `buildCellDurationMap`
  * (`:1647`). Only pass-like statuses carry durations — upstream filters to
  * `PASS*`/`OK`/`EXPECTED-FAIL` explicitly, and `classifyStatus` gives the same
  * three kinds — so the panel's "N passing runs" is literal.
@@ -1822,7 +1822,7 @@ export function computeHistogramBins(
 /**
  * A duration in milliseconds, as the panel and the histogram write it.
  *
- * `formatDurationMs` (`test.html:552`). An em-dash for no data, and units that
+ * `formatDurationMs` (`old/test.html:552`). An em-dash for no data, and units that
  * change with magnitude so a 4-hour run does not read as `14400000ms`. The
  * `ms === 0` case is an em-dash too, which is upstream's — a run recorded as
  * taking zero milliseconds is a measurement that did not happen.
@@ -1858,7 +1858,7 @@ export interface Histogram {
 /**
  * The runtime histogram for a set of durations.
  *
- * `generateHistogram` (`test.html:1700`). Two layers: a grey background showing
+ * `generateHistogram` (`old/test.html:1700`). Two layers: a grey background showing
  * the *overall* distribution and a blue foreground showing the selection's, both
  * scaled to the background's tallest bin. That shared scale is what makes the
  * selected subset legible as a subset — scaling each to its own maximum would
@@ -1935,7 +1935,7 @@ export interface RuntimePanel {
     histogram: Histogram | null;
 }
 
-/** The six figures' labels and order. `test.html:1751`. */
+/** The six figures' labels and order. `old/test.html:1751`. */
 const RUNTIME_ITEMS: [string, keyof DurationStats][] = [
     ['Min', 'min'],
     ['Avg', 'avg'],
@@ -1948,7 +1948,7 @@ const RUNTIME_ITEMS: [string, keyof DurationStats][] = [
 /**
  * The runtime panel for a title and a set of durations.
  *
- * `renderRuntimePanelContent` (`test.html:1739`). `null` when there are no
+ * `renderRuntimePanelContent` (`old/test.html:1739`). `null` when there are no
  * durations at all, and the page then says "No duration data" — which is a
  * different thing from a panel of zeroes.
  */
@@ -1982,7 +1982,7 @@ export function buildRuntimePanel(
 /**
  * The runtime panel's title for a cell selection.
  *
- * `updateRuntimeForSelection` (`test.html:2424`). One cell is named; several
+ * `updateRuntimeForSelection` (`old/test.html:2424`). One cell is named; several
  * are counted, because six job names do not fit in a 420px panel header.
  */
 export function runtimeTitleFor(cells: ReadonlySet<string>): string {
@@ -2051,7 +2051,7 @@ function passPercentageOf(stats: TestStats): number {
 /**
  * The six figures above the chart.
  *
- * `test.html:2471`. The colour rules are upstream's and each says something:
+ * `old/test.html:2471`. The colour rules are upstream's and each says something:
  * a 100% pass rate is green, below 90% is red, and a zero count is grey rather
  * than black so that a row of zeroes reads as "nothing here" at a glance.
  *
@@ -2137,7 +2137,7 @@ export interface TestView {
     jobTable: JobTable;
     issues: Issue[];
     mappings: DisplayMappings;
-    /** Whether the favicon is drawn green. `test.html:3112`. */
+    /** Whether the favicon is drawn green. `old/test.html:3112`. */
     healthy: boolean;
 }
 
@@ -2154,7 +2154,7 @@ export interface TestViewMetadata {
 /**
  * Builds the whole view for a test that was found.
  *
- * The section order is fixed and is upstream's (`test.html:2452-2504`): header,
+ * The section order is fixed and is upstream's (`old/test.html:2452-2504`): header,
  * status line, summary stats, Daily Issue Rates, job table with the runtime
  * panel beside it, Issue Details. The framing audit lists it because a
  * rearrangement would be invisible to a value diff and would change what the
@@ -2201,7 +2201,7 @@ export function buildTestView(
         issues: buildIssues(file, testId, stats),
         mappings,
         // Upstream: `stats.passPercentage === 100 ? green : orange`
-        // (`test.html:3112`). A test with no runs at all has a pass rate of 0
+        // (`old/test.html:3112`). A test with no runs at all has a pass rate of 0
         // and therefore an orange favicon, which is upstream's behaviour and is
         // arguably right — a test that never ran is not healthy.
         healthy: passPercentageOf(stats) === 100,
@@ -2211,7 +2211,7 @@ export function buildTestView(
 /**
  * The parenthesised date phrase in the job table's heading.
  *
- * `test.html:2702`. Prefers the aggregate's range and falls back to a daily
+ * `old/test.html:2702`. Prefers the aggregate's range and falls back to a daily
  * file's single date, which is the only place the page acknowledges that a
  * non-bucket file could be loaded.
  */

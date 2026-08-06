@@ -392,7 +392,7 @@ test('pagination follows next, and the property names carry across pages', async
 });
 
 test('a missing property name throws instead of yielding a push with no jobs', async () => {
-    // `try.html:791` uses indexOf(-1), reads undefined, and filters the job
+    // `old/try.html:791` uses indexOf(-1), reads undefined, and filters the job
     // out — so a Treeherder field rename presents as "this push has no jobs".
     const { fetch } = treeherderFake([
         {

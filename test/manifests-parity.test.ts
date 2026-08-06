@@ -485,7 +485,7 @@ test('every declared divergence still diverges', () => {
         {
             what: 'the median of an even-length sample',
             reason:
-                'The page takes the upper middle element (manifests.html:429) and the CLI the ' +
+                'The page takes the upper middle element (old/manifests.html:429) and the CLI the ' +
                 'nearest-rank quantile (lib/query/manifest-stats.ts:302), which is the lower ' +
                 'middle. They agree on every odd sample and differ on every even one — measured ' +
                 'on the pinned 2026-08-04 file, 3,122 of 6,227 manifests get a different overall ' +
@@ -500,7 +500,7 @@ test('every declared divergence still diverges', () => {
             reason:
                 'sortManifests breaks a tie on the manifest path (lib/query/manifest-stats.ts:255, ' +
                 ':272); the page leaves tied rows in the order the file produced them, as ' +
-                'manifests.html:495-506 does. Adding one to the page would reorder real rows ' +
+                'old/manifests.html:495-506 does. Adding one to the page would reorder real rows ' +
                 'against the page being compared, for a stability the stable sort already gives ' +
                 'from a deterministic input order. The CLI wants it because its output is a ' +
                 'short ranked list a reader diffs between runs.',

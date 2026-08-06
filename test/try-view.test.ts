@@ -256,7 +256,7 @@ test('the pinned push still holds the data these tests are written against', () 
 // --- status classification ------------------------------------------------
 
 test('UNEXPECTED-PASS counts as a failure and EXPECTED-FAIL does not', () => {
-    // `try.html:1486`. The asymmetry is the point: an annotation that stopped
+    // `old/try.html:1486`. The asymmetry is the point: an annotation that stopped
     // being true is news, one that fired as intended is not.
     assert.equal(isFailureStatus('UNEXPECTED-PASS'), true);
     assert.equal(isFailureStatus('EXPECTED-FAIL'), false);
@@ -359,7 +359,7 @@ test('the default sort is count descending, and count is instances.length', () =
 });
 
 test("aggregateFailures pre-sorts DESCENDING, which sets the flakiness fetch priority", () => {
-    // `try.html:1588`. Flipping this comparator to ascending used to leave the
+    // `old/try.html:1588`. Flipping this comparator to ascending used to leave the
     // whole file green, so what it actually decides had to be measured.
     //
     // NOT the table order. `sortTests` re-sorts on the same key and
@@ -427,7 +427,7 @@ test("aggregateFailures pre-sorts DESCENDING, which sets the flakiness fetch pri
 });
 
 test('clicking a header toggles direction, and only "test" starts ascending', () => {
-    // `try.html:2550`. a-to-z is what a reader wants from a path column and
+    // `old/try.html:2550`. a-to-z is what a reader wants from a path column and
     // most-first from every other one.
     assert.deepEqual(nextSort({ column: 'count', ascending: false }, 'count'), {
         column: 'count',
@@ -458,7 +458,7 @@ test('the status sort orders on the ALPHABETISED joined status set', () => {
 });
 
 test('a test with no flakiness data sorts below every real rate, including 0%', () => {
-    // `try.html:1753` maps a missing entry to -1.
+    // `old/try.html:1753` maps a missing entry to -1.
     const known = FAILURES.tests[0]!;
     const sorted = sortTests(
         FAILURES.tests,
@@ -506,7 +506,7 @@ test('a single permanent instance among many intermittents keeps the test perman
 });
 
 test('the Permanent failures heading appears only when another section follows', () => {
-    // `try.html:1772`. It disappears when it is the only table, which is
+    // `old/try.html:1772`. It disappears when it is the only table, which is
     // surprising until stated.
     assert.equal(needsPermanentHeader(0, 0), false);
     assert.equal(needsPermanentHeader(1, 0), true);
@@ -517,7 +517,7 @@ test('the Permanent failures heading appears only when another section follows',
 // --- the denominators -----------------------------------------------------
 
 test('totalJobs counts only the configs the test FAILED on', () => {
-    // `try.html:1563`. A config where it ran and always passed is NOT in the
+    // `old/try.html:1563`. A config where it ran and always passed is NOT in the
     // denominator — the question is "when this config ran, how often did it
     // fail", and folding in clean configs would dilute exactly that signal.
     let checked = 0;
@@ -686,7 +686,7 @@ test('a successful run of the same job name makes the failure intermittent', () 
 });
 
 test('a run whose profile yielded NO failures still counts as a separate run', () => {
-    // The seeding at `try.html:1380`. Without it, case 3 cannot see the run that
+    // The seeding at `old/try.html:1380`. Without it, case 3 cannot see the run that
     // produced nothing, and a test failing in one of two runs reads as permanent.
     const timings: Timing[] = [
         {
@@ -763,7 +763,7 @@ test('another run failing on DIFFERENT tests makes this failure intermittent', (
 // --- the "All jobs" checkbox ---------------------------------------------
 
 test('"All jobs" changes the universe that intermittency is judged against', () => {
-    // `try.html:1342`. The checkbox adds the successful test jobs to
+    // `old/try.html:1342`. The checkbox adds the successful test jobs to
     // `jobsToProcess`, which is what `tagIntermittent` seeds its per-run failure
     // sets from and what the page fetches profiles for. It is not a visibility
     // toggle.
@@ -826,7 +826,7 @@ test('"All jobs" changes the universe that intermittency is judged against', () 
 // --- badges ---------------------------------------------------------------
 
 test('build types add up rather than replacing, except that opt is the fallback', () => {
-    // `try.html:831`. `ccov/debug` is BOTH; `asan/opt` is asan alone.
+    // `old/try.html:831`. `ccov/debug` is BOTH; `asan/opt` is asan alone.
     assert.deepEqual(extractBuildTypes('test-linux2404-64-ccov/debug-xpcshell-3'), [
         'ccov',
         'debug',
@@ -862,7 +862,7 @@ test('extractPlatform returns the literal "unknown", which the page groups by', 
 });
 
 test('a test failing on every configuration shows N/N instead of the badges', () => {
-    // `try.html:1600`. Both the length AND the membership have to match, so a
+    // `old/try.html:1600`. Both the length AND the membership have to match, so a
     // test on two of three platforms one of which is not in the global set does
     // not read as "everywhere".
     assert.equal(coversAll(['linux', 'windows'], new Set(['linux', 'windows'])), true);
@@ -910,7 +910,7 @@ test('the Intermittent card is omitted when the count is zero', () => {
 test('a leading ! negates, and a bare ! filters nothing', () => {
     assert.deepEqual(parseSearch('Timeout'), { term: 'timeout', negate: false });
     assert.deepEqual(parseSearch('!linux'), { term: 'linux', negate: true });
-    // `try.html:1720` guards on a truthy term, so `!` alone shows everything.
+    // `old/try.html:1720` guards on a truthy term, so `!` alone shows everything.
     assert.deepEqual(parseSearch('!'), { term: '', negate: true });
     assert.equal(filterTests(FAILURES.tests, parseSearch('!')).length, FAILURES.tests.length);
 });
@@ -1045,7 +1045,7 @@ test('the headline rate is an argmax on rate - 100/sqrt(runs), not on the raw ra
 });
 
 test('a config with zero runs scores 0, not -Infinity', () => {
-    // `try.html:2776`'s `r.runs > 0 ? … : 0`. A 0-run config must beat a config
+    // `old/try.html:2776`'s `r.runs > 0 ? … : 0`. A 0-run config must beat a config
     // with a genuinely negative score — a low rate over few runs.
     const configs = [
         // 1 of 40 runs = 2.5%, score 2.5 - 100/sqrt(40) = -13.3
@@ -1059,7 +1059,7 @@ test('a config with zero runs scores 0, not -Infinity', () => {
 });
 
 test('a 0% winner falls back to the overall rate and changes what the column means', () => {
-    // `try.html:2788`. When no config shows the same failure, the column stops
+    // `old/try.html:2788`. When no config shows the same failure, the column stops
     // answering "does this exact failure pre-exist" and answers "how flaky is
     // this test at all".
     const configs = [config('clean', { runs: 500, fails: 40, sameMsg: 0 })];
@@ -1072,7 +1072,7 @@ test('a 0% winner falls back to the overall rate and changes what the column mea
 });
 
 test('the overall rate counts fails, crashes and timeouts over runs', () => {
-    // `try.html:2767`. Three numerators, one denominator, and the denominator is
+    // `old/try.html:2767`. Three numerators, one denominator, and the denominator is
     // runCount — which excludes skips.
     const headline = pickHeadlineRate(
         stats({ runs: 200, fails: 10, crashes: 3, timeouts: 7 }),
@@ -1232,7 +1232,7 @@ test('every percentage in the TOOLTIP is single-rounded too', () => {
 });
 
 test('the flakiness cell shows a warning glyph, not 0.0%, for a never-failing test', () => {
-    // `try.html:2864`. "This test has never failed in 21 days" is the strongest
+    // `old/try.html:2864`. "This test has never failed in 21 days" is the strongest
     // possible answer to "is this pre-existing", and 0.0% next to 18.1% would
     // bury it.
     const cell = flakinessCell({
@@ -1403,7 +1403,7 @@ test('the request carries the push messages, and the timeout/crash kind flags', 
 });
 
 test('bucket files are read in the order their best test appears in the table', () => {
-    // `try.html:2667`. The visible top of the table fills in first; reading in
+    // `old/try.html:2667`. The visible top of the table fills in first; reading in
     // hash order would fill it in a random-looking sequence.
     const requests = [
         { path: 'z', tryMessages: [], hasTimeout: false, hasCrash: false, jobNames: [] },

@@ -100,7 +100,7 @@ import { crashSignature } from '../lib/model/crash-signature.ts';
 /**
  * What a `trust` value means, for the column's tooltip.
  *
- * Copied from `getTrustDescription()` (`crash-viewer.html:1063`). An unknown
+ * Copied from `getTrustDescription()` (`old/crash-viewer.html:1063`). An unknown
  * value falls back to itself rather than to a placeholder — the walker may
  * grow a new one, and showing it is better than hiding it.
  *
@@ -142,7 +142,7 @@ export interface FrameRow {
      *
      * A separate field rather than part of `locationText` because upstream
      * writes it as a bare text node *after* the `</a>`
-     * (`crash-viewer.html:931-933`), so it is neither clickable nor underlined.
+     * (`old/crash-viewer.html:931-933`), so it is neither clickable nor underlined.
      * Folding it into the link text renders the same characters and was
      * therefore invisible to a `textContent` comparison; the browser diff that
      * caught it compares each cell's child nodes, and reported 110 cells
@@ -159,7 +159,7 @@ export interface FrameRow {
      * Three-valued on purpose, because the old page is: a real frame always
      * carries the attribute — `title=""` when `trust` is unrecognized — while
      * an inline row is written as a bare `<td class="frame-trust">inline</td>`
-     * with **no** `title` at all (`crash-viewer.html:897` against `:938`).
+     * with **no** `title` at all (`old/crash-viewer.html:897` against `:938`).
      * `null` means "emit no attribute" and `''` means "emit an empty one".
      *
      * The distinction is invisible to a reader and was found by diffing the
@@ -190,7 +190,7 @@ export interface FrameRow {
  * ## The frame id, its collision, and the bug the new page fixes
  *
  * `detailsId` is `frame-${frame.frame}-details`, upstream's spelling
- * (`crash-viewer.html:865`). `frame.frame` is the index **within a thread**, so
+ * (`old/crash-viewer.html:865`). `frame.frame` is the index **within a thread**, so
  * any two rendered threads whose frame 0 carries `registers` produce two
  * elements with `id="frame-0-details"`.
  *
@@ -284,7 +284,7 @@ function inlineRow(frame: Frame, inline: InlineFrame, classes: string[]): FrameR
         locationText: hasLocation ? `${info ? info.path : inline.file}:${inline.line}` : '',
         locationUrl: hasLocation ? sourceUrl(inline.file, inline.line) : null,
         // An inline row never carries an offset: upstream's inline branch has
-        // no `function_offset` clause at all (`crash-viewer.html:884-894`), and
+        // no `function_offset` clause at all (`old/crash-viewer.html:884-894`), and
         // an inlined callee has no offset of its own to report.
         locationOffsetText: '',
         // Not a trust level the walker reported — upstream writes the literal
@@ -316,7 +316,7 @@ function frameLocationText(frame: Frame): string {
  * The ` +offset` text node that follows the location link.
  *
  * Upstream appends `function_offset` **only inside** the `file && line` branch
- * (`crash-viewer.html:924-934`), so an unsymbolized frame with an offset but no
+ * (`old/crash-viewer.html:924-934`), so an unsymbolized frame with an offset but no
  * source line shows nothing rather than a bare `+0x4c`. Preserved: the offset
  * on its own, in a column headed "Location", would read as a line number.
  */
@@ -332,7 +332,7 @@ function frameLocationOffsetText(frame: Frame): string {
 /**
  * How many frames a non-crashing thread shows before "Show N more".
  *
- * Upstream's 10 (`crash-viewer.html:786`). The crashing thread is never
+ * Upstream's 10 (`old/crash-viewer.html:786`). The crashing thread is never
  * truncated: it is why the page was opened.
  */
 export const THREAD_FRAME_PREVIEW = 10;
@@ -362,7 +362,7 @@ export interface ThreadView {
  *
  * A named thread reads `#3 - MainThread`; an unnamed one repeats the tid,
  * `#3 - tid: 1234`. `thread_id` is `unknown` when absent — a string where a
- * number is expected, and upstream's literal (`crash-viewer.html:707`), which
+ * number is expected, and upstream's literal (`old/crash-viewer.html:707`), which
  * matters because it lands in the tooltip.
  */
 function threadHeading(thread: Thread, index: number): { heading: string; title: string } {
@@ -407,7 +407,7 @@ export function crashingThreadView(file: StackwalkFile): ThreadView | null {
         rows: thread.frames.flatMap((frame, position) =>
             // Only the innermost frame is highlighted, and by *position* in the
             // rendered list rather than by `frame.frame` — upstream keys on the
-            // loop index (`crash-viewer.html:864`).
+            // loop index (`old/crash-viewer.html:864`).
             frameRows(frame, { crashed: position === 0 })
         ),
         truncation: null,
@@ -418,7 +418,7 @@ export function crashingThreadView(file: StackwalkFile): ThreadView | null {
  * The non-crashing threads, in file order, each truncated to 10 frames.
  *
  * The crashing thread is skipped by **index**, matching upstream
- * (`crash-viewer.html:772`): `crash_info.crashing_thread` is an index into
+ * (`old/crash-viewer.html:772`): `crash_info.crashing_thread` is an index into
  * `threads`, and comparing thread objects would not work because
  * `crashing_thread` is a separate copy.
  *
@@ -426,7 +426,7 @@ export function crashingThreadView(file: StackwalkFile): ThreadView | null {
  *
  * Upstream renders the first 10 frames, then removes the trailing
  * `</tbody></table>` with `html.slice(0, -16)` so the hidden rows can be
- * appended into the same table (`crash-viewer.html:794`). That is a **declared
+ * appended into the same table (`old/crash-viewer.html:794`). That is a **declared
  * divergence**: here the rows are simply one list carrying a `classes` entry,
  * and the renderer emits one table. The rendered DOM is the same — one table,
  * one tbody, the extra rows inside it — which the parity comparison checks
@@ -543,7 +543,7 @@ export type ExtraData = Record<string, unknown>;
 
 /**
  * Fields the page shows in the grids above, so the collapsed block does not
- * repeat them. Upstream's list (`crash-viewer.html:676`), unchanged.
+ * repeat them. Upstream's list (`old/crash-viewer.html:676`), unchanged.
  */
 const DISPLAYED_EXTRA_FIELDS = ['MozCrashReason', 'ProcessType', 'RemoteType', 'URL'];
 
@@ -551,7 +551,7 @@ const DISPLAYED_EXTRA_FIELDS = ['MozCrashReason', 'ProcessType', 'RemoteType', '
  * Builds the whole view.
  *
  * `extra` is optional because the sidecar is: it is fetched alongside the dump
- * and a 404 is normal, not an error (`crash-viewer.html:600`). Everything that
+ * and a 404 is normal, not an error (`old/crash-viewer.html:600`). Everything that
  * reads it therefore has a no-sidecar branch, and the smallest dump in the
  * corpus exercises it.
  */

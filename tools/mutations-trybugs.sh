@@ -59,7 +59,7 @@ mutate cli/commands/try.ts \
     'the TestStatus messages are never consulted'
 
 # The precedence: the harness leaves stale text on some Test markers, and
-# try.html:983 assigns the TestStatus message *over* it.
+# old/try.html:983 assigns the TestStatus message *over* it.
 mutate cli/commands/try.ts \
     '            message = messageInRange(fullTestId, start, end) ?? message;' \
     '            message = message ?? messageInRange(fullTestId, start, end);' \

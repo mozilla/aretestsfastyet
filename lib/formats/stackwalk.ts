@@ -66,7 +66,7 @@ export interface CrashInfo {
 /**
  * An inlined frame. Carries no module or offset — it is attributed to the
  * enclosing real frame — which is why the signature heuristic
- * (`crash-viewer.html:520`) flattens inlines ahead of their parent frame.
+ * (`old/crash-viewer.html:520`) flattens inlines ahead of their parent frame.
  */
 export interface InlineFrame {
     file: string | null;
@@ -163,7 +163,7 @@ export interface StackwalkFile {
  * Strips the leading zeros of one of this format's hex strings:
  * `0x000000000000004c` → `0x4c`.
  *
- * Ported from `formatHexOffset()` (`crash-viewer.html:1081`) including its one
+ * Ported from `formatHexOffset()` (`old/crash-viewer.html:1081`) including its one
  * surprise: the regex is `/^(0x)0*(.+)$/`, whose `.+` is greedy but must leave
  * at least one character, so `0x0000` becomes `0x0` rather than `0x`. A
  * "simplification" to `0*(.*)` yields `0x` and loses the digit.

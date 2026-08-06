@@ -41,7 +41,7 @@
  * call it, and the reason is a measured disagreement rather than a preference:
  *
  * - **The median rule differs, on half the corpus.** The page takes the
- *   **upper** middle element (`manifests.html:429`, `:455`:
+ *   **upper** middle element (`old/manifests.html:429`, `:455`:
  *   `sorted[Math.floor(n / 2)]`); `summarize` takes the nearest-rank quantile
  *   (`lib/query/manifest-stats.ts:302-305`: `ceil(0.5n) - 1`), which is the
  *   **lower** middle. They agree on every odd-length sample and differ on every
@@ -57,7 +57,7 @@
  *   `platforms` per manifest costs a `parseJobName` per configuration —
  *   173,875 pairs on the pinned file — for a column that does not exist here.
  * - **The row unit differs at the job level.** The page groups sub-rows by
- *   `runs.jobNameIds` (`manifests.html:376`, `:382`) and so does
+ *   `runs.jobNameIds` (`old/manifests.html:376`, `:382`) and so does
  *   `computeManifestStats`; both use the chunk-stripped name, so this one
  *   agrees — recorded because it is the trap `FORMATS.md` measures at 360,373
  *   of 433,836 runs, and agreement here is a fact worth pinning rather than
@@ -72,7 +72,7 @@
  * ## The all-zero-durations rule, and where it changes a number
  *
  * A (manifest, job) pair whose durations are **all** zero was skipped there,
- * not run instantly (`manifests.html:416`). `every`, not `any`. Such a pair is
+ * not run instantly (`old/manifests.html:416`). `every`, not `any`. Such a pair is
  * excluded from `totalRuns` (`:441`), from the pooled runtimes (`:442`) and
  * from `totalJobs` (`:461`) — so a manifest's Runs column counts runs on
  * configs where it *ran*, and its Job Types column counts configs where it
@@ -99,7 +99,7 @@ import { parseTaskId } from '../lib/formats/tables.ts';
 /**
  * One run of one manifest on one job: a point in the third-level scatter.
  *
- * Field-for-field what the old page pushes at `manifests.html:398-403`. The
+ * Field-for-field what the old page pushes at `old/manifests.html:398-403`. The
  * `commit` is carried because the old page carries it into `customdata`
  * (`:777`) — nothing reads it back today, and it is kept rather than dropped so
  * that the hover template stays a presentation choice rather than a data one.
@@ -125,13 +125,13 @@ export interface JobStats {
      * runtime, and a zero would make it the fastest row in the table.
      *
      * The old page stores `0` here and guards every read with `skipped`
-     * (`manifests.html:424-425`, `:719-727`). A nullable field makes the guard
+     * (`old/manifests.html:424-425`, `:719-727`). A nullable field makes the guard
      * the type system's job instead — a renderer that forgot it does not
      * compile, where upstream would print `0ms`.
      */
     median: number | null;
     mean: number | null;
-    /** Every duration was zero: it did not run here. `manifests.html:416`. */
+    /** Every duration was zero: it did not run here. `old/manifests.html:416`. */
     skipped: boolean;
 }
 
@@ -179,7 +179,7 @@ export interface SortState {
 /**
  * The sort the page opens on: **median, descending** — slowest manifest first.
  *
- * This is what `manifests.html:360-361` declares, and it is **not** what that
+ * This is what `old/manifests.html:360-361` declares, and it is **not** what that
  * page renders. `loadData()` finishes by calling `filterManifests()` (`:909`),
  * which calls `sortBy(currentSortColumn)` (`:611`) with the column that is
  * already selected, which takes the toggle branch (`:488-490`) and flips the
@@ -197,11 +197,11 @@ export interface SortState {
  */
 export const DEFAULT_SORT: SortState = { column: 'median', ascending: false };
 
-/** Rows per page. `manifests.html:359`, and not configurable there or here. */
+/** Rows per page. `old/manifests.html:359`, and not configurable there or here. */
 export const ITEMS_PER_PAGE = 50;
 
 /**
- * The next sort after clicking a header. `manifests.html:487-493`.
+ * The next sort after clicking a header. `old/manifests.html:487-493`.
  *
  * Clicking the active column toggles; clicking another selects it descending.
  * Descending-first is right for every column here except `manifest`, and
@@ -221,7 +221,7 @@ export function nextSort(current: SortState, column: SortColumn): SortState {
 /**
  * Aggregates a `manifests.json` into one row per manifest path.
  *
- * Transcribed from `processManifestData` (`manifests.html:371-473`) with two
+ * Transcribed from `processManifestData` (`old/manifests.html:371-473`) with two
  * changes, both about the absent case rather than about arithmetic: a skipped
  * pair's statistics are `null` rather than `0`, and the final "sort by overall
  * median descending" (`:470`) is dropped because `sortRows` runs immediately
@@ -331,7 +331,7 @@ export function buildManifestRows(file: ManifestsFile): ManifestRow[] {
 /**
  * The **upper** middle element of a sample, which is this page's median.
  *
- * `manifests.html:429`, `:455`: `durations[Math.floor(durations.length / 2)]`
+ * `old/manifests.html:429`, `:455`: `durations[Math.floor(durations.length / 2)]`
  * on a sorted array. Not interpolated, and **not** the nearest-rank quantile
  * `lib/query/manifest-stats.ts` uses — that one is `ceil(0.5n) - 1`, the
  * *lower* middle, and the two disagree on every even-length sample.
@@ -355,7 +355,7 @@ export function medianOf(durations: readonly number[]): number {
     return sorted[Math.floor(sorted.length / 2)]!;
 }
 
-/** The arithmetic mean. `manifests.html:430`, `:456`. */
+/** The arithmetic mean. `old/manifests.html:430`, `:456`. */
 export function meanOf(durations: readonly number[]): number {
     let total = 0;
     for (const duration of durations) {
@@ -367,7 +367,7 @@ export function meanOf(durations: readonly number[]): number {
 /**
  * Orders a manifest's jobs: worst median first, skipped last.
  *
- * `manifests.html:447-450` opens with
+ * `old/manifests.html:447-450` opens with
  * `if (a.skipped !== b.skipped) return a.skipped ? 1 : -1` and then compares
  * medians. Here the `?? -1` does both, exactly as
  * `lib/query/manifest-stats.ts:241-245` does and for the reason recorded there:
@@ -401,7 +401,7 @@ export interface Filters {
 export const NO_FILTERS: Filters = { manifest: '', job: '' };
 
 /**
- * Keeps the manifests matching both boxes. `manifests.html:604-608`.
+ * Keeps the manifests matching both boxes. `old/manifests.html:604-608`.
  *
  * The two boxes are not symmetric, and that asymmetry is the page's design
  * rather than an accident: `q` matches the row's **own** name, while `job`
@@ -430,7 +430,7 @@ export function filterRows(rows: readonly ManifestRow[], filters: Filters): Mani
 }
 
 /**
- * The sub-rows an expanded manifest shows. `manifests.html:686-688`.
+ * The sub-rows an expanded manifest shows. `old/manifests.html:686-688`.
  *
  * The job needle applies here as well as at the top level, so expanding a row
  * under a job search shows only the matching jobs — the search narrows what is
@@ -483,7 +483,7 @@ function columnValue(row: ManifestRow, column: SortColumn): number | null {
 }
 
 /**
- * Ranks the rows. `manifests.html:495-506`.
+ * Ranks the rows. `old/manifests.html:495-506`.
  *
  * The comparator for the rows that *have* a value is written ascending and
  * negated for descending, which is upstream's arrangement (`:503-505`) and is
@@ -539,7 +539,7 @@ export interface PageState {
 }
 
 /**
- * The pager for a row count. `manifests.html:754-757`.
+ * The pager for a row count. `old/manifests.html:754-757`.
  *
  * `Math.ceil(n / 50)` is **0 when nothing matched**, so upstream renders
  * `Page 1 of 0` and disables Next only because `currentPage === totalPages` is
@@ -564,7 +564,7 @@ export function pageState(rowCount: number, page: number): PageState {
     };
 }
 
-/** The rows on the current page. `manifests.html:638-640`. */
+/** The rows on the current page. `old/manifests.html:638-640`. */
 export function pageSlice(rows: readonly ManifestRow[], page: number): ManifestRow[] {
     const start = (page - 1) * ITEMS_PER_PAGE;
     return rows.slice(start, start + ITEMS_PER_PAGE);
@@ -628,7 +628,7 @@ export interface HeadlineStats {
 }
 
 /**
- * The four cards, from **raw artifact array lengths**. `manifests.html:890-893`.
+ * The four cards, from **raw artifact array lengths**. `old/manifests.html:890-893`.
  *
  * Deliberately decoupled from the table: these are `data.manifests.length`,
  * `data.jobNames.length` and `data.runs.durations.length`, so they describe the
@@ -672,7 +672,7 @@ export function headlineStats(file: ManifestsFile): HeadlineStats {
 // --- formatting -----------------------------------------------------------
 
 /**
- * A duration for display. `manifests.html:475-485`.
+ * A duration for display. `old/manifests.html:475-485`.
  *
  * Transcribed exactly, including the two things a reader might call bugs and
  * which are left alone because changing them changes every cell on the page:
@@ -694,7 +694,7 @@ export function formatDuration(ms: number): string {
     return `${minutes}m ${seconds}s`;
 }
 
-/** The key an expanded job is remembered by. `manifests.html:625`. */
+/** The key an expanded job is remembered by. `old/manifests.html:625`. */
 export function jobKey(manifest: string, jobName: string): string {
     return `${manifest}|||${jobName}`;
 }
@@ -712,7 +712,7 @@ export interface ScatterPoint {
 }
 
 /**
- * The scatter series for one (manifest, job) pair. `manifests.html:764-781`.
+ * The scatter series for one (manifest, job) pair. `old/manifests.html:764-781`.
  *
  * The x axis is **the run's index in the file**, not a date or a commit: the
  * old page pushes `i + 1` (`:771`) and labels the axis "Run Number". The runs
@@ -736,7 +736,7 @@ export function scatterPoints(job: JobStats): ScatterPoint[] {
 }
 
 /**
- * Splits a task ID into its base and retry parts. `manifests.html:827-829`,
+ * Splits a task ID into its base and retry parts. `old/manifests.html:827-829`,
  * `:841-843`.
  *
  * `manifests.json` task IDs are mostly bare, but a minority carry a `.<retry>`
@@ -771,7 +771,7 @@ export function splitTaskId(taskId: string): { baseTaskId: string; retryId: stri
 }
 
 /**
- * The raw resource-usage profile URL for a run. `manifests.html:832`.
+ * The raw resource-usage profile URL for a run. `old/manifests.html:832`.
  *
  * Built here rather than in the renderer because it is a pure function of the
  * data and is what `test/manifests-view.test.ts` asserts; the renderer only
@@ -787,7 +787,7 @@ export function resourceProfileArtifactUrl(taskId: string): string {
     );
 }
 
-/** The error-summary log URL for a run. `manifests.html:846`. */
+/** The error-summary log URL for a run. `old/manifests.html:846`. */
 export function errorSummaryUrl(taskId: string, prefix: string): string {
     const { baseTaskId, retryId } = splitTaskId(taskId);
     return (
@@ -797,7 +797,7 @@ export function errorSummaryUrl(taskId: string, prefix: string): string {
 }
 
 /**
- * The profiler URL a chart click opens. `manifests.html:834`.
+ * The profiler URL a chart click opens. `old/manifests.html:834`.
  *
  * `markerSearch` is set to the manifest path, which is what makes the profile
  * open focused on that manifest's markers rather than on the whole job — the
@@ -824,7 +824,7 @@ export function profilerUrl(
 }
 
 /**
- * The DOM id of a job's chart container. `manifests.html:740`.
+ * The DOM id of a job's chart container. `old/manifests.html:740`.
  *
  * Reproduced character for character because Plotly is handed the **id**, not
  * the element (`:809`), so a different scheme is a different chart. Every

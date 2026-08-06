@@ -311,7 +311,7 @@ export function rankErrors(
 // must not be duplicated is the *decision*, because two copies of a threshold
 // drift and the parity test would then be comparing two bugs.
 
-/** What a message with no component recorded is called. `errors.html:298`. */
+/** What a message with no component recorded is called. `old/errors.html:298`. */
 export const UNKNOWN_COMPONENT = 'Unknown';
 
 /**

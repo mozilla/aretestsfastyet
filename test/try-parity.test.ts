@@ -10,7 +10,7 @@
  *
  * That file asserts **CLI vs the old page**, and its page column is a *source
  * audit* — facts read off `try.html` with a `file:line` citation each. It
- * cannot execute the page, so it can say "`try.html:1749` sorts on
+ * cannot execute the page, so it can say "`old/try.html:1749` sorts on
  * `instances.length`" but not "the two produce the same 26 rows in the same
  * order".
  *
@@ -379,14 +379,14 @@ test('every shared row agrees field by field', async () => {
             other.failureCount,
             row.instances.length,
             `${row.path}: failing executions differ — the page's # column is ` +
-                `instances.length (try.html:1749) and the CLI's failureCount must be the same ` +
+                `instances.length (old/try.html:1749) and the CLI's failureCount must be the same ` +
                 'quantity'
         );
         assert.equal(
             other.totalRuns,
             row.totalJobs,
             `${row.path}: the run denominator differs. Both count only the configs the test ` +
-                'FAILED on (try.html:1563), so a difference means one side folded in a clean config'
+                'FAILED on (old/try.html:1563), so a difference means one side folded in a clean config'
         );
         assert.deepEqual(
             [...other.jobNames].sort(),

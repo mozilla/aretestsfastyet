@@ -672,7 +672,7 @@ test('parity: the declared page-vs-CLI divergences all still diverge', () => {
             reason:
                 'Both group by (kind, text, file, line) and agree on the row set — but the ' +
                 'page then *displays* such a row by its text alone, because groupName nests ' +
-                'the line inside the file (errors.html:493). The CLI prints the line in its ' +
+                'the line inside the file (old/errors.html:493). The CLI prints the line in its ' +
                 'own column, so two rows the page shows with identical labels are ' +
                 'distinguishable on the CLI. Measured: 8 of the 54 xpcshell fixture messages ' +
                 'have a line and no file.',

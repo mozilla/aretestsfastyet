@@ -397,7 +397,7 @@ test('the page adds a flavor breakdown the CLI does not have', async () => {
             what: 'row unit below the harness level',
             reason:
                 'The page indents one sub-row per mochitest flavor under the Mochitest row ' +
-                '(index.html:536-551), which the CLI has no equivalent of — `fx-tests summary` ' +
+                '(old/index.html:536-551), which the CLI has no equivalent of — `fx-tests summary` ' +
                 'is one block per harness. The flavors are not a filter or a sort of the ' +
                 'harness rows but an extra level, and they do not sum to the aggregate above ' +
                 'them: measured, the eight flavors account for 60,101,543 of the 60,119,846 ' +

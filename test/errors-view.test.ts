@@ -217,10 +217,10 @@ const tiny = (): PreparedErrors => prepareErrors(structuredClone(TINY));
 // =========================================================================
 
 test('there are seven marker kinds, not the six the old comment claims', () => {
-    // `errors.html:211`'s comment says "The six fixed marker kinds" above a
+    // `old/errors.html:211`'s comment says "The six fixed marker kinds" above a
     // table of seven. Counted off the markup rather than off the table: the
-    // seven `id="kind-…"` checkboxes at `errors.html:184-190`.
-    const markup = readFileSync(new URL('../errors.html', import.meta.url), 'utf8');
+    // seven `id="kind-…"` checkboxes at `old/errors.html:184-190`.
+    const markup = readFileSync(new URL('../old/errors.html', import.meta.url), 'utf8');
     const ids = [...markup.matchAll(/id="kind-([a-z+-]+)"/g)].map((m) => m[1]!);
     assert.equal(ids.length, 7, 'the markup has seven kind checkboxes');
     assert.deepEqual(ids, [
@@ -240,7 +240,7 @@ test('there are seven marker kinds, not the six the old comment claims', () => {
 });
 
 test('the default view is message, which is the first option and unselected', () => {
-    const markup = readFileSync(new URL('../errors.html', import.meta.url), 'utf8');
+    const markup = readFileSync(new URL('../old/errors.html', import.meta.url), 'utf8');
     const select = /<select id="viewSelect"[^>]*>([\s\S]*?)<\/select>/.exec(markup)![1]!;
     const options = [...select.matchAll(/<option value="([a-z]+)"([^>]*)>/g)];
     assert.equal(options[0]![1], 'message', 'message is the first option');
@@ -264,7 +264,7 @@ test('the default sort is count-descending, and every view uses the same one', (
 });
 
 test('a new column starts descending, except name which starts ascending', () => {
-    // `errors.html:823`: `ascending = column === 'name'`. A-to-Z for a name,
+    // `old/errors.html:823`: `ascending = column === 'name'`. A-to-Z for a name,
     // biggest-first for a number.
     assert.deepEqual(nextSort({ column: 'count', ascending: false }, 'tests'), {
         column: 'tests',
@@ -291,7 +291,7 @@ test('a new column starts descending, except name which starts ascending', () =>
 
 test('the message view has no Messages column and the component view has all three', () => {
     // A message-view row is one message, so the column would read 1 on every
-    // row. `errors.html:224`.
+    // row. `old/errors.html:224`.
     assert.deepEqual(
         VIEW_COLS.message.map((c) => c.key),
         ['tests', 'count']
@@ -953,7 +953,7 @@ test('kindStates keys by name, so a file listing its kinds in another order work
 });
 
 test('a kind the markup does not name defaults to on and cannot be turned off', () => {
-    // `errors.html:394`: `on[i] = cb ? cb.checked : true`.
+    // `old/errors.html:394`: `on[i] = cb ? cb.checked : true`.
     const names = ['C++ warning', 'Rust panic'];
     assert.deepEqual(kindStates(names, new Set()), [true, true]);
     assert.deepEqual(
@@ -1121,7 +1121,7 @@ test('colValue reads the column the header names, and name builds the label', ()
 });
 
 test('a message with a line and no file is named by its text alone', () => {
-    // `groupName` nests the line inside the file (`errors.html:493-494`), so a
+    // `groupName` nests the line inside the file (`old/errors.html:493-494`), so a
     // message the *grouping* distinguished by line is *displayed* without it.
     // Message 4 is `careful`, line 44, no file.
     const data = tiny();
@@ -1501,7 +1501,7 @@ test('the hash carries date, q, view and hide, and validates the view', () => {
         hide: 'js-error',
     });
     // An unknown view is dropped rather than applied, so `#view=bogus` leaves
-    // the page on its current view. `errors.html:1128`.
+    // the page on its current view. `old/errors.html:1128`.
     assert.deepEqual(read('view=bogus'), {});
     assert.deepEqual(read('view=component'), { view: 'component' });
     // An empty `q` is present and empty, which is what clears the box; an
@@ -1531,7 +1531,7 @@ test('hide round-trips the disabled set in markup order', () => {
 });
 
 test('an absent date means one day here, unlike the crashes and failures pages', () => {
-    // `errors.html:1144-1152`: "Default: most recent single day". Only the exact
+    // `old/errors.html:1144-1152`: "Default: most recent single day". Only the exact
     // string `21days` is historical.
     assert.equal(isHistoricalDate(undefined), false);
     assert.equal(isHistoricalDate(''), false);

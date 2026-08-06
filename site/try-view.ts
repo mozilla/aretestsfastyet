@@ -34,9 +34,9 @@
  * is the one thing this page must not get wrong:
  *
  * `try.html`'s row unit is **one test path, aggregated across the push**, ranked
- * by **failing executions** (`test.instances.length`, `try.html:1749`), and its
+ * by **failing executions** (`test.instances.length`, `old/try.html:1749`), and its
  * two tables are split by whether *every* instance was intermittent
- * (`try.html:1765`). `fx-tests try`'s row unit is the same test path but its
+ * (`old/try.html:1765`). `fx-tests try`'s row unit is the same test path but its
  * sections are split on `everyRunFailed` — a per-configuration fact — and it
  * carries central history on each row. Those are two different questions asked
  * of the same timings, and `PARITY.md` §5 exists precisely to compare them
@@ -52,7 +52,7 @@
  *
  * **`pickHeadlineRate` and `flakinessTooltip`.** These decide what one 45px
  * table cell says, and the tooltip is written to be read in a proportional font
- * at a specific width (`try.html:2813`). `fx-tests try` answers the same
+ * at a specific width (`old/try.html:2813`). `fx-tests try` answers the same
  * question with three annotated lines per row and no width limit. Page-local.
  *
  * ## This file must stay DOM-free
@@ -123,11 +123,11 @@ export interface Job {
     cleanedSummary?: string[] | undefined;
 }
 
-/** `try.html:735`. The harnesses whose profiles carry test markers. */
+/** `old/try.html:735`. The harnesses whose profiles carry test markers. */
 export const SUPPORTED_HARNESSES = ['mochitest', 'xpcshell'];
 
 /**
- * Treeherder results that mean the job did not pass. `try.html:816`.
+ * Treeherder results that mean the job did not pass. `old/try.html:816`.
  *
  * `retry` is deliberately absent: a retried job was superseded by another run
  * of the same task, so counting it would double-count an infrastructure hiccup.
@@ -146,7 +146,7 @@ export function isTestJob(jobName: string): boolean {
 // --- status classification ------------------------------------------------
 
 /**
- * The statuses that count as a failure on this page. `try.html:1486`.
+ * The statuses that count as a failure on this page. `old/try.html:1486`.
  *
  * **`UNEXPECTED-PASS` is one of them**, and that is not a slip. A test annotated
  * `fail-if` that *passed* means the annotation is now wrong, which is a thing
@@ -178,7 +178,7 @@ export const FAILURE_STATUSES: ReadonlySet<string> = new Set([
  * The status with any `-PARALLEL`/`-SEQUENTIAL` phase suffix removed.
  *
  * The worker appends the suffix for the four statuses it can place in the
- * parallel range (`try.html:979`), so `FAIL-PARALLEL` and `FAIL` are the same
+ * parallel range (`old/try.html:979`), so `FAIL-PARALLEL` and `FAIL` are the same
  * verdict in a different phase. Everything that asks *what happened* strips it;
  * only the detail rows keep it.
  */
@@ -186,7 +186,7 @@ export function baseStatus(status: string): string {
     return status.replace(/-(PARALLEL|SEQUENTIAL)$/, '');
 }
 
-/** Whether a status means the test failed, for this page. `try.html:1488`. */
+/** Whether a status means the test failed, for this page. `old/try.html:1488`. */
 export function isFailureStatus(status: string): boolean {
     return FAILURE_STATUSES.has(baseStatus(status));
 }
@@ -194,7 +194,7 @@ export function isFailureStatus(status: string): boolean {
 // --- platform and build badges --------------------------------------------
 
 /**
- * Fixed badge orders. `try.html:739`.
+ * Fixed badge orders. `old/try.html:739`.
  *
  * Not alphabetical and not data-driven: a reader scanning a column of badges
  * wants the same platform in the same place on every row, and `linux` before
@@ -202,11 +202,11 @@ export function isFailureStatus(status: string): boolean {
  */
 export const PLATFORM_ORDER = ['linux', 'windows', 'mac', 'android', 'unknown'];
 
-/** `try.html:740`. Build types in increasing order of exoticism. */
+/** `old/try.html:740`. Build types in increasing order of exoticism. */
 export const BUILD_TYPE_ORDER = ['opt', 'debug', 'asan', 'tsan', 'ccov'];
 
 /**
- * The build types a job name implies. `try.html:831`.
+ * The build types a job name implies. `old/try.html:831`.
  *
  * Note the shape of the chain, which is easy to "tidy" into something else:
  * the three sanitizers each *add* a type, `debug` adds one too, and `opt` is
@@ -237,12 +237,12 @@ export function extractBuildTypes(jobName: string): string[] {
     return types;
 }
 
-/** The members of `platforms`, in `PLATFORM_ORDER`. `try.html:841`. */
+/** The members of `platforms`, in `PLATFORM_ORDER`. `old/try.html:841`. */
 export function sortedPlatforms(platforms: ReadonlySet<string>): string[] {
     return PLATFORM_ORDER.filter((platform) => platforms.has(platform));
 }
 
-/** The members of `builds`, in `BUILD_TYPE_ORDER`. `try.html:845`. */
+/** The members of `builds`, in `BUILD_TYPE_ORDER`. `old/try.html:845`. */
 export function sortedBuildTypes(builds: ReadonlySet<string>): string[] {
     return BUILD_TYPE_ORDER.filter((build) => builds.has(build));
 }
@@ -267,7 +267,7 @@ export function runKeyOf(timing: { taskId: string; retryId: number }): string {
 /**
  * Marks each failing timing intermittent or not, in place.
  *
- * `try.html:1370-1433`. Three independent cases, tried in order, and the order
+ * `old/try.html:1370-1433`. Three independent cases, tried in order, and the order
  * matters only because the first one also sets `passedOnRetry`:
  *
  * 1. **The harness reran it in-job and it passed.** The strongest signal there
@@ -283,7 +283,7 @@ export function runKeyOf(timing: { taskId: string; retryId: number }): string {
  * ## The seeding, and why it is load-bearing
  *
  * `failsByJobAndRun` is seeded with **every processed job** before any timing is
- * read (`try.html:1380`), so a run whose profile yielded no parseable test-level
+ * read (`old/try.html:1380`), so a run whose profile yielded no parseable test-level
  * failure — a harness crash, a killed job — still counts as a separate run of
  * that job name with an empty failure set. Without the seeding, case 3 could
  * never see it, and a test that failed in one run of a two-run config where the
@@ -320,7 +320,7 @@ export function tagIntermittent(
         if (!isFailureStatus(timing.status)) {
             continue;
         }
-        // Upstream indexes without a guard (`try.html:1389`); a timing whose job
+        // Upstream indexes without a guard (`old/try.html:1389`); a timing whose job
         // is not in `jobsToProcess` would throw there. It cannot happen — every
         // timing came from processing one of those jobs — but reading through
         // an optional chain says so without changing any outcome.
@@ -421,7 +421,7 @@ export interface FailingTest {
      *
      * Only those. A configuration where the test ran and always passed is not
      * in this denominator, because `entry.jobs` only ever gains a name from a
-     * *failing* instance (`try.html:1512`) and the loop at `:1563` walks
+     * *failing* instance (`old/try.html:1512`) and the loop at `:1563` walks
      * `entry.jobs`. So "2/2 runs" means "both runs of the configs it failed on",
      * not "both runs anywhere". Preserved deliberately: the question the column
      * answers is "when this config ran, how often did it fail", and folding in
@@ -448,7 +448,7 @@ export interface Failures {
 /**
  * Aggregates the push's timings into one row per failing test path.
  *
- * `try.html:1492`. **The row unit is a test path, aggregated across the whole
+ * `old/try.html:1492`. **The row unit is a test path, aggregated across the whole
  * push** — not a (test, config) pair and not a job. The framing audit flags this
  * as the thing most easily lost in a port, because a migration emitting one row
  * per configuration would produce the same *numbers* and answer a different
@@ -457,11 +457,11 @@ export interface Failures {
  * ## The default sort, and what its direction actually decides
  *
  * `tests.sort((a, b) => b.instances.length - a.instances.length)`
- * (`try.html:1588`) — failing executions, descending.
+ * (`old/try.html:1588`) — failing executions, descending.
  *
  * **It is not the table's order.** `renderTable` re-sorts through `sortTests`
  * with the same key by default (`currentSort = { column: 'count', ascending:
- * false }`, `try.html:744`), and `Array.prototype.sort` has been required to be
+ * false }`, `old/try.html:744`), and `Array.prototype.sort` has been required to be
  * stable since ES2019, so tie members keep whatever relative order they had
  * *going in*. Both directions of this pre-sort leave tie members in
  * `testMap.values()` insertion order — a descending pre-sort does not permute
@@ -484,7 +484,7 @@ export interface Failures {
  * ## `commonMessage`, and the crash fallback
  *
  * The inline message under a test path appears only when **every** instance
- * that recorded a message recorded the *same* one (`try.html:1538`) — a summary
+ * that recorded a message recorded the *same* one (`old/try.html:1538`) — a summary
  * line that showed one of several different messages would be worse than none.
  * Note the asymmetry the crash fallback introduces (`:1543`): the message rule
  * ignores instances with no message, while the signature rule requires
@@ -644,7 +644,7 @@ export function aggregateFailures(
 
 // --- search ---------------------------------------------------------------
 
-/** A parsed search box value. `try.html:1693`. */
+/** A parsed search box value. `old/try.html:1693`. */
 export interface SearchTerm {
     /** Already lower-cased, with any leading `!` removed. */
     term: string;
@@ -658,7 +658,7 @@ export interface SearchTerm {
  * A leading `!` negates. Note that `!` alone gives `{ term: '', negate: true }`
  * and `term === ''` is what every caller tests for "no filter", so a bare `!`
  * filters nothing rather than hiding everything — upstream's behaviour, since
- * `if (currentSearchTerm)` guards the filter (`try.html:1720`).
+ * `if (currentSearchTerm)` guards the filter (`old/try.html:1720`).
  */
 export function parseSearch(raw: string): SearchTerm {
     const lower = raw.toLowerCase();
@@ -667,14 +667,14 @@ export function parseSearch(raw: string): SearchTerm {
 }
 
 /**
- * The tests a search leaves visible. `try.html:1718`.
+ * The tests a search leaves visible. `old/try.html:1718`.
  *
  * Matches the path, any instance's **message**, or any instance's **job name** —
  * three fields, so `!linux` hides every test that failed on Linux and `timeout`
  * finds tests by their failure text rather than only by name.
  *
  * This is display-only for the tables, but `sendAllRunRequests` and
- * `markNoMatchTests` also iterate it (`try.html:3368`, `:3421`, `:3435`), so
+ * `markNoMatchTests` also iterate it (`old/try.html:3368`, `:3421`, `:3435`), so
  * the search box **scopes which tests get reproduced locally** as well as which
  * are shown. That is not obvious from the control and is preserved.
  */
@@ -708,10 +708,10 @@ export interface SortState {
 }
 
 /**
- * The page's initial sort. `try.html:744`.
+ * The page's initial sort. `old/try.html:744`.
  *
  * `count` descending, where count is **failing executions**
- * (`a.instances.length`, `try.html:1749`) and not distinct job runs. See
+ * (`a.instances.length`, `old/try.html:1749`) and not distinct job runs. See
  * `FailingTest.instances`.
  */
 export function initialSort(): SortState {
@@ -719,7 +719,7 @@ export function initialSort(): SortState {
 }
 
 /**
- * What clicking a column header does. `try.html:2550`.
+ * What clicking a column header does. `old/try.html:2550`.
  *
  * Clicking the active column flips the direction; clicking a new one selects
  * it, ascending **only** for `test`. The asymmetry is deliberate and is the
@@ -740,7 +740,7 @@ export interface FlakinessLookup {
 }
 
 /**
- * Sorts the tests for display. `try.html:1747`.
+ * Sorts the tests for display. `old/try.html:1747`.
  *
  * Four keys, and two of them need stating:
  *
@@ -752,7 +752,7 @@ export interface FlakinessLookup {
  *   — it groups rows that failed the same *way*, which is what the column is
  *   for.
  *
- * A test with no flakiness data yet sorts as `-1` (`try.html:1753`), below every
+ * A test with no flakiness data yet sorts as `-1` (`old/try.html:1753`), below every
  * real rate including 0%. The data arrives asynchronously per bucket file, so
  * during loading the unresolved rows collect at the bottom of a descending sort
  * and the table visibly fills in from the top.
@@ -767,7 +767,7 @@ export interface FlakinessLookup {
  * "the page disagrees with itself".
  *
  * The mechanism, confirmed in code: `allTimings.push(...timings)`
- * (`try.html:1117`, transliterated at `site/try.ts:623`) appends each profile
+ * (`old/try.html:1117`, transliterated at `site/try.ts:623`) appends each profile
  * worker's results **in worker-completion order**. Eight workers parse profiles
  * fetched 64 at a time, so the append order is a network and scheduler race.
  * Pinning the data does not fix it — the fetches are still concurrent.
@@ -824,7 +824,7 @@ export function sortTests(
 }
 
 /**
- * Splits the sorted tests into the two tables. `try.html:1765`.
+ * Splits the sorted tests into the two tables. `old/try.html:1765`.
  *
  * **Data-driven, not a toggle.** A test is intermittent only when *every* one of
  * its failing executions was intermittent; one permanent instance keeps the
@@ -843,7 +843,7 @@ export function splitTables(tests: readonly FailingTest[]): {
 }
 
 /**
- * Whether the "Permanent failures" heading is drawn. `try.html:1772`.
+ * Whether the "Permanent failures" heading is drawn. `old/try.html:1772`.
  *
  * Only when another section follows it: a lone table needs no header, and the
  * page reads better without one. So the heading appears and disappears as the
@@ -856,7 +856,7 @@ export function needsPermanentHeader(
     return intermittentCount > 0 || unblamedCount > 0;
 }
 
-/** The `count-cell` colour class. `try.html:1864`. */
+/** The `count-cell` colour class. `old/try.html:1864`. */
 export function countClass(count: number): string {
     return count >= 5 ? 'high' : count >= 2 ? 'medium' : 'low';
 }
@@ -874,7 +874,7 @@ export interface SummaryCard {
 }
 
 /**
- * The cards above the tables. `try.html:1663`.
+ * The cards above the tables. `old/try.html:1663`.
  *
  * **`Total Failures` is the sum of `instances.length`** — failing executions
  * again, so it exceeds `Unique Failing Tests` and can exceed the number of
@@ -913,7 +913,7 @@ export function summaryCards(
 /**
  * Whether a test's badges cover every configuration the push processed.
  *
- * `summaryPlatformBadges` / `summaryBuildBadges` (`try.html:1596`, `:1606`).
+ * `summaryPlatformBadges` / `summaryBuildBadges` (`old/try.html:1596`, `:1606`).
  * When they do, the cell shows `4/4` in grey instead of four badges — a row
  * that failed everywhere says more by saying "everywhere" than by drawing the
  * whole legend again.
@@ -924,13 +924,13 @@ export function coversAll(values: readonly string[], global: ReadonlySet<string>
 
 // --- the run-count tooltip ------------------------------------------------
 
-/** English pluralisation, upstream's one-liner. `try.html:1797`. */
+/** English pluralisation, upstream's one-liner. `old/try.html:1797`. */
 function s(n: number): string {
     return n === 1 ? '' : 's';
 }
 
 /**
- * The `#` column's tooltip on an intermittent row. `try.html:1796`.
+ * The `#` column's tooltip on an intermittent row. `old/try.html:1796`.
  *
  * Summarises what happened to the test across the push: how many times it ran,
  * how often it failed, and how each job run ended. The five buckets count **job
@@ -975,7 +975,7 @@ export function runCountTooltip(test: FailingTest): string {
 
 /**
  * How many runs a configuration needs inside the recent window before the page
- * will quote a percentage for it. `try.html:2572`.
+ * will quote a percentage for it. `old/try.html:2572`.
  *
  * Sized in **runs, not days**, and the comment upstream wrote for it is the
  * reason: push volume varies several-fold over a week, so a fixed number of
@@ -994,7 +994,7 @@ export const MIN_RECENT_RUNS = 100;
 /** Fallback day count, for a data file carrying no `metadata.days`. */
 export const HISTORY_DAYS = 21;
 
-/** Past a handful the tooltip stops being readable. `try.html:2579`. */
+/** Past a handful the tooltip stops being readable. `old/try.html:2579`. */
 export const MAX_TOOLTIP_CONFIGS = 4;
 
 /** One test's 21-day history, as the flakiness worker returns it. */
@@ -1022,7 +1022,7 @@ export interface HeadlineRate {
 }
 
 /**
- * The rate to show in the flakiness column. `try.html:2766`.
+ * The rate to show in the flakiness column. `old/try.html:2766`.
  *
  * The configurations are the ones this test failed on in **this push**, so any
  * of them answers "was this already failing before my push?"; where they
@@ -1032,7 +1032,7 @@ export interface HeadlineRate {
  *
  * ## Why the argmax is on a lower confidence bound
  *
- * `score = rate - 100 / sqrt(runs)` (`try.html:2776`). Comparing raw rates lets
+ * `score = rate - 100 / sqrt(runs)` (`old/try.html:2776`). Comparing raw rates lets
  * a config with a hundred runs that happened to land a bit higher beat one with
  * a few hundred, and the tooltip then leads with the noisier number. The
  * penalty is the width of a rough interval: at 100 runs it is 10 points, at
@@ -1098,7 +1098,7 @@ export function pickHeadlineRate(
 /**
  * The test's overall failure rate over the whole window, every platform.
  *
- * `(failCount + crashCount + timeoutCount) / runCount * 100` (`try.html:2767`).
+ * `(failCount + crashCount + timeoutCount) / runCount * 100` (`old/try.html:2767`).
  * Note what is **not** in the numerator: `expectedFailCount`. `lib/`'s
  * `TestStats` splits that out where `common-test-data.js` folded it into
  * `passCount`, and both agree that an annotation firing as intended is not a
@@ -1110,18 +1110,18 @@ function overallRate(stats: TestStats): number {
         : 0;
 }
 
-/** A percentage as the column and the tooltip write it. `try.html:2751`. */
+/** A percentage as the column and the tooltip write it. `old/try.html:2751`. */
 export function formatFailRate(rate: number): string {
     return `${rate.toFixed(1)}%`;
 }
 
-/** `the last day` / `the last 7 days`. `try.html:2844`. */
+/** `the last day` / `the last 7 days`. `old/try.html:2844`. */
 export function dayCount(days: number | undefined): string {
     return days === 1 ? 'the last day' : `the last ${days} days`;
 }
 
 /**
- * The flakiness cell's tooltip. `try.html:2793`.
+ * The flakiness cell's tooltip. `old/try.html:2793`.
  *
  * Four sections, and the order is the argument it makes:
  *
@@ -1230,7 +1230,7 @@ export interface FlakinessCell {
 }
 
 /**
- * The flakiness cell for one test's history. `try.html:2848`.
+ * The flakiness cell for one test's history. `old/try.html:2848`.
  *
  * Three states, and the first is the one worth noticing: a test with a **0%**
  * 21-day failure rate gets the ⚠️ glyph and the `flaky-new` class rather than
@@ -1282,7 +1282,7 @@ export function flakinessCell(data: FlakinessData | null): FlakinessCell | null 
 
 /**
  * Drops the noise from a job's Treeherder bug-suggestion lines.
- * `try.html:2023`.
+ * `old/try.html:2023`.
  *
  * Two rules. `exit status N` is dropped unless it is the only line — on its own
  * it is all the information there is, next to a real failure it is a
@@ -1318,7 +1318,7 @@ export function cleanFailureSummary(lines: readonly string[]): string[] {
 }
 
 /**
- * The key jobs are grouped by. `try.html:2050`.
+ * The key jobs are grouped by. `old/try.html:2050`.
  *
  * The cleaned summary with crash UUIDs stripped, so twenty jobs that all crashed
  * with the same signature become one row saying `20` instead of twenty rows of
@@ -1340,7 +1340,7 @@ export interface UnblamedGroup {
 }
 
 /**
- * Groups the unblamed jobs by failure summary. `try.html:1941`.
+ * Groups the unblamed jobs by failure summary. `old/try.html:1941`.
  *
  * Insertion-ordered, which the sort below then reorders; the grouping itself
  * preserves the order `currentUnblamedJobs` came in.
@@ -1363,13 +1363,13 @@ export function groupUnblamedJobs(
 }
 
 /**
- * Filters and orders the unblamed groups for display. `try.html:1964-1981`.
+ * Filters and orders the unblamed groups for display. `old/try.html:1964-1981`.
  *
  * The search matches a job's **name** or any line of the group's summary, and
  * filters *within* a group — a group all of whose jobs are filtered out
  * disappears entirely. Then the groups are ordered by `jobs.length` descending,
  * which is **not** configurable: this table has no sortable headers
- * (`try.html:1955-1960` marks every one `no-sort`), and the count is the only
+ * (`old/try.html:1955-1960` marks every one `no-sort`), and the count is the only
  * thing worth ranking twenty identical crash rows by.
  */
 export function visibleUnblamedGroups(
@@ -1397,7 +1397,7 @@ export function visibleUnblamedGroups(
 
 /**
  * The artifact filename from a "profile uploaded in …" message, or `null`.
- * `try.html:2902`.
+ * `old/try.html:2902`.
  *
  * When a test fails, the harness captures a Gecko profile at that moment and
  * uploads it, logging a message naming the file. That message is *not* shown as
@@ -1421,7 +1421,7 @@ export interface UploadedProfile {
     jobName: string;
 }
 
-/** Every message logged on an instance. `try.html:2911`. */
+/** Every message logged on an instance. `old/try.html:2911`. */
 export function messagesOf(instance: Timing): string[] {
     if (instance.allMessages.length > 0) {
         return instance.allMessages.map((message) => message.message);
@@ -1430,7 +1430,7 @@ export function messagesOf(instance: Timing): string[] {
 }
 
 /**
- * The failure profile one execution uploaded, or `null`. `try.html:2934`.
+ * The failure profile one execution uploaded, or `null`. `old/try.html:2934`.
  *
  * Per-instance, because each run uploads its own artifact — a test that failed
  * in two jobs has two profiles and the row's icon must open the right one.
@@ -1450,7 +1450,7 @@ export function instanceUploadedProfile(instance: Timing): UploadedProfile | nul
     return null;
 }
 
-/** The first instance that uploaded a profile, or `null`. `try.html:2945`. */
+/** The first instance that uploaded a profile, or `null`. `old/try.html:2945`. */
 export function findUploadedProfile(instances: readonly Timing[]): UploadedProfile | null {
     for (const instance of instances) {
         const profile = instanceUploadedProfile(instance);
@@ -1462,7 +1462,7 @@ export function findUploadedProfile(instances: readonly Timing[]): UploadedProfi
 }
 
 /**
- * The messages logged on a set of instances, deduped. `try.html:2919`.
+ * The messages logged on a set of instances, deduped. `old/try.html:2919`.
  *
  * The "profile uploaded" notice is excluded — it is shown as an icon, and
  * repeating it in a copied debugging prompt would waste the reader's attention
@@ -1485,7 +1485,7 @@ export function instanceMessages(instances: readonly Timing[]): string[] {
 
 // --- the empty state ------------------------------------------------------
 
-/** The `no-failures` block's parts. `try.html:1830`. */
+/** The `no-failures` block's parts. `old/try.html:1830`. */
 export interface NoFailuresText {
     verdict: string;
     caveat: string;
@@ -1495,7 +1495,7 @@ export interface NoFailuresText {
 
 /**
  * The empty state, for the permanent table and for a push with no test failures
- * at all. `try.html:1830`.
+ * at all. `old/try.html:1830`.
  *
  * The verdict differs between the two — "No test failures" against "No permanent
  * failures" — because they are different claims and the second one is weaker.
@@ -1528,7 +1528,7 @@ export function noFailuresText(options: {
 // --- URL state ------------------------------------------------------------
 
 /**
- * The page's URL state. `try.html:1249`, `:3760`.
+ * The page's URL state. `old/try.html:1249`, `:3760`.
  *
  * **Query only, no hash.** `test.html` and `crash-viewer.html` both use the
  * hash; this page does not, and the difference is deliberate on upstream's
@@ -1546,7 +1546,7 @@ export interface UrlState {
     allJobs: boolean;
 }
 
-/** Reads the state out of a query string. `try.html:3760`. */
+/** Reads the state out of a query string. `old/try.html:3760`. */
 export function readUrlState(search: string): UrlState {
     const params = new URLSearchParams(search);
     return {
@@ -1555,13 +1555,13 @@ export function readUrlState(search: string): UrlState {
         filter: params.get('filter') ?? '',
         // `has`, not a value test: the checkbox is set explicitly from this
         // rather than only when present, so a browser-preserved checkbox state
-        // cannot disagree with the URL after a reload (`try.html:3772`).
+        // cannot disagree with the URL after a reload (`old/try.html:3772`).
         allJobs: params.has('alljobs'),
     };
 }
 
 /**
- * Applies the state to a URL's query. `try.html:1249`.
+ * Applies the state to a URL's query. `old/try.html:1249`.
  *
  * Each parameter is **deleted** when it holds its default, rather than written
  * as an empty value — so the URL of an unfiltered `try` push is
@@ -1592,7 +1592,7 @@ export function writeUrlState(url: URL, state: UrlState): void {
 
 /**
  * Pulls the revision, and possibly the repository, out of whatever was typed.
- * `try.html:1212`.
+ * `old/try.html:1212`.
  *
  * Five accepted shapes, tried in order. The `repo:rev` prefix is checked
  * **first** and unconditionally resets the repository to `try` when absent,
@@ -1642,7 +1642,7 @@ export function extractRevision(raw: string): { revision: string; repo: string }
     return { revision: input, repo };
 }
 
-/** hg.mozilla.org's path for a Treeherder repository name. `try.html:1624`. */
+/** hg.mozilla.org's path for a Treeherder repository name. `old/try.html:1624`. */
 export function hgRepoPath(repo: string): string {
     const map: Record<string, string> = {
         'mozilla-central': 'mozilla-central',
@@ -1654,7 +1654,7 @@ export function hgRepoPath(repo: string): string {
 
 // --- the console API ------------------------------------------------------
 
-/** One entry of `window.failures`. `try.html:3685`. */
+/** One entry of `window.failures`. `old/try.html:3685`. */
 export interface ConsoleFailure {
     test: string;
     count: number;
@@ -1667,9 +1667,9 @@ export interface ConsoleFailure {
 }
 
 /**
- * The `window.failures` list. `try.html:3659`.
+ * The `window.failures` list. `old/try.html:3659`.
  *
- * Note that this re-sorts with its **own** comparator (`try.html:3665`), which
+ * Note that this re-sorts with its **own** comparator (`old/try.html:3665`), which
  * is `renderTable`'s minus the `flakiness` branch — so `window.failures` after
  * clicking the flakiness header returns the tests in an order the page is not
  * showing. That is upstream's behaviour and is preserved rather than fixed: the
@@ -1726,7 +1726,7 @@ export function sortConsoleFailures(
     });
 }
 
-/** `formatForPrompt`. `try.html:3711`. */
+/** `formatForPrompt`. `old/try.html:3711`. */
 export function formatForPrompt(list: readonly ConsoleFailure[]): string {
     return list
         .map((failure) => {
@@ -1764,7 +1764,7 @@ export interface FlakinessRequest {
 }
 
 /**
- * Builds one flakiness request per failing test. `try.html:2636`.
+ * Builds one flakiness request per failing test. `old/try.html:2636`.
  *
  * The `jobNames` are chunk-stripped because the 21-day aggregates store them
  * that way and a try push's do not (`lib/model/job-name.ts` measured the
@@ -1811,7 +1811,7 @@ export function flakinessRequests(
 
 /**
  * Groups the requests by the bucket file that answers them, in table order.
- * `try.html:2654-2675`.
+ * `old/try.html:2654-2675`.
  *
  * The ordering is the useful part: chunks are sorted by the **position of their
  * highest-priority test in the table**, so the visible top of the table fills in

@@ -439,7 +439,7 @@ mochitest daily files would exceed 2 GB of heap.
   weekday alongside it.
 - **`manifests.json` zero durations.** 71,272 of 433,836 runs on 2026-08-03 —
   16.4%. These are skipped manifests, not instant ones
-  (`manifests.html:415`). Missing this rule affects a sixth of the data.
+  (`old/manifests.html:415`). Missing this rule affects a sixth of the data.
 - **`manifests.json` task IDs.** 216 of 9,543 carry a `.<retry>` suffix; the
   rest are bare. Same normalization problem as the resource files.
 - **`stats.json` reaches beyond the 21-day window.** xpcshell has 199 dates

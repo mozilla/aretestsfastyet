@@ -43,7 +43,7 @@
  *
  * ## The Issue% denominator, measured
  *
- * `issues.html:944` carries its **own** `computeTestStats`, not the one in
+ * `old/issues.html:944` carries its **own** `computeTestStats`, not the one in
  * `common-test-data.js` (which the page never loads — `grep -c
  * common-test-data issues.html` is 0). The fork differs in two ways that
  * matter: its `runCount` **excludes skips** (`:1060`, written as
@@ -72,7 +72,7 @@
  * (`:1056`, the final `else`), `lib/query/issues.ts` names it
  * `expectedFailCount` and keeps it out. **Both include it in `runCount`**, so
  * no displayed number moves — and `passCount` is accumulated
- * (`issues.html:2012`) but never rendered: there is no `generateStatItem` for
+ * (`old/issues.html:2012`) but never rendered: there is no `generateStatItem` for
  * it anywhere in the page. Measured: 13 of 4,838 xpcshell tests and 7 of
  * 21,016 mochitest tests have a non-zero `EXPECTED-FAIL`, totalling 4,973 runs
  * on the xpcshell aggregate.
@@ -87,7 +87,7 @@
  *
  * Skips are added back to the denominator exactly when they are in the
  * numerator, which is what stops a skip from inflating the rate by being
- * counted above the line and missing below it. This is `issues.html:1078` and
+ * counted above the line and missing below it. This is `old/issues.html:1078` and
  * `:2045-2048` and `lib/query/issues.ts:208`, which were verified to agree.
  *
  * ## This file must stay DOM-free
@@ -113,7 +113,7 @@ import {
 /**
  * The four "Count as issues" checkboxes, and their state.
  *
- * `issues.html:626-638` — four `<input type="checkbox">`, every one `checked`,
+ * `old/issues.html:626-638` — four `<input type="checkbox">`, every one `checked`,
  * mirrored into a JS object at `:672-677` and re-read from the DOM on load at
  * `:3686-3689` in case the browser restored them across a reload.
  *
@@ -130,7 +130,7 @@ export interface IssueFilters {
     skips: boolean;
 }
 
-/** All four on, which is how the page loads. `issues.html:626-638`. */
+/** All four on, which is how the page loads. `old/issues.html:626-638`. */
 export const ALL_FILTERS: IssueFilters = {
     failures: true,
     timeouts: true,
@@ -138,7 +138,7 @@ export const ALL_FILTERS: IssueFilters = {
     skips: true,
 };
 
-/** The checkbox element ids, in the page's order. `issues.html:626-638`. */
+/** The checkbox element ids, in the page's order. `old/issues.html:626-638`. */
 export const FILTER_IDS: readonly (readonly [keyof IssueFilters, string])[] = [
     ['failures', 'filter-failures'],
     ['timeouts', 'filter-timeouts'],
@@ -175,19 +175,19 @@ export function typesOf(filters: IssueFilters): IssueType[] {
 /**
  * One component row, with the tests under it.
  *
- * `renderComponentsView` (`issues.html:1933`) builds this as two objects — a
+ * `renderComponentsView` (`old/issues.html:1933`) builds this as two objects — a
  * `componentGroups` entry and a pair of `componentTotalTests` /
  * `componentTotalTestsWithIssues` maps filled by a separate first pass
  * (`:1949-1965`). They are one record here because they describe one row.
  */
 export interface ComponentRow {
-    /** `Product :: Component`, or `(no component)`. `issues.html:1954`. */
+    /** `Product :: Component`, or `(no component)`. `old/issues.html:1954`. */
     key: string;
     /** The group totals, from `lib/query/issues.ts`. */
     stats: IssueGroup;
     /**
      * The tests to list when this row is expanded: those with `issueCount > 0`,
-     * already sorted. `issues.html:2016-2020` and `:2144-2152`.
+     * already sorted. `old/issues.html:2016-2020` and `:2144-2152`.
      */
     tests: IssueRow[];
     /**
@@ -204,7 +204,7 @@ export interface ComponentRow {
     totalTestsWithIssues: number;
 }
 
-/** Which column the list is ranked on. `issues.html:1174`. */
+/** Which column the list is ranked on. `old/issues.html:1174`. */
 export type SortField =
     | 'name'
     | 'runCount'
@@ -224,13 +224,13 @@ export interface SortState {
 /**
  * The sort the page starts on: most issues first.
  *
- * `issues.html:663-664`, whose comment reads "Start with descending for
+ * `old/issues.html:663-664`, whose comment reads "Start with descending for
  * failure count (most failing first)".
  */
 export const INITIAL_SORT: SortState = { field: 'issueCount', direction: 'desc' };
 
 /**
- * The columns, in the order the header emits them. `issues.html:1174`.
+ * The columns, in the order the header emits them. `old/issues.html:1174`.
  *
  * `name` is separate because it is the left-aligned Path button (`:1179`)
  * rather than one of the seven stat buttons.
@@ -248,7 +248,7 @@ export const STAT_COLUMNS: readonly (readonly [SortField, string])[] = [
 /**
  * The next sort state after clicking a column header.
  *
- * `changeSortOrder` (`issues.html:1187-1200`): the same column flips the
+ * `changeSortOrder` (`old/issues.html:1187-1200`): the same column flips the
  * direction, a new column starts **descending except `name` and
  * `issuePercentage`**, which start ascending (`:1193-1197`).
  *
@@ -269,7 +269,7 @@ export function nextSort(current: SortState, field: SortField): SortState {
 /**
  * The sortable quantity of one component row.
  *
- * `issues.html:2035-2075`. Note `issuePercentage` sorts on the **raw ratio**
+ * `old/issues.html:2035-2075`. Note `issuePercentage` sorts on the **raw ratio**
  * (`:2046`, `issueCount / totalCount`, not multiplied by 100 and not rounded),
  * so two components whose displayed percentages both round to `9%` still order
  * by their exact rates. Reproducing that matters: sorting on the rounded value
@@ -306,7 +306,7 @@ function componentValue(row: ComponentRow, field: SortField, filters: IssueFilte
 /**
  * Ranks the component rows.
  *
- * `issues.html:2032-2082`. `name` compares with `localeCompare` (`:2078`);
+ * `old/issues.html:2032-2082`. `name` compares with `localeCompare` (`:2078`);
  * every other field subtracts, and the descending branch returns
  * `valueB - valueA` (`:2081`).
  *
@@ -339,7 +339,7 @@ export function sortComponents(
 /**
  * Ranks the tests inside an expanded component, by the same field.
  *
- * `sortTestList` (`issues.html:1880-1930`). The same comparator as the
+ * `sortTestList` (`old/issues.html:1880-1930`). The same comparator as the
  * components with two differences that are upstream's:
  *
  * - `name` sorts on the **full test path** (`:1886`), where a component row
@@ -395,7 +395,7 @@ function testValue(row: IssueRow, field: SortField): number {
 /**
  * Every component row for a file, under one filter setting and one search.
  *
- * This is `renderComponentsView`'s two passes (`issues.html:1946-2029`) with
+ * This is `renderComponentsView`'s two passes (`old/issues.html:1946-2029`) with
  * the rendering taken out. The order of operations is the part that matters and
  * it is upstream's:
  *
@@ -477,7 +477,7 @@ export function buildComponentRows(
         });
     }
 
-    // The component filter (`issues.html:2024-2029`): with a search, a
+    // The component filter (`old/issues.html:2024-2029`): with a search, a
     // component survives if its *name* matched or if it kept a test with an
     // issue. A component whose only matching tests are clean is dropped —
     // which is why this is not the same as `kept.size`.
@@ -489,13 +489,13 @@ export function buildComponentRows(
     );
 }
 
-/** What the page calls a test with no Bugzilla component. `issues.html:1954`. */
+/** What the page calls a test with no Bugzilla component. `old/issues.html:1954`. */
 export const NO_COMPONENT = '(no component)';
 
 /**
  * Whether a test is kept by the search.
  *
- * `issues.html:1974-1981`: the component name **or** the full test path
+ * `old/issues.html:1974-1981`: the component name **or** the full test path
  * contains the term, case-insensitively. Matching on the component is what
  * makes searching for `WebExtensions` keep every test in it, including the ones
  * whose own paths say nothing about extensions.
@@ -569,7 +569,7 @@ export interface HeaderCounts {
 /**
  * The `(N tests with issues, out of M)` in a component header.
  *
- * `issues.html:2098-2113`, and it has three cases rather than the one the
+ * `old/issues.html:2098-2113`, and it has three cases rather than the one the
  * summary suggests:
  *
  * - **No test has an issue** → `(M tests)`, where M is the component's whole
@@ -611,7 +611,7 @@ export interface PercentageDisplay {
 /**
  * The Issue% cell: what it reads and what colour it is.
  *
- * `getIssuePercentageDisplay` (`issues.html:774-802`). Four bands, and the
+ * `getIssuePercentageDisplay` (`old/issues.html:774-802`). Four bands, and the
  * thresholds are on the **rounded** value (`:791-799`) while the `<1%` test is
  * on the **exact** one (`:786`):
  *
@@ -675,23 +675,23 @@ export interface IssueEntry {
 /**
  * What `issues.html` calls a failure that recorded no message.
  *
- * `issues.html:680`. Note this is a *different* string from
+ * `old/issues.html:680`. Note this is a *different* string from
  * `failures.html`'s `(no failure message)` — the two pages name the same
  * condition differently, and each is reproduced as it is.
  */
 export const FAILURE_NO_MESSAGE =
     'Failure details not recorded (likely Android or platform logging issue)';
 
-/** `issues.html:3019`. */
+/** `old/issues.html:3019`. */
 export const CRASH_NO_SIGNATURE = 'Crash signature not recorded';
 
-/** `issues.html:3029`. */
+/** `old/issues.html:3029`. */
 export const TIMEOUT_MESSAGE = 'Test exceeded time limit';
 
 /**
  * The issue lines for one expanded test, ranked and filtered.
  *
- * `generateIssueDetailsHtml` (`issues.html:2951-3053`) with the markup taken
+ * `generateIssueDetailsHtml` (`old/issues.html:2951-3053`) with the markup taken
  * out. Four sources, in this order, then one sort and one filter:
  *
  * 1. **Skips**, by message, `run-if` excluded and the `skip-if: ` prefix
@@ -729,7 +729,7 @@ export function issueEntries(
         if (kind === 'skip') {
             // `run-if` is not an issue: the annotation says the test is scoped
             // to another platform, so it not running here is the annotation
-            // working. `issues.html:1005` and `:1519`.
+            // working. `old/issues.html:1005` and `:1519`.
             if (skipReason(entry.message) === 'run-if') {
                 continue;
             }
@@ -818,7 +818,7 @@ function sortedByCount(counts: Map<string, number>): [string, number][] {
 /**
  * The `title` on a FAIL line's count, or `''`.
  *
- * `issues.html:3063-3068`. Only FAIL lines get one, and only when the test has
+ * `old/issues.html:3063-3068`. Only FAIL lines get one, and only when the test has
  * runs. The percentage is `count / runCount`, **rounded once** with
  * `toFixed(2)` from the raw ratio.
  *
@@ -841,13 +841,13 @@ export function failureTooltip(count: number, runCount: number): string {
 /**
  * One day of the per-component and per-test charts.
  *
- * `calculateDailyFailureRates` (`issues.html:2373-2464`) and
+ * `calculateDailyFailureRates` (`old/issues.html:2373-2464`) and
  * `calculateComponentDailyFailureRates` (`:2467-2510`) build exactly this
  * array, one entry per day the file covers, day 0 the oldest.
  */
 export interface DailyOutcomes {
     day: number;
-    /** `YYYY-MM-DD`, from `startTime + day * 86400`. `issues.html:2385`. */
+    /** `YYYY-MM-DD`, from `startTime + day * 86400`. `old/issues.html:2385`. */
     date: string;
     passes: number;
     failures: number;
@@ -856,7 +856,7 @@ export interface DailyOutcomes {
     skips: number;
 }
 
-/** One day of the per-issue-message chart. `issues.html:2513-2698`. */
+/** One day of the per-issue-message chart. `old/issues.html:2513-2698`. */
 export interface DailyMessageRate {
     day: number;
     date: string;
@@ -869,7 +869,7 @@ export interface DailyMessageRate {
 /**
  * The `YYYY-MM-DD` label for a day index.
  *
- * `issues.html:2385`, verbatim: `startTime` is Unix **seconds**, a day is
+ * `old/issues.html:2385`, verbatim: `startTime` is Unix **seconds**, a day is
  * 86,400 of them, and the label is the UTC date. Written once rather than
  * three times because all three series build it identically.
  */
@@ -889,7 +889,7 @@ function emptyDays<T>(days: number, startTime: number, fill: (day: number, date:
 /**
  * How many days a decoded aggregate covers, defaulting to 21.
  *
- * `historicalData.metadata.days || 21` (`issues.html:2376`). A daily file's
+ * `historicalData.metadata.days || 21` (`old/issues.html:2376`). A daily file's
  * `days` is `null`, and upstream's three functions all return `null` when the
  * page is not in historical mode — the callers here make the same check by
  * asking for the series only in 21-day mode.
@@ -902,7 +902,7 @@ export function chartDays(file: DecodedTimingFile): number {
  * The per-test outcome series: passes, failures, timeouts, crashes and skips
  * by day.
  *
- * `calculateDailyFailureRates` (`issues.html:2373`). Upstream branches on the
+ * `calculateDailyFailureRates` (`old/issues.html:2373`). Upstream branches on the
  * three status-group shapes it might meet and derives a count from each;
  * `runsOfTest` has already resolved the shape, and `entry.count` is that count
  * in every one of them — which is why the three branches collapse to one loop
@@ -970,7 +970,7 @@ export function testDailyOutcomes(
 /**
  * The per-component series: every test in the component, summed day by day.
  *
- * `calculateComponentDailyFailureRates` (`issues.html:2467`), which calls the
+ * `calculateComponentDailyFailureRates` (`old/issues.html:2467`), which calls the
  * per-test function once per test and adds the five fields. Reproduced as the
  * same loop.
  *
@@ -1015,7 +1015,7 @@ export function componentDailyOutcomes(
  * The per-issue-message series: one message's occurrences by day, over the runs
  * that could have produced it.
  *
- * `calculateIssueMessageDailyRates` (`issues.html:2513-2698`). Two rules are
+ * `calculateIssueMessageDailyRates` (`old/issues.html:2513-2698`). Two rules are
  * upstream's and both are reproduced:
  *
  * - **The denominator counts every status group**, `EXPECTED-FAIL` included
@@ -1100,7 +1100,7 @@ export function messageDailyRates(
  * absent, which is how the two "not recorded" lines get a chart at all.
  *
  * **One function for the chart and for the run list.** `getIssueRuns`
- * (`issues.html:3148`) applies the same four tests to decide which runs a line
+ * (`old/issues.html:3148`) applies the same four tests to decide which runs a line
  * lists, with one difference that is an upstream oversight rather than a
  * decision: its FAIL branch tests `message === issueMessage ||
  * (!message && issueMessage === FAILURE_NO_MESSAGE)` (`:3183`) while its CRASH
@@ -1144,7 +1144,7 @@ export function matchesIssueLine(
 /**
  * Whether a component or test chart has anything to draw, and on which canvas.
  *
- * `createFailureRateChart` (`issues.html:2813`) draws **two** canvases and hides
+ * `createFailureRateChart` (`old/issues.html:2813`) draws **two** canvases and hides
  * either one independently: the stacked failure/timeout/crash chart when the
  * window holds any of those (`:2827`), and the skips chart when it holds any
  * skip (`:2828`). A test that was only ever skipped therefore shows one chart,
@@ -1165,10 +1165,10 @@ export function chartVisibility(series: readonly DailyOutcomes[]): {
 
 // --- the platform-breakdown tooltips -------------------------------------
 
-/** Which stat cell a hover tooltip describes. `issues.html:825`, `:829`, `:833`. */
+/** Which stat cell a hover tooltip describes. `old/issues.html:825`, `:829`, `:833`. */
 export type TooltipType = 'skips' | 'failures' | 'timeouts';
 
-/** One platform's counts, for a hover tooltip. `issues.html:1210-1216`. */
+/** One platform's counts, for a hover tooltip. `old/issues.html:1210-1216`. */
 export interface PlatformCounts {
     platform: string;
     skips: number;
@@ -1179,7 +1179,7 @@ export interface PlatformCounts {
 /**
  * A test's runs broken down by platform, for the hover tooltips.
  *
- * `calculateTestPlatformBreakdown` (`issues.html:1204-1290`), reduced to the
+ * `calculateTestPlatformBreakdown` (`old/issues.html:1204-1290`), reduced to the
  * three counters the three tooltips display. It counts only runs the file
  * attributes to a task, which is upstream's `if (!statusGroup.taskIdIds)
  * continue` (`:1222`) — before the detailed file is merged that is every run,
@@ -1252,7 +1252,7 @@ export interface TooltipLine {
 /**
  * The platform lines of a tooltip, ranked and with their shares.
  *
- * `generateTooltipContent`'s count branch (`issues.html:1348-1372`): platforms
+ * `generateTooltipContent`'s count branch (`old/issues.html:1348-1372`): platforms
  * with a zero for this type are dropped (`:1350`), the rest are ranked by count
  * descending (`:1351`), and each share is over the **sum of the surviving
  * platforms** and not over the test's runs (`:1356`) — so the shares add to
@@ -1276,7 +1276,7 @@ export function tooltipLines(
     }));
 }
 
-/** The heading above a tooltip's platform lines. `issues.html:1357`. */
+/** The heading above a tooltip's platform lines. `old/issues.html:1357`. */
 export const TOOLTIP_HEADING: Record<TooltipType, string> = {
     skips: 'Skips by Platform:',
     failures: 'Failures by Platform:',
@@ -1291,7 +1291,7 @@ export interface UrlState {
     q: string;
 }
 
-/** The value that means the 21-day aggregate. `issues.html:3755`. */
+/** The value that means the 21-day aggregate. `old/issues.html:3755`. */
 export const HISTORICAL_DATE = '21days';
 
 /**
@@ -1331,7 +1331,7 @@ export function isHistoricalDate(date: string | undefined): boolean {
  * Reads the two keys this page uses out of a parsed hash.
  *
  * `view` is deliberately not read. `getCurrentView()` returns the constant
- * `'components'` (`issues.html:887-890`) and `updateUrlHash` writes `view` only
+ * `'components'` (`old/issues.html:887-890`) and `updateUrlHash` writes `view` only
  * when it differs from `'components'` (`:901`) — so the parameter is never
  * written, and nothing reads it back. Omitting it is what makes that checkable
  * by the compiler rather than by a comment.

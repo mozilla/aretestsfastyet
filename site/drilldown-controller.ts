@@ -110,12 +110,12 @@ export type DailySeries = ReturnType<typeof countDailyRunsForTests>;
  * a `filtered` flag:
  *
  * - **crashes** returns `key → group.paths` for *every* group in the file, not
- *   only the rows that survived the search. That reproduces `crashes.html:858`,
+ *   only the rows that survived the search. That reproduces `old/crashes.html:858`,
  *   which expands out of `currentData.crashData` — a row's expansion is never
  *   narrowed by the search, and the re-attach after a re-render reads the same
  *   unfiltered tree the click path does.
  * - **failures** returns `rewriteGroupsBySearch`'s output, keyed by message.
- *   That reproduces `filteredFailureData` (`failures.html:101`) — a row's
+ *   That reproduces `filteredFailureData` (`old/failures.html:101`) — a row's
  *   expansion shows only what matched, and the counts on the row are the counts
  *   of what expanding it will reveal.
  */
@@ -276,7 +276,7 @@ export class DrilldownController {
 
     // --- rendering --------------------------------------------------------
 
-    /** `renderCrashList` (`crashes.html:484`) / `renderFailureList` (`:526`). */
+    /** `renderCrashList` (`old/crashes.html:484`) / `renderFailureList` (`:526`). */
     render = (): void => {
         const target = this.content();
         target.textContent = '';
@@ -303,7 +303,7 @@ export class DrilldownController {
         target.append(rendered.root);
 
         // Re-attach the open row's subtree after a full re-render. Upstream does
-        // this by selector (`crashes.html:597`, `failures.html:683`) and this by
+        // this by selector (`old/crashes.html:597`, `old/failures.html:683`) and this by
         // Map lookup; see each page's divergence 2.
         //
         // It reads the same `expandable` the click path reads, which is what
@@ -330,7 +330,7 @@ export class DrilldownController {
     /**
      * Whether an element ends the run of rows belonging to an expanded key.
      *
-     * `crashes.html:841`, `failures.html:940`. A key's subtree runs until the
+     * `old/crashes.html:841`, `old/failures.html:940`. A key's subtree runs until the
      * next top-level row.
      */
     private endsKey = (element: Element): boolean =>
@@ -341,7 +341,7 @@ export class DrilldownController {
     /**
      * Whether an element ends the run of rows belonging to an expanded path.
      *
-     * `crashes.html:888`, `failures.html:994`, which stop on *anything that is
+     * `old/crashes.html:888`, `old/failures.html:994`, which stop on *anything that is
      * not* one of these — so the predicate is the negation.
      */
     private static endsPath(element: Element): boolean {
@@ -352,7 +352,7 @@ export class DrilldownController {
         );
     }
 
-    /** `crashes.html:929`, `failures.html:1042`. */
+    /** `old/crashes.html:929`, `old/failures.html:1042`. */
     private static endsTest(element: Element): boolean {
         return !(
             element.classList.contains('historical-chart') ||
@@ -363,8 +363,8 @@ export class DrilldownController {
     /**
      * Draws one rate chart.
      *
-     * `createCrashChart` (`crashes.html:474`) and `createFailureChart`
-     * (`failures.html:516`) each rename `events` to their own noun before
+     * `createCrashChart` (`old/crashes.html:474`) and `createFailureChart`
+     * (`old/failures.html:516`) each rename `events` to their own noun before
      * handing the series to `createRateChart`. Nothing reads the renamed field —
      * `createRateChart` uses `events` and `totalRuns` (`common-charts.js:338`,
      * `:367`) — so both renames are dropped and the series goes through as it is.
@@ -376,7 +376,7 @@ export class DrilldownController {
         createRateChart(canvasId, series, label, this.spec.chartEventLabel);
     }
 
-    /** Inserts a key's subtree and draws its chart. `crashes.html:863`. */
+    /** Inserts a key's subtree and draws its chart. `old/crashes.html:863`. */
     private openKey(row: HTMLElement, key: string, paths: Map<string, PathNode>): void {
         const elements: HTMLElement[] = [];
         const chartId = this.isHistoricalMode
@@ -401,7 +401,7 @@ export class DrilldownController {
         }
     }
 
-    /** `toggleCrash` (`crashes.html:828`) / `toggleFailure` (`:927`). */
+    /** `toggleCrash` (`old/crashes.html:828`) / `toggleFailure` (`:927`). */
     private toggleKey(key: string, row: HTMLElement): void {
         const wasExpanded = this.expandedKey === key;
 
@@ -426,7 +426,7 @@ export class DrilldownController {
         }
     }
 
-    /** `togglePath` (`crashes.html:878`, `failures.html:984`). */
+    /** `togglePath` (`old/crashes.html:878`, `old/failures.html:984`). */
     private togglePath(key: string, dirPath: string, row: HTMLElement): void {
         const stateKey = `${key}|||${dirPath}`;
         const wasExpanded = this.expandedPaths.has(stateKey);
@@ -465,7 +465,7 @@ export class DrilldownController {
         }
     }
 
-    /** `toggleTest` (`crashes.html:919`, `failures.html:1032`). */
+    /** `toggleTest` (`old/crashes.html:919`, `old/failures.html:1032`). */
     private toggleTest(key: string, dirPath: string, testName: string, row: HTMLElement): void {
         const stateKey = `${key}|||${dirPath}|||${testName}`;
         const wasExpanded = this.expandedTests.has(stateKey);
@@ -494,7 +494,7 @@ export class DrilldownController {
         insertAfter(row, elements);
         if (chartId !== null) {
             // Neither page has a search-filtered variant at this level —
-            // `crashes.html:942`, `failures.html:1063` — because a single test
+            // `old/crashes.html:942`, `old/failures.html:1063` — because a single test
             // either matched or is not on screen. `chartSeries` is still asked,
             // so the rule lives in one place per page rather than here.
             const series = this.spec.chartSeries({
@@ -513,11 +513,11 @@ export class DrilldownController {
      * Attaches the click behaviour to freshly inserted path and test rows.
      *
      * Upstream uses one delegated listener on `#content` that walks up from the
-     * event target and reads `dataset` (`crashes.html:619-679`). That works
+     * event target and reads `dataset` (`old/crashes.html:619-679`). That works
      * because the data it needs is in attributes; here the rows are elements the
      * renderer just built, so the listener closes over the values directly and
      * there is no attribute to read back. The single-occurrence rows already
-     * carry their own listener from the renderer, and `failures.html:734`
+     * carry their own listener from the renderer, and `old/failures.html:734`
      * excludes them from the expandable branch for the same reason.
      */
     private wireSubRows(elements: readonly HTMLElement[], key: string): void {
@@ -540,7 +540,7 @@ export class DrilldownController {
 
     // --- data loading -----------------------------------------------------
 
-    /** `loadSelectedDate` (`crashes.html:187`, `failures.html:169`). */
+    /** `loadSelectedDate` (`old/crashes.html:187`, `old/failures.html:169`). */
     loadSelectedDate = async (): Promise<void> => {
         const date = this.dateSelect().value;
         if (!date) {
@@ -576,7 +576,7 @@ export class DrilldownController {
      *
      * The button, the date selector's disabled state and the status text are
      * `common-ui.js`'s `initHistoricalToggle`; this is only the data side of the
-     * callback. `crashes.html:159-178`, `failures.html:141-160`.
+     * callback. `old/crashes.html:159-178`, `old/failures.html:141-160`.
      */
     private onHistoricalToggled = async (isHistorical: boolean, data: unknown): Promise<void> => {
         this.isHistoricalMode = isHistorical;
@@ -619,8 +619,8 @@ export class DrilldownController {
      * Enters or leaves the 21-day view to match a hash, and sets the date.
      *
      * Shared because both pages' `loadFromUrlHash` do exactly this after their
-     * differing search-box guard: `crashes.html:993-1006`,
-     * `failures.html:1104-1117`.
+     * differing search-box guard: `old/crashes.html:993-1006`,
+     * `old/failures.html:1104-1117`.
      */
     async applyDateState(date: string | undefined): Promise<void> {
         if (isHistoricalDate(date)) {
@@ -701,7 +701,7 @@ export class DrilldownController {
      * Only the top-level rows need delegation — they are re-created on every
      * render — and the sub-rows get their listeners from `wireSubRows` when they
      * are inserted. Upstream delegates all four levels through one handler
-     * (`crashes.html:619`).
+     * (`old/crashes.html:619`).
      */
     private setupClickHandlers(): void {
         this.content().addEventListener('click', (event) => {

@@ -22,9 +22,10 @@ the workflow's paths are written once against their final names:
 | `next/` | `site/` | done |
 | `dist-pages/` | `dist-site/` | done |
 | `tsconfig.next.json` | `tsconfig.site.json` | done |
-| the nine superseded root `*.html` | `old/*.html` (see §1) | outstanding |
+| the nine superseded root `*.html` | `old/*.html` (see §1) | done |
 
-The first three landed together as one commit; the `old/` move is still to do.
+The first three landed together as one commit; the `old/` move landed as its
+own, for the reason given at the end of this section.
 
 `dist/` was considered for the output and rejected: it already holds
 `dist/fx-tests.js`, the CLI bundle, which is **committed on purpose** (the `bin`
@@ -42,10 +43,11 @@ commit**, with `npm test` and `npm run typecheck` green before and after.
 Nothing outside the repository depends on the two build names: neither is
 published, and `dist-site/` is gitignored. **The `old/` move is different** —
 those files are served today at `tests.firefox.dev`, so moving them in the
-repository is only safe because the deploy republishes them at the root. Do the
-`old/` move in a **separate commit** from the `next/` → `site/` rename: one is
-pure refactoring, the other changes what a reader of the repository is served,
-and bisecting a broken deploy is much easier when the two are not entangled.
+repository is only safe because the deploy republishes them at the root. The
+`old/` move landed in a **separate commit** from the `next/` → `site/` rename:
+one is pure refactoring, the other changes what a reader of the repository is
+served, and bisecting a broken deploy is much easier when the two are not
+entangled.
 
 ## 1. What is actually being deployed
 
@@ -70,8 +72,8 @@ implementation is published under `old/`. So `test.html` is the new one and
 that is not a revert. `old/` is deleted once the new pages have been trusted
 for long enough — that removal is a follow-up commit, not part of this work.
 
-**Decided: the nine superseded pages move into a real `old/` directory in the
-repository**, as part of the rename in §0. Only those nine. The seventeen
+**Done: the nine superseded pages live in a real `old/` directory in the
+repository**, moved as part of the rename in §0. Only those nine. The seventeen
 unmigrated pages stay at the root: they are not old, they are the only version
 there is, and filing them under `old/` would say "superseded" about pages
 nothing supersedes.
@@ -81,12 +83,21 @@ and makes the cleanup `git rm -r old/` with nothing to sort through. It also
 means the repository root stops mixing nine dead pages with seventeen live ones,
 where today you cannot tell by looking which `index.html` is served.
 
-Checked before deciding: the parity harnesses in `test/` do **not** read the old
-root `*.html` files. They compare against reference logic reimplemented in the
-test files themselves, over fixtures. `test/index-parity.test.ts:94` reads
+The parity harnesses in `test/` compare against reference logic reimplemented in
+the test files themselves, over fixtures, so they do not read the old pages.
+**Two other tests did, and this paragraph previously claimed none did.**
+`test/errors-view.test.ts` reads `errors.html`'s markup with `readFileSync` in
+two tests — one counting the seven `id="kind-…"` checkboxes, one reading the
+`viewSelect` options — and both failed on the move until the path was updated to
+`../old/errors.html`. They failed loudly, which is why the move was safe.
+
+`test/index-parity.test.ts:94` and `test/index-page.test.ts:101` read
 `mochitest-stats-backfill.json` from the root, but that is a data file, not a
-page. So moving the nine breaks no test — verify this still holds when you do
-it, rather than trusting this paragraph.
+page: it stays at the root and still resolves.
+
+The lesson generalises past this one paragraph: a claim that "nothing reads
+these files" is a `grep` for `readFileSync`, not a memory. Anything else in
+`test/` and `site/` naming one of the nine is a comment citation.
 
 **Decided:** the workflow lands on the **fork** first
 (`origin` → `fqueze.github.io/aretestsfastyet`), which is already the staging
@@ -176,7 +187,7 @@ publishes nothing until it is done.
 ```
 npm ci
 npm run typecheck     # both projects: root and tsconfig.site.json
-npm test              # 1,333 tests, and check-bundle for a stale dist/fx-tests.js
+npm test              # 1,344 tests, and check-bundle for a stale dist/fx-tests.js
 npm run pages         # builds site/ into dist-site/
 ```
 
@@ -186,8 +197,8 @@ after overwriting a good artifact, so the deploy ships the broken one.
 
 **Assembly step**, after the gates:
 
-After §0 the repository holds the seventeen unmigrated pages at the root and the
-nine superseded ones in `old/`. So:
+The repository holds the seventeen unmigrated pages at the root and the nine
+superseded ones in `old/` (§0). So:
 
 1. `dist-site/` already holds the nine built pages, the assets they reference
    in markup, and the committed data files they fetch by relative path
@@ -268,7 +279,7 @@ person who needs it will be reading that file, not this document.
 
 - **Deploying to `upstream` / `tests.firefox.dev`.** Separate change, after the
   fork works.
-- **Deleting the nine superseded pages.** §0 moves them to `old/`; deleting them
+- **Deleting the nine superseded pages.** §0 moved them to `old/`; deleting them
   is the follow-up, once the new pages have been trusted long enough. At that
   point it is `git rm -r old/` and dropping step 3 of the assembly — which is
   the whole reason for giving `old/` one unambiguous meaning.

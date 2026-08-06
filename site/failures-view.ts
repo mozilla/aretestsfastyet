@@ -33,14 +33,14 @@ import {
     sortRows,
 } from './drilldown-view.ts';
 
-/** The word the per-test tooltip uses. `failures.html:818`. */
+/** The word the per-test tooltip uses. `old/failures.html:818`. */
 export const FAILURE_NOUN = 'message';
 
 /**
  * Builds the message tree for a loaded file.
  *
  * `withComponent` is on: this page's bug button needs the test's Bugzilla
- * component (`failures.html:243`), and it is the only one of the two pages that
+ * component (`old/failures.html:243`), and it is the only one of the two pages that
  * does.
  */
 export function buildFailureGroups(
@@ -82,7 +82,7 @@ export function failureList(
     sort: SortState
 ): FailureList {
     const rewritten = rewriteGroupsBySearch(rowsOf(groups), searchTerm);
-    // Built before the sort, exactly as upstream does (`failures.html:599` sits
+    // Built before the sort, exactly as upstream does (`old/failures.html:599` sits
     // between the filter and the sort). It makes no difference — a Map keyed by
     // message does not care about row order — and the ordering is preserved so
     // that a reader comparing the two files does not have to wonder whether it
@@ -135,7 +135,7 @@ export function messageLink(message: string): MessageLink | null {
 /**
  * The test whose path the message's Searchfox link points at.
  *
- * `failures.html:659-668`: the test with the most occurrences of this message,
+ * `old/failures.html:659-668`: the test with the most occurrences of this message,
  * across every path in the row. Ties go to the first one the walk found, since
  * the comparison is a strict `>`.
  *
@@ -160,7 +160,7 @@ export function mostFrequentTestPath(paths: Map<string, PathNode>): string | nul
 /**
  * Whether a test row gets a 🐛 bug-filing button.
  *
- * `failures.html:751`: `component?.includes(' :: ')`. A component that is not in
+ * `old/failures.html:751`: `component?.includes(' :: ')`. A component that is not in
  * `Product :: Component` form cannot be split into the two Bugzilla fields, so
  * the button is omitted rather than filed against a product that does not exist.
  */

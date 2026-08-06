@@ -10,7 +10,7 @@
  *
  * That file's `test` entry asserts the CLI against a *source audit* of
  * `test.html`: `rowUnit` is "job variant, with platforms as columns" because
- * `test.html:2670` says so, cited by line. It cannot run the page, so it can
+ * `old/test.html:2670` says so, cited by line. It cannot run the page, so it can
  * record that the page ranks variants by total runs and the CLI ranks configs
  * by fail rate — but not that the two, executed over the same file, report the
  * same 15,968 runs and the same three issues.
@@ -753,7 +753,7 @@ test('rate and count give different orders somewhere in the corpus', async () =>
 
 test('the page issue list is count-descending, and so is the CLI within each channel', async () => {
     // The one ordering both sides do have. The page sorts the whole issue list
-    // on count (`test.html:2551`); the CLI sorts each of its three channels
+    // on count (`old/test.html:2551`); the CLI sorts each of its three channels
     // separately. Merging the CLI's channels and re-sorting must reproduce the
     // page's sequence, modulo the two rows the CLI has no channel for.
     for (const entry of CORPUS) {

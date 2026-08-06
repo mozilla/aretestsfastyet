@@ -150,7 +150,7 @@ test('detectHarness follows every branch of the shared rule, hole included', () 
 // --- variant and platform naming -----------------------------------------
 
 test('extractVariant applies the sanitizer, artifact and chunk rules', () => {
-    // The three examples upstream documents (`test.html:585-587`), as literals.
+    // The three examples upstream documents (`old/test.html:585-587`), as literals.
     assert.equal(extractVariant('test-linux1804-64-asan/opt-xpcshell-1'), 'asan-xpcshell');
     assert.equal(
         extractVariant('test-linux1804-64-artifact/opt-xpcshell-1'),
@@ -442,7 +442,7 @@ test('cellKey and splitCellKey round-trip, and split at the FIRST bar', () => {
 test('the summary bar reports the raw fixture totals, with skips out of runCount', () => {
     // The semantic trap named in the migration brief: `runCount` EXCLUDES
     // skips here (`test.html` / `common-test-data.js:341`) while
-    // `issues.html:1060` includes them in its own denominator. Getting this
+    // `old/issues.html:1060` includes them in its own denominator. Getting this
     // wrong changes every percentage on the page.
     //
     // `test_http2-proxy.js` is the fixture's clearest case: 3,494 skips against
@@ -562,7 +562,7 @@ test('the job table is a variant × platform pivot, not a list of configs', () =
 });
 
 test('platform columns are lexicographic on the KEY, not on the display name', () => {
-    // `test.html:2698` sorts the keys. The distinction is visible whenever a
+    // `old/test.html:2698` sorts the keys. The distinction is visible whenever a
     // display name reorders relative to its key — `mac-64`/`mac-aarch64` sort
     // one way and `macOS x64`/`macOS ARM` the other.
     const file = decoded(MOCHITEST);
@@ -579,7 +579,7 @@ test('platform columns are lexicographic on the KEY, not on the display name', (
 });
 
 test('rows group by variant prefix, both levels descending by total runs', () => {
-    // `test.html:2717-2731`, and "total runs" at both levels INCLUDES skips
+    // `old/test.html:2717-2731`, and "total runs" at both levels INCLUDES skips
     // (`:2720`) — unlike every percentage on the page. Preserved because a
     // variant scheduled everywhere and skipped everywhere accounts for a lot of
     // CI, and sinking it to the bottom is where a reader would least look for
@@ -728,7 +728,7 @@ test('tied rows fall back to the page walk order, not to coverageOf order', () =
 });
 
 test('the badge percentage divides by runs, EXCLUDING skips', () => {
-    // `test.html:2740`. The same trap as the summary bar, one level down: a
+    // `old/test.html:2740`. The same trap as the summary bar, one level down: a
     // test skipped on most of its scheduled jobs and failing on half the rest
     // reads as 50%, not as a few percent.
     const cell = {
@@ -771,7 +771,7 @@ test('the badge percentage divides by runs, EXCLUDING skips', () => {
 });
 
 test('the fail, crash and timeout badges share ONE tooltip listing everything', () => {
-    // `test.html:2765` builds the text once. Hovering CRASH to be told only
+    // `old/test.html:2765` builds the text once. Hovering CRASH to be told only
     // about crashes would hide that the cell also failed 40 times.
     const configs = [
         {
@@ -857,7 +857,7 @@ test('a pass-only cell shows one PASS badge and is not hoverable', () => {
 });
 
 test('a skip-only cell IS hoverable, unlike a pass-only one', () => {
-    // `hasVisibleIssues` (`test.html:2263`) counts skips. A cell that is only
+    // `hasVisibleIssues` (`old/test.html:2263`) counts skips. A cell that is only
     // ever skipped is worth hovering — the reason is in the tooltip.
     const configs = [
         {
@@ -951,7 +951,7 @@ test('several skip reasons are listed by count descending', () => {
 
 test('EXPECTED-FAIL is counted as a pass in a cell, matching the old page', () => {
     // `lib/model/status.ts` splits `expected-fail` out on purpose; the page
-    // folds it into passes (`test.html:2625` lists it among the non-failures).
+    // folds it into passes (`old/test.html:2625` lists it among the non-failures).
     // Keeping the page's meaning is what makes every badge percentage match.
     const configs = [
         {
@@ -1033,7 +1033,7 @@ test('dateOfDay steps by whole UTC days', () => {
 });
 
 test('the chart section appears only when there is something to plot', () => {
-    // `test.html:2482`, and each canvas is independent: a test that is skipped
+    // `old/test.html:2482`, and each canvas is independent: a test that is skipped
     // but never fails gets the skip chart alone.
     const zero = { day: 0, date: 'd', passes: 5, failures: 0, timeouts: 0, crashes: 0, skips: 0 };
     assert.deepEqual(chartPresence([zero]), { hasIssues: false, hasSkips: false });
@@ -1073,7 +1073,7 @@ function issuesFor(file: BucketFile, path: string): Issue[] {
 }
 
 test('the issue list is ordered by count descending', () => {
-    // `test.html:2551`. The only sort on the list; the assembly order (skips,
+    // `old/test.html:2551`. The only sort on the list; the assembly order (skips,
     // failures, crashes, timeouts) decides ties only.
     for (const [file, path] of [
         [XPCSHELL, 'toolkit/crashreporter/test/unit/test_crash_win64cfi_push_nonvol.js'],
@@ -1104,7 +1104,7 @@ test('the badge class matches the type, and only SKIP is inexpandable', () => {
 
 test('a timeout becomes ONE row carrying the whole timeout count', () => {
     // `TIMEOUT*` groups carry no `messageIds` at all, so there is nothing to
-    // group by and upstream emits a single fixed row (`test.html:2545`).
+    // group by and upstream emits a single fixed row (`old/test.html:2545`).
     const path = 'dom/media/webrtc/tests/mochitests/test_peerConnection_simulcastOffer.html';
     const raw = rawTotals(MOCHITEST, testIdOf(MOCHITEST, path));
     assert.equal(raw.get('TIMEOUT'), 3);
@@ -1118,7 +1118,7 @@ test('a timeout becomes ONE row carrying the whole timeout count', () => {
 });
 
 test('failures with no message become one synthetic row for the remainder', () => {
-    // `test.html:2530`. Without it the list's counts would not add up to the
+    // `old/test.html:2530`. Without it the list's counts would not add up to the
     // summary bar's Failures figure, and the two are read together.
     const path = 'toolkit/crashreporter/test/unit/test_crash_win64cfi_push_nonvol.js';
     const testId = testIdOf(XPCSHELL, path);
@@ -1157,7 +1157,7 @@ test('crash rows total the crash count, with a synthetic row when unsymbolized',
 });
 
 test('the FAIL tooltip divides by runCount, which excludes skips', () => {
-    // `test.html:2566`. On a heavily-skipped test the two denominators differ
+    // `old/test.html:2566`. On a heavily-skipped test the two denominators differ
     // by a factor, so this is where the trap would show as a wrong percentage.
     const path = 'toolkit/components/extensions/test/xpcshell/test_ext_shadowdom.js';
     const testId = testIdOf(XPCSHELL, path);
@@ -1224,7 +1224,7 @@ test('only FAIL rows carry a count tooltip', () => {
 });
 
 test('a clean test produces an empty issue list, so the section is omitted', () => {
-    // `test.html:2549` returns '' rather than an empty section: a heading over
+    // `old/test.html:2549` returns '' rather than an empty section: a heading over
     // nothing reads as a loading failure.
     const path = 'dom/canvas/test/webgl-mochitest/test_webgl_high_power.html';
     assert.deepEqual(issuesFor(MOCHITEST, path), []);
@@ -1319,7 +1319,7 @@ test('a day filter recomputes a cell to the selected days only', () => {
 });
 
 test('a day filter leaving only passes shows the PASS overlay, if the cell has one', () => {
-    // The three-state overlay logic (`test.html:2217-2238`), which is the
+    // The three-state overlay logic (`old/test.html:2217-2238`), which is the
     // fiddliest part of the filter. A cell that never had an issue has no
     // overlay element, and then a pass-only day just shows its ordinary badge.
     const withIssues = {
@@ -1444,7 +1444,7 @@ test('issue attribution totals match the issue counts it attributes', () => {
 });
 
 test('the filter notice collapses dates to a range past three, and cells past one', () => {
-    // `test.html:2372`. The notice sits on the `Issue Details` heading line, so
+    // `old/test.html:2372`. The notice sits on the `Issue Details` heading line, so
     // nine job names do not fit.
     const rates = [...Array(21).keys()].map((day) => ({
         day,
@@ -1490,7 +1490,7 @@ test('the filter notice collapses dates to a range past three, and cells past on
 // --- durations -----------------------------------------------------------
 
 test('computePercentile interpolates rather than taking a nearest rank', () => {
-    // `test.html:1660`. Distinct from `cli/commands/test.ts`'s `quantile()`,
+    // `old/test.html:1660`. Distinct from `cli/commands/test.ts`'s `quantile()`,
     // which is nearest-rank; the two disagree by up to one sample and only this
     // one is what the panel shows.
     assert.equal(computePercentile([10, 20, 30, 40], 50), 25, 'midway between 20 and 30');
@@ -1521,7 +1521,7 @@ test('computeDurationStats reports null for nothing, not a row of zeroes', () =>
 });
 
 test('formatDurationMs changes units with magnitude, and em-dashes nothing', () => {
-    // `test.html:552`, as literals.
+    // `old/test.html:552`, as literals.
     assert.equal(formatDurationMs(0), '—', 'a zero-millisecond run is a measurement that did not happen');
     assert.equal(formatDurationMs(100, false), '—');
     assert.equal(formatDurationMs(1), '1ms');
@@ -1619,7 +1619,7 @@ test('durations are collected only from passing runs, and split by cell', () => 
 });
 
 test('the runtime panel names one cell and counts several', () => {
-    // `test.html:2424`. Six job names do not fit in a 420px header.
+    // `old/test.html:2424`. Six job names do not fit in a 420px header.
     assert.equal(runtimeTitleFor(new Set()), 'Overall');
     assert.equal(runtimeTitleFor(new Set(['opt-xpcshell|linux-64'])), 'opt-xpcshell on linux-64');
     assert.equal(runtimeTitleFor(new Set(['a|x', 'b|y'])), '2 selected cells');
@@ -1766,7 +1766,7 @@ test('every fixture test builds a coherent view', () => {
                 `${where}: TIMEOUT rows`
             );
             // Skip rows can total LESS than skipCount: a skip with no message
-            // is dropped from the list (`test.html:791`) because there is
+            // is dropped from the list (`old/test.html:791`) because there is
             // nothing to label the row with. It must never total MORE.
             assert.ok(
                 view.issues.filter((i) => i.type === 'SKIP').reduce((a, i) => a + i.count, 0) <=
@@ -2044,7 +2044,7 @@ test('a platform absent from one variant is not itself a reason to split', () =>
 test('nofis collapses BEFORE geckoview, or the nofis row is stranded', () => {
     // MEASURED: no fixture test has a `-geckoview-…-nofis` variant, so
     // swapping the two steps changed nothing and the mutation survived.
-    // Upstream calls the ordering out explicitly (`test.html:648`): `nofis`
+    // Upstream calls the ordering out explicitly (`old/test.html:648`): `nofis`
     // must run first so `X-geckoview-Y-nofis` can collapse against the
     // still-present `X-geckoview-Y` before geckoview is itself collapsed away.
     // Reversed, the nofis row lands on a name nothing else uses and stays a

@@ -324,7 +324,7 @@ test('the status text reports the 21-day window from the file"s own metadata', (
  * (`site/drilldown-render.ts:496`), so **every** `total-row` is also a
  * `crash-row` and the first clause already caught it; and the `sort-header` is
  * `renderList`'s first child, so it is never a following sibling of an expanded
- * row at all. Upstream lists all three (`crashes.html:841`) and they are
+ * row at all. Upstream lists all three (`old/crashes.html:841`) and they are
  * reproduced as written.
  *
  * No test is added for the two: an assertion that cannot distinguish the code
@@ -411,7 +411,7 @@ test('a signature spanning several tests in one directory expands to a path row'
     // Reproduced, not introduced. `endsPath` stops on anything that is not a
     // test row, a chart or an instance table (`site/crashes.ts:349`), and a
     // collapsed-away path's test row *is* a test row — so the walk runs past
-    // the end of its own subtree. `crashes.html:886-891` is the same loop with
+    // the end of its own subtree. `old/crashes.html:886-891` is the same loop with
     // the same three classes, so the old page loses the same row.
     //
     // The reader-visible effect: a signature with both a multi-test directory
@@ -602,7 +602,7 @@ test('the crashes page nests its inline links in a span, unlike the failures pag
 test('the expanded occurrence table uses td.view-links, with no span', () => {
     // The counterpart of the inline cell above, and the reason `vocab.kind` is
     // read in exactly one place: here the two pages agree
-    // (`crashes.html:820`, `failures.html:919`), so the crashes page must
+    // (`old/crashes.html:820`, `old/failures.html:919`), so the crashes page must
     // *not* apply its span nesting.
     //
     // Any expandable test row will do; the search finds the first one rather
@@ -803,7 +803,7 @@ test('a row matched only by a test name keeps its FULL count, not the matched pa
     // a row that matches by key is not rewritten under either rule.
     //
     // The distinguishing case is a row matched only by one of its **test
-    // names**. `crashes.html:508-526` keeps such a row whole; `failures.html`
+    // names**. `old/crashes.html:508-526` keeps such a row whole; `failures.html`
     // rewrites its numbers down to the matching test. So the numbers below are
     // the whole row's, and under the failures rule they would be one test's.
     const multi = EXPECTED_ROWS.find((row) => row.testCount > 1)!;
@@ -1019,8 +1019,8 @@ test('a single-day view reached from the 21-day view keeps the 21-day denominato
     // toggling back to a single day leaves `totalRunsOf` returning the 21-day
     // run total and every tooltip populated.
     //
-    // Not a migration defect: `crashes.html:168` assigns the same variable and
-    // never clears it either, and `crashes.html:718` passes it to
+    // Not a migration defect: `old/crashes.html:168` assigns the same variable and
+    // never clears it either, and `old/crashes.html:718` passes it to
     // `getTestTotalRuns` unconditionally. Reproduced behaviour, asserted here
     // as what actually happens rather than as what the comment claims.
     //
@@ -1222,7 +1222,7 @@ test('leaving the 21-day view by hash loads the OLD date once before the new one
     // 21-day view to a date fetches the stale date first and the requested one
     // second.
     //
-    // `crashes.html:993-1005` has the identical order: `toggleHistoricalData()`
+    // `old/crashes.html:993-1005` has the identical order: `toggleHistoricalData()`
     // then `dateSelect.value = state.date`. So this is upstream's, not the
     // migration's, and is asserted so a future reordering is a deliberate
     // change rather than a silent one.
@@ -1253,7 +1253,7 @@ test('leaving the 21-day view by hash loads the OLD date once before the new one
     //    `#date=2026-07-14` and loads the stale date once more.
     //
     // The selector and the hash both settle on the stale date, not on the one
-    // the link named. Upstream's `crashes.html:993-1005` has the same order and
+    // the link named. Upstream's `old/crashes.html:993-1005` has the same order and
     // the same `updateUrlHash` in its toggle, so this is reproduced rather than
     // introduced — asserted here so that fixing it is a deliberate change.
     assert.deepEqual(harness.requested, [

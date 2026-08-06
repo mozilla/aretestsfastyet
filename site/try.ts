@@ -76,7 +76,7 @@
  *     Upstream writes `id="flakiness-${escapeAttr(test.path)}"` and
  *     `id="repro-icon-${escapeAttr(test.path)}"` and finds the cell again with
  *     `document.getElementById('flakiness-' + testPath)` — **unescaped**
- *     (`try.html:2849`, `:3605`). Those two spellings disagree for any path
+ *     (`old/try.html:2849`, `:3605`). Those two spellings disagree for any path
  *     containing `&`, `<` or `"`. No such path exists in the corpus (measured: 0
  *     of the 138 failing paths across the four pinned pushes), so the mismatch is
  *     latent rather than live. Here the renderer keeps the elements in a `Map`
@@ -91,7 +91,7 @@
  *
  *  4. **The assertion "show N more" link toggles a class, not `style.display`.**
  *     Upstream writes `style="display:none"` on each hidden `<li>` and flips
- *     `el.style.display` (`try.html:3090`). The markup already carries an
+ *     `el.style.display` (`old/try.html:3090`). The markup already carries an
  *     `assertion-hidden` class for exactly these items, so this page toggles
  *     `hidden` on them instead of writing inline styles. A DOM diff sees the
  *     absent `style` attribute; the rendered result is identical because
@@ -102,7 +102,7 @@
  *  5. **`renderUnblamedJobs` is keyed by group key, not by render index.**
  *     Upstream emits `onclick="toggleUnblamedGroup(${groupIdx})"` and resolves
  *     the index against `unblamedRenderedKeys`, a module-scope array written by
- *     the last render (`try.html:1981`, `:2108`). That is a stale-index hazard —
+ *     the last render (`old/try.html:1981`, `:2108`). That is a stale-index hazard —
  *     the array is rewritten on every search keystroke while the click is
  *     pending — and here the listener closes over the key itself. Same rows
  *     expand; the indirection is gone.
@@ -119,7 +119,7 @@
  *     on this list that removes a capability rather than re-expressing one.
  *
  *     Upstream drives a local test runner over `ws://localhost:3000`
- *     (`try.html:3206`) to re-run failing tests and report whether each
+ *     (`old/try.html:3206`) to re-run failing tests and report whether each
  *     reproduces: roughly 20 functions and 550 lines, spanning `reproState`, the
  *     per-config run queues, the cached-history fetch, the per-row repro icons
  *     and detail rows, and the `Reset` button. None of it is here.
@@ -129,7 +129,7 @@
  *     upstream gates them, all three `disabled` with the title `Local
  *     reproduction is not available in this build`. Upstream would have enabled
  *     the button (failures exist, nothing is running — `updateReproduceButton()`
- *     third branch, `try.html:3186`) and given it the title `Connect to local
+ *     third branch, `old/try.html:3186`) and given it the title `Connect to local
  *     test-runner and attempt to reproduce failures`.
  *
  *     **Why disabled rather than absent.** An earlier revision of this file
@@ -149,7 +149,7 @@
  *     Two knock-on effects, both stated where they happen: the last column's
  *     width term `(hasRepro || isLocal)` reduces to `isLocal` (`renderTable`),
  *     and the search box does not scope reproduction runs the way upstream's
- *     `sendAllRunRequests` does (`try.html:3367` iterates `getFilteredTests()`)
+ *     `sendAllRunRequests` does (`old/try.html:3367` iterates `getFilteredTests()`)
  *     because there are no runs to scope.
  *
  * Everything else — the row unit, the three tables and their split rule, the
@@ -276,11 +276,11 @@ declare global {
 
 const TH_BASE = 'https://treeherder.mozilla.org';
 
-/** Whether the local reproduction features are available. `try.html:736`. */
+/** Whether the local reproduction features are available. `old/try.html:736`. */
 const isLocal =
     window.location.protocol === 'file:' || window.location.hostname === 'localhost';
 
-/** The mitten glyph's element. `try.html:1483` writes it as markup. */
+/** The mitten glyph's element. `old/try.html:1483` writes it as markup. */
 function mitten(): HTMLElement {
     return el('span', { class: 'mitten' });
 }
@@ -306,7 +306,7 @@ function link(
     });
     anchor.target = '_blank';
     // Upstream writes `onclick="event.stopPropagation()"` on every link inside
-    // a clickable row (`try.html:1884`), so following a link does not also
+    // a clickable row (`old/try.html:1884`), so following a link does not also
     // expand the row. Same effect, as a listener.
     anchor.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -330,7 +330,7 @@ function requireInput(id: string): HTMLInputElement {
 
 // --- the profile worker ---------------------------------------------------
 //
-// Unchanged from `try.html:862`. See the module comment: it has zero `${}`
+// Unchanged from `old/try.html:862`. See the module comment: it has zero `${}`
 // interpolations and references nothing outside itself, so bundling cannot
 // touch it and rewriting it would risk changing marker semantics for no gain.
 //
@@ -563,13 +563,13 @@ const workerUrl = URL.createObjectURL(
     new Blob([WORKER_CODE], { type: 'application/javascript' })
 );
 
-/** Cap at 8 to avoid lock contention on the memory allocator. `try.html:1088`. */
+/** Cap at 8 to avoid lock contention on the memory allocator. `old/try.html:1088`. */
 const NUM_WORKERS = Math.min(navigator.hardwareConcurrency || 4, 8);
 const MAX_CONCURRENT_FETCHES = 64;
 
 /**
  * Fetches every job's profile and parses them in a worker pool.
- * `try.html:1094`.
+ * `old/try.html:1094`.
  *
  * The main thread fetches with high concurrency and transfers the `ArrayBuffer`
  * to a worker for the CPU-bound parse, which is what keeps the page responsive
@@ -703,7 +703,7 @@ function processJobsWithWorkers(
 
 // --- Treeherder -----------------------------------------------------------
 
-/** `try.html:759`. */
+/** `old/try.html:759`. */
 async function fetchPushId(
     repo: string,
     revision: string
@@ -730,7 +730,7 @@ interface PushRevision {
     comments: string;
 }
 
-/** `try.html:771`. Follows `next` until the job list is exhausted. */
+/** `old/try.html:771`. Follows `next` until the job list is exhausted. */
 async function fetchAllJobs(
     pushId: number
 ): Promise<{ allJobs: unknown[][]; propertyNames: string[] }> {
@@ -759,7 +759,7 @@ async function fetchAllJobs(
 
 /**
  * Resolves the positional job arrays against `job_property_names`.
- * `try.html:790`.
+ * `old/try.html:790`.
  *
  * A job with no name or no task ID is dropped, which is upstream's behaviour
  * and is how a Treeherder field rename would present: as "the push has no
@@ -865,7 +865,7 @@ function setProgress(fraction: number): void {
 
 // --- URL state ------------------------------------------------------------
 
-/** `try.html:1249`. Writes the current view into the URL, without a hash. */
+/** `old/try.html:1249`. Writes the current view into the URL, without a hash. */
 function updateUrlState(): void {
     const url = new URL(window.location.href);
     writeUrlState(url, {
@@ -879,7 +879,7 @@ function updateUrlState(): void {
 
 // --- loading --------------------------------------------------------------
 
-/** `try.html:1286`. The whole load, from a revision string to a rendered page. */
+/** `old/try.html:1286`. The whole load, from a revision string to a rendered page. */
 async function loadRevision(): Promise<void> {
     const { revision, repo } = extractRevision(requireInput('revision-input').value);
     if (!revision) {
@@ -940,14 +940,14 @@ async function loadRevision(): Promise<void> {
         // The "All jobs" checkbox changes the UNIVERSE, not just the visible
         // rows: it adds the successful test jobs' profiles, so tests that failed
         // initially and passed on retry surface at all. Unchecked by default
-        // (`try.html:706`, forced at `:3775`).
+        // (`old/try.html:706`, forced at `:3775`).
         const fetchPassing = requireInput('alljobs-checkbox').checked;
         const passingTestJobs = fetchPassing ? successfulTestJobs : [];
         const jobsToProcess = failedTestJobs.concat(passingTestJobs);
 
         if (jobsToProcess.length === 0) {
             // No table renders at all — green favicon, the `no-failures` block,
-            // and an early return. `try.html:1346`.
+            // and an early return. `old/try.html:1346`.
             const completedTestJobs = jobs.filter(
                 (job) => job.state === 'completed' && isTestJob(job.jobName)
             );
@@ -1042,7 +1042,7 @@ async function loadRevision(): Promise<void> {
 
 // --- rendering ------------------------------------------------------------
 
-/** `try.html:1616`. The commit list, the heading and the tab title. */
+/** `old/try.html:1616`. The commit list, the heading and the tab title. */
 function renderRevisions(revisions: readonly PushRevision[]): void {
     const container = requireElement('revisions-container');
     if (revisions.length === 0) {
@@ -1087,7 +1087,7 @@ function renderRevisions(revisions: readonly PushRevision[]): void {
     document.title = commitMsg ? `${repoLabel}: ${commitMsg}` : `${repoLabel} Push Results`;
 }
 
-/** `try.html:2057`. Turns `bug 12345` in a commit message into a link. */
+/** `old/try.html:2057`. Turns `bug 12345` in a commit message into a link. */
 function appendLinkifiedBugNumbers(parent: HTMLElement, text: string): void {
     const pattern = /\b(bug )(\d{4,})\b/gi;
     let last = 0;
@@ -1115,7 +1115,7 @@ function renderTreeherderLink(): void {
     requireElement('treeherder-link-container').replaceChildren(span);
 }
 
-/** `try.html:1650`. The summary cards, the containers, and the search box. */
+/** `old/try.html:1650`. The summary cards, the containers, and the search box. */
 function renderResults(failures: Failures, totalJobs: number, failedJobCount: number): void {
     setFavicon('#ff9500');
     renderTreeherderLink();
@@ -1143,9 +1143,9 @@ function renderResults(failures: Failures, totalJobs: number, failedJobCount: nu
     // visibly disabled**, and says so in its title.
     //
     // Upstream enables the button whenever failures exist
-    // (`updateReproduceButton()`, `try.html:3186`, third branch) and wires it to
+    // (`updateReproduceButton()`, `old/try.html:3186`, third branch) and wires it to
     // `reproduceFailures()`, which opens a WebSocket to `ws://localhost:3000`
-    // (`try.html:3206`). None of that exists here. An enabled control with no
+    // (`old/try.html:3206`). None of that exists here. An enabled control with no
     // handler is worse than an absent one: it claims a capability the build
     // does not have, and a DOM diff cannot tell the two apart — which is how
     // this shipped enabled in the first place.
@@ -1174,7 +1174,7 @@ function renderResults(failures: Failures, totalJobs: number, failedJobCount: nu
     reproduceBtn.style.display = isLocal ? '' : 'none';
 
     // Upstream keeps `Reset` hidden until a cached reproduction result exists
-    // (`updateResetButton()`, `try.html:3583`). No result can exist here, so the
+    // (`updateResetButton()`, `old/try.html:3583`). No result can exist here, so the
     // reveal is unreachable and the button stays hidden exactly as it does on a
     // fresh upstream load — the states coincide, and the `display: none` below
     // is upstream's own markup, not a workaround.
@@ -1211,7 +1211,7 @@ function renderResults(failures: Failures, totalJobs: number, failedJobCount: nu
     void renderUnblamedJobs();
 }
 
-/** `try.html:1738`. The two test tables. */
+/** `old/try.html:1738`. The two test tables. */
 function renderTable(): void {
     const failures = state.failures;
     if (failures === null) {
@@ -1256,7 +1256,7 @@ function renderTable(): void {
     }
 }
 
-/** `try.html:1846`. One test table. */
+/** `old/try.html:1846`. One test table. */
 function renderTestTable(tests: readonly FailingTest[], showJobCount: boolean): HTMLElement {
     const table = el('table', { class: 'failure-table' });
     const head = el('thead');
@@ -1315,7 +1315,7 @@ function renderTestTable(tests: readonly FailingTest[], showJobCount: boolean): 
     const hasAnyProfile = tests.some((test) => findUploadedProfile(test.instances) !== null);
     // The width tracks which icons the last column can hold. Upstream writes
     // `20 + (hasRepro || isLocal ? 18 : 0) + (hasAnyProfile ? 18 : 0) + (isLocal ? 18 : 0)`
-    // (`try.html:1859`) where `hasRepro = reproState.size > 0` (`:1768`).
+    // (`old/try.html:1859`) where `hasRepro = reproState.size > 0` (`:1768`).
     //
     // The first term is `isLocal` alone on both pages, for different reasons
     // that happen to agree on every load this page can produce: upstream clears
@@ -1455,7 +1455,7 @@ function badgesCell(
     return cell;
 }
 
-/** The last column: the profiler icon and the copy buttons. `try.html:1893`. */
+/** The last column: the profiler icon and the copy buttons. `old/try.html:1893`. */
 function renderActionsCell(test: FailingTest): HTMLTableCellElement {
     const cell = el('td', { class: 'repro-cell' });
     // Upstream emits an empty `<span id="repro-icon-…">` even with no
@@ -1496,7 +1496,7 @@ function renderActionsCell(test: FailingTest): HTMLTableCellElement {
 }
 
 /**
- * The detail rows of one expanded test: one per job run. `try.html:2118`.
+ * The detail rows of one expanded test: one per job run. `old/try.html:2118`.
  *
  * Grouped by `taskId.retryId`, so two failures in the same job run share a row
  * and the assertion list under it shows both.
@@ -1639,7 +1639,7 @@ function renderJobDetailRow(
  * A link inside a detail row's `job-links`.
  *
  * Unlike `link()` this does **not** stop propagation: upstream's detail-row
- * links carry no `onclick` (`try.html:2204`), because a detail row is not
+ * links carry no `onclick` (`old/try.html:2204`), because a detail row is not
  * itself clickable, so there is no row toggle to suppress.
  */
 function plainLink(href: string, text: string): HTMLAnchorElement {
@@ -1659,10 +1659,10 @@ interface AssertionItem {
     stack?: string | undefined;
 }
 
-/** How many assertions show before the `show N more` link. `try.html:2356`. */
+/** How many assertions show before the `show N more` link. `old/try.html:2356`. */
 const MAX_VISIBLE = 10;
 
-/** The `<ul class="assertion-list">` and its `show more` link. `try.html:2212`. */
+/** The `<ul class="assertion-list">` and its `show more` link. `old/try.html:2212`. */
 function renderAssertionList(
     test: FailingTest,
     options: {
@@ -1774,7 +1774,7 @@ function renderAssertionList(
     return [list, more];
 }
 
-/** One `<li>` of the assertion list. `try.html:2345`. */
+/** One `<li>` of the assertion list. `old/try.html:2345`. */
 function renderAssertionItem(item: AssertionItem, isHidden: boolean): HTMLElement {
     const classes: string[] = [];
     if (item.separator === true) {
@@ -1811,17 +1811,17 @@ function renderAssertionItem(item: AssertionItem, isHidden: boolean): HTMLElemen
 
 // --- stack colouring ------------------------------------------------------
 //
-// `try.html:2251-2333`. Three line shapes, tried in order, and everything else
+// `old/try.html:2251-2333`. Three line shapes, tried in order, and everything else
 // is printed plain. The point of the colouring is that a leak stack and a JS
 // stack look different at a glance and each links to Searchfox where it can.
 
-/** Known prefix → Searchfox source path. The prefix is hidden. `try.html:2252`. */
+/** Known prefix → Searchfox source path. The prefix is hidden. `old/try.html:2252`. */
 const SOURCE_PREFIX_MAP: [string, string][] = [
     ['chrome://mochitests/content/browser/', ''],
     ['chrome://mochikit/content/', 'testing/mochitest/'],
 ];
 
-/** One `file:line:col` reference, linked where possible. `try.html:2257`. */
+/** One `file:line:col` reference, linked where possible. `old/try.html:2257`. */
 function renderJsFile(file: string, funcName: string | null): Node {
     const lineMatch = /^(.+?):(\d+)(:\d+)?$/.exec(file);
     const filePart = lineMatch ? lineMatch[1]! : file;
@@ -1873,7 +1873,7 @@ function renderJsFile(file: string, funcName: string | null): Node {
     return fragment;
 }
 
-/** A leak-stack description. `try.html:2299`. */
+/** A leak-stack description. `old/try.html:2299`. */
 function renderLeakDesc(desc: string): Node {
     const fragment = document.createDocumentFragment();
     const funcMatch = /^(JS Function - )(.+)$/.exec(desc);
@@ -1892,7 +1892,7 @@ function renderLeakDesc(desc: string): Node {
     return fragment;
 }
 
-/** The `<pre class="assertion-stack">`. `try.html:2314`. */
+/** The `<pre class="assertion-stack">`. `old/try.html:2314`. */
 function renderStack(stack: string): HTMLElement {
     const pre = el('pre', { class: 'assertion-stack' });
     const lines = stack.split('\n');
@@ -1933,7 +1933,7 @@ function renderStack(stack: string): HTMLElement {
 
 // --- the unblamed-jobs table ----------------------------------------------
 
-/** `try.html:1914`. Failed test jobs with no test-level failure attributed. */
+/** `old/try.html:1914`. Failed test jobs with no test-level failure attributed. */
 async function renderUnblamedJobs(): Promise<void> {
     const container = requireElement('unblamed-table-container');
     if (state.unblamedJobs.length === 0) {
@@ -1983,7 +1983,7 @@ async function renderUnblamedJobs(): Promise<void> {
     const head = el('thead');
     const headRow = el('tr');
     // Every header is `no-sort`: this table's order is `jobs.length`
-    // descending and is not configurable. `try.html:1955`.
+    // descending and is not configurable. `old/try.html:1955`.
     for (const [label, width] of [
         ['#', '24px'],
         ['Status', '65px'],
@@ -2095,7 +2095,7 @@ function renderUnblamedGroupRow(group: UnblamedGroup): HTMLTableRowElement {
     return row;
 }
 
-/** One unblamed job's detail row. `try.html:2074`. */
+/** One unblamed job's detail row. `old/try.html:2074`. */
 function renderUnblamedJobRow(job: Job): HTMLTableRowElement {
     const platform = extractPlatform(job.jobName);
     const builds = extractBuildTypes(job.jobName);
@@ -2138,7 +2138,7 @@ function renderUnblamedJobRow(job: Job): HTMLTableRowElement {
     for (const line of job.cleanedSummary ?? []) {
         const div = el('div', { class: 'inline-message' });
         // A `PROCESS-CRASH | <uuid> | rest` line gets its UUID linked to the
-        // crash viewer; everything else is plain text. `try.html:2065`.
+        // crash viewer; everything else is plain text. `old/try.html:2065`.
         const match = /^(PROCESS-CRASH \| )([0-9a-f-]{36})( \| .*)$/.exec(line);
         const crashUrl =
             match === null
@@ -2163,7 +2163,7 @@ function renderUnblamedJobRow(job: Job): HTMLTableRowElement {
 
 // --- the empty state ------------------------------------------------------
 
-/** `try.html:1830`. Divergence 6: built from the view model's parts. */
+/** `old/try.html:1830`. Divergence 6: built from the view model's parts. */
 function appendNoFailures(parent: HTMLElement, noTestFailuresAtAll: boolean): void {
     const text = noFailuresText({
         noTestFailuresAtAll,
@@ -2184,7 +2184,7 @@ function appendNoFailures(parent: HTMLElement, noTestFailuresAtAll: boolean): vo
 /**
  * A real link to an uploaded failure profile, so the destination shows in the
  * status bar on hover. Alt+click copies a profiler-cli prompt instead.
- * `try.html:2965`.
+ * `old/try.html:2965`.
  */
 function profilerLink(
     testPath: string,
@@ -2220,7 +2220,7 @@ function profilerLink(
     return anchor;
 }
 
-/** `try.html:2907`. */
+/** `old/try.html:2907`. */
 function uploadedProfileArtifactUrl(
     taskId: string,
     retryId: number,
@@ -2234,18 +2234,18 @@ function uploadedProfileArtifactUrl(
 
 // --- clipboard actions ----------------------------------------------------
 
-/** `try.html:2886`. */
+/** `old/try.html:2886`. */
 function getExtraArgs(): string[] {
     const value = (document.getElementById('extra-args') as HTMLInputElement | null)?.value.trim();
     return value ? value.split(/\s+/) : [];
 }
 
-/** `try.html:2891`. */
+/** `old/try.html:2891`. */
 function getMachCmd(testPath: string): string {
     return ['./mach test', testPath, '--headless', ...getExtraArgs()].join(' ');
 }
 
-/** Copies, then shows a tick for a second. `try.html:3030`. */
+/** Copies, then shows a tick for a second. `old/try.html:3030`. */
 function copyWithFeedback(text: string, element: HTMLElement): void {
     void navigator.clipboard.writeText(text).then(() => {
         const previous = element.textContent;
@@ -2258,7 +2258,7 @@ function copyWithFeedback(text: string, element: HTMLElement): void {
     });
 }
 
-/** `try.html:3016`. Alt+click, when local, copies a debugging prompt instead. */
+/** `old/try.html:3016`. Alt+click, when local, copies a debugging prompt instead. */
 function copyMachCmd(testPath: string, element: HTMLElement, event: MouseEvent): void {
     if (isLocal && event.altKey) {
         const test = state.failures?.tests.find((t) => t.path === testPath);
@@ -2274,7 +2274,7 @@ function copyMachCmd(testPath: string, element: HTMLElement, event: MouseEvent):
 }
 
 /**
- * Copies the raw data behind a row's counts. `try.html:3041`.
+ * Copies the raw data behind a row's counts. `old/try.html:3041`.
  *
  * Every parsed execution of the test, grouped by job name and job run, next to
  * the derived numbers — so the "failures / runs" ratio can be checked against
@@ -2329,7 +2329,7 @@ function copyDebugJson(testPath: string, element: HTMLElement): void {
     );
 }
 
-/** `try.html:2984`. */
+/** `old/try.html:2984`. */
 function copyProfilerDebugPrompt(
     testPath: string,
     jobKey: string | null,
@@ -2385,7 +2385,7 @@ Then investigate the cause: look at the markers around the failure (TestStatus/F
 // --- flakiness ------------------------------------------------------------
 
 /**
- * Creates the flakiness worker from the bundled source. `try.html:2581`.
+ * Creates the flakiness worker from the bundled source. `old/try.html:2581`.
  *
  * The source comes from `globalThis.__workers`, which `tools/build-pages.ts`
  * writes as a string constant ahead of this module's code. See
@@ -2424,7 +2424,7 @@ function initFlakinessWorker(): Worker {
     return worker;
 }
 
-/** One round trip to the flakiness worker. `try.html:2619`. */
+/** One round trip to the flakiness worker. `old/try.html:2619`. */
 function processInWorker(
     worker: Worker,
     buffer: ArrayBuffer,
@@ -2441,7 +2441,7 @@ function processInWorker(
 }
 
 /**
- * Fills in the flakiness column, one bucket file at a time. `try.html:2632`.
+ * Fills in the flakiness column, one bucket file at a time. `old/try.html:2632`.
  *
  * Sequential fetches with the next file's download overlapping the current
  * file's parse — a bucket file is ~3.5 MB and the parse is the slow half, so
@@ -2557,7 +2557,7 @@ function applyFlakinessResult(
     updateFlakinessDisplay(answer.path, data);
 }
 
-/** `try.html:2848`. Paints one flakiness cell. */
+/** `old/try.html:2848`. Paints one flakiness cell. */
 function updateFlakinessDisplay(testPath: string, data: FlakinessData | null): void {
     const cell = state.flakinessCells.get(testPath);
     if (cell === undefined) {
@@ -2582,7 +2582,7 @@ function updateFlakinessDisplay(testPath: string, data: FlakinessData | null): v
 
 // --- the console API ------------------------------------------------------
 
-/** `try.html:3659`. */
+/** `old/try.html:3659`. */
 function getSortedFailures(): ConsoleFailure[] {
     const failures = state.failures;
     if (failures === null) {
@@ -2594,7 +2594,7 @@ function getSortedFailures(): ConsoleFailure[] {
     );
 }
 
-/** `try.html:3699`. */
+/** `old/try.html:3699`. */
 function logFailures(list: readonly ConsoleFailure[]): void {
     console.table(
         list.map((failure) => ({
@@ -2613,7 +2613,7 @@ function logFailures(list: readonly ConsoleFailure[]): void {
     );
 }
 
-/** `try.html:3737`. */
+/** `old/try.html:3737`. */
 function logConsoleAPI(): void {
     console.log(
         '%cConsole API available',
@@ -2637,7 +2637,7 @@ function logConsoleAPI(): void {
 }
 
 /**
- * Installs the console seams. `try.html:3711-3735`.
+ * Installs the console seams. `old/try.html:3711-3735`.
  *
  * Getters, not functions: typing `failures` in the console is the whole
  * interface, and it also logs a `console.table` on the way past.
@@ -2676,7 +2676,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Seed the filter from the URL BEFORE loading, so that `updateUrlState()` —
     // called during the load, before the filter UI is shown — does not clear the
-    // parameter. `try.html:3763`.
+    // parameter. `old/try.html:3763`.
     if (url.filter) {
         requireInput('search-box').value = url.filter;
         state.search = parseSearch(url.filter);

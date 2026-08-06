@@ -191,7 +191,7 @@ Two kinds of profile, with different availability:
 - **Per-test failure profile**, uploaded only when a test fails: the filename is
   *not* derivable from the task ID. It appears in the failure message as
   `"profile uploaded in profile_<name>.json"`, so getting it means reading that
-  message (`try.html:2900`). This is why profile URLs matter most for
+  message (`old/try.html:2900`). This is why profile URLs matter most for
   `fx-tests try`, which already has the push's failure messages in hand.
 
 For commands working from aggregated data, the failure message is in the data
@@ -439,7 +439,7 @@ NEW INTERMITTENTS (1) — failed once here, never on central. Worth a look.
 
 **Ordering: most failures first.** Every section is sorted by the leading `#`
 — the number of failing *executions* of the test across the push, descending.
-That is the dashboard's default sort (`try.html:744`, on
+That is the dashboard's default sort (`old/try.html:744`, on
 `test.instances.length`), so the same push produces the same order in both.
 
 It is executions, not the job runs they happened in: the harness reruns a test
@@ -519,7 +519,7 @@ Sections report same-message rates alongside overall rates.
 
 A push failure's message comes from the `TestStatus` markers logged inside the
 test's execution, not from the `Test` marker, which carries no `message` field
-at all for a plain assertion failure (`try.html:936`). Reading only the latter
+at all for a plain assertion failure (`old/try.html:936`). Reading only the latter
 leaves most `FAIL`s message-less, and a failure with no message cannot be
 compared against central at all — the output says so rather than printing a
 `0.0%` that reads as "a different failure".
@@ -553,7 +553,7 @@ to those, which is `null` when central attributed no runs to them.
 
 The triage view, and **it leads with components rather than tests** — the same
 question `issues.html` answers, which hardcodes the components view
-(`issues.html:888`) and ranks it by issue count (`:663`). Triage starts by
+(`old/issues.html:888`) and ranks it by issue count (`:663`). Triage starts by
 finding the area worth looking at; a flat per-test list makes the reader do
 that aggregation themselves.
 
@@ -639,7 +639,7 @@ Crashing thread #12 (Main Thread)
 7 other threads (--all-threads to show, --thread <n> for one)
 ```
 
-The signature is computed the way `crash-viewer.html:520` computes it —
+The signature is computed the way `old/crash-viewer.html:520` computes it —
 skipping abort/assertion frames to find the first meaningful one, and stripping
 parameter lists. Reimplementing that heuristic in a prompt would get it subtly
 wrong.
@@ -722,7 +722,7 @@ Configuration                              runs   median      p95      max
 ```
 
 A manifest whose durations are all zero on a config was skipped there rather
-than run instantly (`manifests.html:415`), which is how the platform and
+than run instantly (`old/manifests.html:415`), which is how the platform and
 "skipped on" lines are derived — and a distinction easy to get wrong when
 reading the raw file.
 

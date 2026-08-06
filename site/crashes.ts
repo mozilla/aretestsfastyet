@@ -27,7 +27,7 @@
  * ## What the migration removes
  *
  * **The inline decoding of the status-group shapes.** `processCrashData`
- * (`crashes.html:225-374`) is 150 lines that branch on `isBucketedFormat` and
+ * (`old/crashes.html:225-374`) is 150 lines that branch on `isBucketedFormat` and
  * hand-decode `days` or `timestamps`, which covers two of the five shapes
  * `FORMATS.md` documents and silently misreads the other three.
  * `lib/formats/status-entries.ts` resolves all five and throws on a sixth.
@@ -117,7 +117,7 @@
  *
  * - **The historical-fetch-failure fallback.** When the 21-day fetch throws,
  *   `common-ui.js:262-271` writes the error into `#content`, leaves
- *   `isHistoricalMode` false, and `crashes.html:1032` then loads the selected
+ *   `isHistoricalMode` false, and `old/crashes.html:1032` then loads the selected
  *   date on top of it — so the error is overwritten by a normal single-day
  *   render and the reader is silently shown a different window than the one
  *   they asked for. Driven in Chrome with the 21-day file 404ing *and the CI
@@ -204,7 +204,7 @@ let page: DrilldownController;
  *
  * The map is the whole of `groups`, **not** the rows that survived the search.
  * That is this page's half of the search asymmetry and it reproduces
- * `crashes.html:858`, which expands out of `currentData.crashData`: a row's
+ * `old/crashes.html:858`, which expands out of `currentData.crashData`: a row's
  * expansion is never narrowed by the search, so a row matched only by a test
  * name still opens onto its full subtree. `failures.html` returns its
  * search-rewritten subtrees instead, which is why the shared controller reads
@@ -243,7 +243,7 @@ function treeherderUrl(occurrence: Occurrence): string | null {
 }
 
 const hooks: RenderHooks = {
-    // A crash signature is plain text. `crashes.html:585`, which passes it
+    // A crash signature is plain text. `old/crashes.html:585`, which passes it
     // through `escapeHtml`.
     labelNodes: (key) => [key],
     // Upstream puts no `title` on a signature cell — unlike the failures page,
@@ -267,7 +267,7 @@ const hooks: RenderHooks = {
     },
 
     // The crash viewer where there is a dump, the profiler otherwise.
-    // `crashes.html:711` and `:816`.
+    // `old/crashes.html:711` and `:816`.
     jobNameHref: (occurrence, testName) =>
         getCrashViewerUrl(occurrence) || getProfilerUrl(occurrence, testName),
 
@@ -292,7 +292,7 @@ const hooks: RenderHooks = {
  * The daily rate series for a signature, path or test.
  *
  * These are `calculateSignatureDailyCrashRates` and friends
- * (`crashes.html:377-472`), which walk the *raw* historical file to collect the
+ * (`old/crashes.html:377-472`), which walk the *raw* historical file to collect the
  * test IDs to count and then hand them to `countDailyRunsForTests`
  * (`common-charts.js:149`). The shared function is kept, so the test-ID walk
  * stays on the raw file too — porting it to the decoded file would mean
@@ -309,8 +309,8 @@ const hooks: RenderHooks = {
  * | --- | --- | --- |
  * | value table | `tables.crashSignatures` | `tables.messages` |
  * | field on a status group | `crashSignatureIds` | `messageIds` |
- * | status test | `=== 'CRASH'` (`crashes.html:435`) | `startsWith('FAIL')` |
- * | search-filtered variants | none | two (`failures.html:966`, `:1013`) |
+ * | status test | `=== 'CRASH'` (`old/crashes.html:435`) | `startsWith('FAIL')` |
+ * | search-filtered variants | none | two (`old/failures.html:966`, `:1013`) |
  *
  * The status test in particular is *not* a parameter: this page matching a bare
  * `'CRASH'` and the other page matching a `FAIL` **prefix** is upstream's rule
@@ -367,7 +367,7 @@ function ratesFor(signature: string, keep: (testId: string) => boolean): DailySe
             if (!statusGroup) {
                 continue;
             }
-            // `=== 'CRASH'`, exactly as upstream (`crashes.html:435`).
+            // `=== 'CRASH'`, exactly as upstream (`old/crashes.html:435`).
             if (
                 historical.tables.statuses[statusId] === 'CRASH' &&
                 statusGroup.crashSignatureIds &&
@@ -400,7 +400,7 @@ const pathDailyRates = (signature: string, dirPath: string): DailySeries | null 
  *
  * Upstream does *not* reuse the signature walk here: it finds the one test by
  * path and name and passes it straight to `countDailyRunsForTests`, without
- * checking that the test ever had the signature (`crashes.html:447-471`). That
+ * checking that the test ever had the signature (`old/crashes.html:447-471`). That
  * difference is observable — the denominator is the test's runs either way, but
  * the walk-based version would exclude a test with no matching entries and this
  * one includes it with zero events — so it is reproduced rather than unified.
@@ -474,7 +474,7 @@ function chartSeries(request: ChartRequest): DailySeries | null {
 // --- URL state ------------------------------------------------------------
 
 /**
- * Applies the hash to the page. `loadFromUrlHash` (`crashes.html:981`).
+ * Applies the hash to the page. `loadFromUrlHash` (`old/crashes.html:981`).
  *
  * **Kept out of the shared controller on purpose.** The only line that differs
  * from `site/failures.ts`'s copy is the search-box guard, and the difference is

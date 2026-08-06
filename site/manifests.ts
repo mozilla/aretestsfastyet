@@ -30,7 +30,7 @@
  * ## What the migration removes
  *
  * **The string-concatenation renderer.** Upstream builds each cell by
- * concatenating HTML into `innerHTML` (`manifests.html:651`, `:664`, `:702`,
+ * concatenating HTML into `innerHTML` (`old/manifests.html:651`, `:664`, `:702`,
  * `:741`, and six more), which is what forces `escapeHtml` (`:866`) and
  * `escapeAttr` (`:872`). `escapeAttr` is **dead on this page** — measured:
  * `grep -c escapeAttr manifests.html` is 1, its own definition, and no call
@@ -53,7 +53,7 @@
  * `modebar`, so the chart is live and worth having rather than decoration.
  *
  * So the CDN tag stays (`site/manifests.html:7`, byte-identical to
- * `manifests.html:7`), the third level is ported, and the two click handlers on
+ * `old/manifests.html:7`), the third level is ported, and the two click handlers on
  * it — plain click opens the resource profile, Alt+click the error summary —
  * are ported with it. Nothing here emits a chart element that never draws;
  * that mistake has been made twice on this project and the check against it is
@@ -257,7 +257,7 @@ declare global {
     /**
      * `shared.js:270` — re-lays-out Plotly charts after a window resize.
      *
-     * Called at startup, as upstream does (`manifests.html:941`). It looks up
+     * Called at startup, as upstream does (`old/manifests.html:941`). It looks up
      * `.chart-container`, and **this page has none** — `grep -c chart-container
      * manifests.html` is 0 — so its handler finds nothing on either side and
      * the charts are resized by Plotly's own `responsive: true` instead. Called
@@ -357,7 +357,7 @@ function durationCell(ms: number | null): HTMLElement {
     });
 }
 
-/** One manifest row. `manifests.html:646-679`. */
+/** One manifest row. `old/manifests.html:646-679`. */
 function manifestRowElement(row: ManifestRow, expanded: boolean): HTMLElement {
     return el('tr', {
         class: `manifest-row${expanded ? ' expanded' : ''}`,
@@ -387,7 +387,7 @@ function manifestRowElement(row: ManifestRow, expanded: boolean): HTMLElement {
     });
 }
 
-/** One job row under an expanded manifest. `manifests.html:694-728`. */
+/** One job row under an expanded manifest. `old/manifests.html:694-728`. */
 function jobRowElement(job: JobStats, expanded: boolean): HTMLElement {
     return el('tr', {
         class: 'job-row',
@@ -419,7 +419,7 @@ function jobRowElement(job: JobStats, expanded: boolean): HTMLElement {
 }
 
 /**
- * The chart row for an expanded job. `manifests.html:734-744`.
+ * The chart row for an expanded job. `old/manifests.html:734-744`.
  *
  * Returns the `<tr>` and the container the chart draws into, so the caller can
  * hand the *element* to Plotly's caller without a second `getElementById`. The
@@ -442,7 +442,7 @@ function chartRowElement(
 }
 
 /**
- * Draws the per-run scatter. `manifests.html:760-822`.
+ * Draws the per-run scatter. `old/manifests.html:760-822`.
  *
  * Called from a `queueMicrotask` after the row is in the document, because
  * Plotly measures the container and a detached div has no width. Upstream uses
@@ -491,7 +491,7 @@ function drawChart(container: HTMLElement, row: ManifestRow, job: JobStats): voi
         }
         const { taskId, prefix } = point.customdata;
         // Alt+click is the error summary, a plain click the resource profile —
-        // `manifests.html:817-821`, and the hover template says so.
+        // `old/manifests.html:817-821`, and the hover template says so.
         const url = data.event.altKey
             ? errorSummaryUrl(taskId, prefix)
             : profilerUrl(getProfilerOrigin(), taskId, row.manifest, job.jobName);
@@ -503,7 +503,7 @@ function drawChart(container: HTMLElement, row: ManifestRow, job: JobStats): voi
 const manifestOf = new WeakMap<HTMLElement, ManifestRow>();
 const jobOf = new WeakMap<HTMLElement, { row: ManifestRow; job: JobStats }>();
 
-/** Rebuilds the table body. `manifests.html:634-758`. */
+/** Rebuilds the table body. `old/manifests.html:634-758`. */
 function renderTable(): void {
     const state = model;
     const elements = dom;
@@ -551,7 +551,7 @@ function renderTable(): void {
     renderPager();
 }
 
-/** The pager, and the two buttons' disabled states. `manifests.html:753-757`. */
+/** The pager, and the two buttons' disabled states. `old/manifests.html:753-757`. */
 function renderPager(): void {
     const state = model;
     const elements = dom;
@@ -564,7 +564,7 @@ function renderPager(): void {
     elements.next.disabled = pager.nextDisabled;
 }
 
-/** The sort arrows and the `sorted` class. `manifests.html:512-539`. */
+/** The sort arrows and the `sorted` class. `old/manifests.html:512-539`. */
 function renderSortIndicators(): void {
     const state = model;
     const elements = dom;
@@ -583,7 +583,7 @@ function renderSortIndicators(): void {
     }
 }
 
-/** The × buttons, shown only when their box has text. `manifests.html:541-558`. */
+/** The × buttons, shown only when their box has text. `old/manifests.html:541-558`. */
 function renderClearButtons(): void {
     const state = model;
     const elements = dom;
@@ -594,7 +594,7 @@ function renderClearButtons(): void {
     elements.clearJob.classList.toggle('visible', state.filters.job !== '');
 }
 
-/** The four cards. `manifests.html:890-893`. */
+/** The four cards. `old/manifests.html:890-893`. */
 function renderStats(file: ManifestsFile): void {
     const stats = headlineStats(file);
     need('statManifests').textContent = stats.manifests.toLocaleString();
@@ -625,7 +625,7 @@ function applyFilters(): void {
     renderTable();
 }
 
-/** A header click. `manifests.html:487-510`. */
+/** A header click. `old/manifests.html:487-510`. */
 function onSortClick(column: SortColumn): void {
     const state = model;
     if (state === null) {
@@ -642,7 +642,7 @@ function onSortClick(column: SortColumn): void {
 }
 
 /**
- * Writes the two searches into the URL. `manifests.html:566-596`.
+ * Writes the two searches into the URL. `old/manifests.html:566-596`.
  *
  * The push/replace dance is upstream's, and the reason for it is worth keeping:
  * one `pushState` for the first keystroke of a burst, then `replaceState` for
@@ -684,7 +684,7 @@ function onFiltersChanged(): void {
     applyFilters();
 }
 
-/** Toggles a manifest's job rows. `manifests.html:615-622`. */
+/** Toggles a manifest's job rows. `old/manifests.html:615-622`. */
 function toggleManifest(row: ManifestRow): void {
     const state = model;
     if (state === null) {
@@ -696,7 +696,7 @@ function toggleManifest(row: ManifestRow): void {
     renderTable();
 }
 
-/** Toggles a job's chart. `manifests.html:624-632`. */
+/** Toggles a job's chart. `old/manifests.html:624-632`. */
 function toggleJob(row: ManifestRow, job: JobStats): void {
     const state = model;
     if (state === null) {
@@ -799,7 +799,7 @@ function wire(): void {
 
 // --- startup --------------------------------------------------------------
 
-/** Fetches `manifests.json` from its own index. `manifests.html:363-369`. */
+/** Fetches `manifests.json` from its own index. `old/manifests.html:363-369`. */
 async function fetchManifestData(): Promise<ManifestsFile> {
     // `manifest-timings`, not a harness's index: this file has its own.
     const response = await fetchFromCI('manifest-timings', 'manifests.json');
@@ -853,7 +853,7 @@ export async function start(): Promise<void> {
 
         // The searches come from the URL before the first render, so a shared
         // `?q=` link paints its result once rather than painting everything
-        // and then narrowing. `manifests.html:896-905`.
+        // and then narrowing. `old/manifests.html:896-905`.
         const filters = parseFilters(location.search);
         elements.manifestSearch.value = filters.manifest;
         elements.jobSearch.value = filters.job;

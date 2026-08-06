@@ -282,7 +282,7 @@ test('the Searchfox link points at the most-failing test of the row', () => {
 });
 
 test('a tie goes to the first test the walk found', () => {
-    // Upstream compares with a strict `>` (`failures.html:663`), so the first
+    // Upstream compares with a strict `>` (`old/failures.html:663`), so the first
     // of equal counts wins. Reproduced.
     const paths = new Map<string, PathNode>([
         ['a', pathNode('a', [['first.js', 4], ['second.js', 4]])],

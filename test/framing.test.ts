@@ -143,14 +143,14 @@ const FRAMING: FramingEntry[] = [
         pageCitations: {
             rowUnit:
                 'site/issues.ts:render (one row per component), tests only as child rows via ' +
-                'testRows(); issues.html:1933 before the migration',
+                'testRows(); old/issues.html:1933 before the migration',
             grouping:
                 'site/issues-view.ts:buildComponentRows — component, with no view control; ' +
-                'issues.html:887-890 hard-coded the same thing',
-            sortKey: 'site/issues-view.ts:INITIAL_SORT (issues.html:663-664 before the migration)',
+                'old/issues.html:887-890 hard-coded the same thing',
+            sortKey: 'site/issues-view.ts:INITIAL_SORT (old/issues.html:663-664 before the migration)',
             window:
                 'site/issues-view.ts:isHistoricalDate — an absent `date` means the 21-day ' +
-                'aggregate. This is the deliberate change: issues.html:3709-3712 loaded the ' +
+                'aggregate. This is the deliberate change: old/issues.html:3709-3712 loaded the ' +
                 'date-select value, one day.',
             filters: 'site/issues.html:626-638 (four checkboxes, all `checked`)',
         },
@@ -195,10 +195,10 @@ const FRAMING: FramingEntry[] = [
         command: 'failures',
         pageFile: 'failures.html',
         pageCitations: {
-            rowUnit: 'failures.html:526-676 (renderFailureRows, one row per message string)',
-            sortKey: 'failures.html:102 (currentSort), comparator :602-612',
-            window: 'failures.html:1105-1108 (no date in hash → historical mode)',
-            filters: 'failures.html:213-218 (only statuses starting FAIL)',
+            rowUnit: 'old/failures.html:526-676 (renderFailureRows, one row per message string)',
+            sortKey: 'old/failures.html:102 (currentSort), comparator :602-612',
+            window: 'old/failures.html:1105-1108 (no date in hash → historical mode)',
+            filters: 'old/failures.html:213-218 (only statuses starting FAIL)',
         },
         page: {
             rowUnit: 'failure message string',
@@ -230,9 +230,9 @@ const FRAMING: FramingEntry[] = [
         command: 'crashes',
         pageFile: 'crashes.html',
         pageCitations: {
-            rowUnit: 'crashes.html:484-590 (one row per signature)',
-            sortKey: 'crashes.html:120 (currentSort), comparator :529-539 over totalCount',
-            window: 'crashes.html:994 (no date in hash → historical, 21 days)',
+            rowUnit: 'old/crashes.html:484-590 (one row per signature)',
+            sortKey: 'old/crashes.html:120 (currentSort), comparator :529-539 over totalCount',
+            window: 'old/crashes.html:994 (no date in hash → historical, 21 days)',
         },
         page: {
             rowUnit: 'crash signature',
@@ -253,7 +253,7 @@ const FRAMING: FramingEntry[] = [
             harness: 'xpcshell',
         },
         divergences: [],
-        // Not a divergence, and deliberately not copied: `crashes.html:496-498`
+        // Not a divergence, and deliberately not copied: `old/crashes.html:496-498`
         // sums `pathData.tests.size` over every path a signature appears under,
         // so a test that crashed under two paths counts twice. That is a page
         // bug — the comment above it says "unique tests" and the loop does not
@@ -271,7 +271,7 @@ const FRAMING: FramingEntry[] = [
             // up an "issue". So the page framing recorded here is that
             // checkbox's, and the row unit is the page's — component — which is
             // where the one declared divergence comes from.
-            rowUnit: 'site/issues.ts:render (components view); issues.html:1933 before it',
+            rowUnit: 'site/issues.ts:render (components view); old/issues.html:1933 before it',
             filters: 'site/issues.html:626-638 (skips is one of four checked boxes)',
             // Follows the migrated page, like the `issues` entry above.
             window: 'site/issues-view.ts:isHistoricalDate (21-day aggregate by default)',
@@ -336,11 +336,11 @@ const FRAMING: FramingEntry[] = [
         command: 'errors',
         pageFile: 'errors.html',
         pageCitations: {
-            rowUnit: 'errors.html:367, :489-497 (message view groups by messageId, whose key is text + file:line)',
-            grouping: 'errors.html:194-198 (message is the first <option>, none marked selected)',
-            sortKey: 'errors.html:232 (currentSort), comparator :476-483',
-            window: 'errors.html:1144-1152 ("Default: most recent single day")',
-            filters: 'errors.html:184-190 (seven marker-kind checkboxes, all `checked`)',
+            rowUnit: 'old/errors.html:367, :489-497 (message view groups by messageId, whose key is text + file:line)',
+            grouping: 'old/errors.html:194-198 (message is the first <option>, none marked selected)',
+            sortKey: 'old/errors.html:232 (currentSort), comparator :476-483',
+            window: 'old/errors.html:1144-1152 ("Default: most recent single day")',
+            filters: 'old/errors.html:184-190 (seven marker-kind checkboxes, all `checked`)',
         },
         page: {
             // Worth stating precisely, because the <option> label says
@@ -384,7 +384,7 @@ const FRAMING: FramingEntry[] = [
                 reason:
                     'Both include everything by default; they disagree on where the kind list ' +
                     'comes from. The page hardcodes seven checkboxes in its HTML ' +
-                    '(`errors.html:184-190`), so a kind the generator adds is invisible on the ' +
+                    '(`old/errors.html:184-190`), so a kind the generator adds is invisible on the ' +
                     'page until someone edits the markup — and silently excluded from the ' +
                     'ranking. The CLI reads `tables.markerNames` off the file, so a new kind is ' +
                     'counted the day it appears and `--kind` names it. Measured on the ' +
@@ -407,10 +407,10 @@ const FRAMING: FramingEntry[] = [
         command: 'manifests',
         pageFile: 'manifests.html',
         pageCitations: {
-            rowUnit: 'manifests.html:642-679 (one row per manifest path)',
-            sortKey: 'manifests.html:360-361 (currentSortColumn/Direction), applied :499',
+            rowUnit: 'old/manifests.html:642-679 (one row per manifest path)',
+            sortKey: 'old/manifests.html:360-361 (currentSortColumn/Direction), applied :499',
             window: 'manifests.html — a single artifact, no date control',
-            filters: 'manifests.html:416, :441-442, :461 (an all-zero-duration pair is a skip)',
+            filters: 'old/manifests.html:416, :441-442, :461 (an all-zero-duration pair is a skip)',
         },
         page: {
             rowUnit: 'manifest path',
@@ -450,9 +450,9 @@ const FRAMING: FramingEntry[] = [
         command: 'summary',
         pageFile: 'index.html',
         pageCitations: {
-            rowUnit: 'index.html:517-556 (one row per harness, per-flavor sub-rows)',
-            sortKey: 'index.html:517-556 — none, the rows are emitted in source order',
-            window: 'index.html:524, :534 (getRecentStats(stats, 7))',
+            rowUnit: 'old/index.html:517-556 (one row per harness, per-flavor sub-rows)',
+            sortKey: 'old/index.html:517-556 — none, the rows are emitted in source order',
+            window: 'old/index.html:524, :534 (getRecentStats(stats, 7))',
         },
         page: {
             rowUnit: 'harness',
@@ -475,7 +475,7 @@ const FRAMING: FramingEntry[] = [
             harness: 'both — xpcshell and mochitest',
         },
         divergences: [],
-        // Note, not a divergence: `index.html:476` subtracts invalid jobs from
+        // Note, not a divergence: `old/index.html:476` subtracts invalid jobs from
         // the Flaky Job Failures numerator and `:479` does not subtract them
         // from the denominator, so the rate can go negative when invalid jobs
         // exceed failed ones. The CLI reports `jobFailureRate` and
@@ -486,9 +486,9 @@ const FRAMING: FramingEntry[] = [
         command: 'test',
         pageFile: 'test.html',
         pageCitations: {
-            rowUnit: 'test.html:2670, :2732-2806 (one row per job variant, platforms as columns)',
+            rowUnit: 'old/test.html:2670, :2732-2806 (one row per job variant, platforms as columns)',
             grouping: 'test.html — fixed sections, no tabs',
-            sortKey: 'test.html:2726-2731 (variant prefix by total runs desc); platform columns lexicographic at :2698',
+            sortKey: 'old/test.html:2726-2731 (variant prefix by total runs desc); platform columns lexicographic at :2698',
             window: 'test.html — the chunk file window, metadata.days',
         },
         page: {
@@ -562,11 +562,11 @@ const FRAMING: FramingEntry[] = [
         command: 'try',
         pageFile: 'try.html',
         pageCitations: {
-            rowUnit: 'try.html:1493-1517 (one row per test path)',
-            grouping: 'try.html:1765-1766 (up to 3 tables, the split is data-driven)',
-            sortKey: 'try.html:744 (currentSort), :1749 (count = a.instances.length)',
+            rowUnit: 'old/try.html:1493-1517 (one row per test path)',
+            grouping: 'old/try.html:1765-1766 (up to 3 tables, the split is data-driven)',
+            sortKey: 'old/try.html:744 (currentSort), :1749 (count = a.instances.length)',
             window: 'try.html — the push; central history uses MIN_RECENT_RUNS = 100 (:2572)',
-            filters: 'try.html:706, :3775 ("All jobs" checkbox unchecked by default)',
+            filters: 'old/try.html:706, :3775 ("All jobs" checkbox unchecked by default)',
         },
         page: {
             rowUnit: 'test path',
@@ -583,7 +583,7 @@ const FRAMING: FramingEntry[] = [
             sortKey: 'failing executions (instances.length), ties in insertion order',
             sortDirection: 'desc',
             window: 'the push',
-            // Identical sets on both sides, verified: `try.html:1486` and
+            // Identical sets on both sides, verified: `old/try.html:1486` and
             // `cli/commands/try.ts:430` declare the same five failure statuses,
             // UNEXPECTED-PASS included. Non-test jobs are behind the unchecked
             // "All jobs" box on the page and behind `--all-jobs` here.
@@ -956,7 +956,7 @@ test('issues leads with components, not a flat test list', async () => {
         assert.match(
             row.key,
             / :: /,
-            `issues rows must be Bugzilla components (issues.html:1933), got "${row.key}" — a ` +
+            `issues rows must be Bugzilla components (old/issues.html:1933), got "${row.key}" — a ` +
                 'flat test list here is the exact defect PARITY.md §1 records'
         );
     }
@@ -967,7 +967,7 @@ test('issues ranks components on issueCount descending', async () => {
     const result = json(stdout);
     assertFraming('issues', 'sortKey', result['sort'], 'issues');
 
-    // The order itself, not the label. `issues.html:663-664` sets sortField to
+    // The order itself, not the label. `old/issues.html:663-664` sets sortField to
     // `issueCount` and the direction to desc; a command reporting `sort:
     // "issues"` while emitting rate order would pass a label check.
     const rows = result['rows'] as { key: string; issueCount: number }[];
@@ -975,7 +975,7 @@ test('issues ranks components on issueCount descending', async () => {
     for (let i = 1; i < rows.length; i++) {
         assert.ok(
             rows[i - 1]!.issueCount >= rows[i]!.issueCount,
-            `issues must be ranked by issueCount descending (issues.html:663-664, comparator ` +
+            `issues must be ranked by issueCount descending (old/issues.html:663-664, comparator ` +
                 `:2066-2081): row ${i - 1} has ${rows[i - 1]!.issueCount} and row ${i} has ` +
                 `${rows[i]!.issueCount}`
         );
@@ -985,7 +985,7 @@ test('issues ranks components on issueCount descending', async () => {
 test('issues counts all four issue types by default', async () => {
     const { stdout } = await invoke(['issues', '--json', '--limit', '1']);
     const types = json(stdout)['types'] as string[];
-    // `issues.html:626-638` — four checkboxes, every one `checked`. Pinned as a
+    // `old/issues.html:626-638` — four checkboxes, every one `checked`. Pinned as a
     // literal set rather than compared against DEFAULT_TYPES, which is the
     // constant the command itself reads.
     assertFraming('issues', 'filters', [...types].sort(), ['crash', 'fail', 'skip', 'timeout']);
@@ -1020,7 +1020,7 @@ test('issues reads the 21-day aggregate, and so does the migrated page', async (
         isHistoricalDate(undefined),
         true,
         'no `date` in the hash must mean the 21-day aggregate — this is the migration\'s ' +
-            'deliberate change (site/issues.ts divergence 1). issues.html:3709-3712 loaded the ' +
+            'deliberate change (site/issues.ts divergence 1). old/issues.html:3709-3712 loaded the ' +
             'date-select value instead.'
     );
     assert.equal(isHistoricalDate(HISTORICAL_DATE), true);
@@ -1051,7 +1051,7 @@ test('issues reads the 21-day aggregate, and so does the migrated page', async (
 });
 
 test('issues keeps issue-free tests in a component total, as the page does', async () => {
-    // `issues.html:2007-2013` accumulates `runCount` for every test in the
+    // `old/issues.html:2007-2013` accumulates `runCount` for every test in the
     // component and only then gates the *display* list on `hasIssues` (`:2016`)
     // — so a component's denominator covers its whole population. A CLI that
     // summed only the failing tests would report a higher rate from the same
@@ -1086,13 +1086,13 @@ test('failures rows are message strings ranked on count descending', async () =>
     for (let i = 1; i < rows.length; i++) {
         assert.ok(
             rows[i - 1]!.count >= rows[i]!.count,
-            `failures must rank on count descending (failures.html:102, comparator :602-612)`
+            `failures must rank on count descending (old/failures.html:102, comparator :602-612)`
         );
     }
 });
 
 test('failures keeps the unrecorded-message row, as the page does', async () => {
-    // `failures.html:264` renders '(no failure message)' as a real row. Dropping
+    // `old/failures.html:264` renders '(no failure message)' as a real row. Dropping
     // it would silently shrink the population — and on the fixture it is the
     // largest row, so a filtered-out null would change which failure ranks
     // first.
@@ -1100,7 +1100,7 @@ test('failures keeps the unrecorded-message row, as the page does', async () => 
     const rows = json(stdout)['rows'] as { message: string | null }[];
     assert.ok(
         rows.some((row) => row.message === null),
-        'a group with no recorded message must be a row, not dropped (failures.html:264)'
+        'a group with no recorded message must be a row, not dropped (old/failures.html:264)'
     );
 });
 
@@ -1111,18 +1111,18 @@ test('crashes rows are signatures ranked on count descending', async () => {
     for (let i = 1; i < rows.length; i++) {
         assert.ok(
             rows[i - 1]!.count >= rows[i]!.count,
-            'crashes must rank on count descending (crashes.html:120, comparator :529-539)'
+            'crashes must rank on count descending (old/crashes.html:120, comparator :529-539)'
         );
     }
     // One row per signature, so no signature appears twice.
     const seen = new Set(rows.map((row) => row.signature));
-    assert.equal(seen.size, rows.length, 'the row unit is the signature (crashes.html:484-590)');
+    assert.equal(seen.size, rows.length, 'the row unit is the signature (old/crashes.html:484-590)');
 });
 
 test('crashes counts each test once per signature, unlike the page', async () => {
     // Not a divergence entry, because `testCount` is a value rather than one of
     // the six framing dimensions — but worth pinning here because the page is
-    // the one that is wrong. `crashes.html:496-498` sums `pathData.tests.size`
+    // the one that is wrong. `old/crashes.html:496-498` sums `pathData.tests.size`
     // across every path a signature appears under, double-counting a test that
     // crashed under two paths. The CLI's testCount is the distinct-test count,
     // so it must equal the length of the tests array.
@@ -1137,7 +1137,7 @@ test('crashes counts each test once per signature, unlike the page', async () =>
         assert.equal(
             row.testCount,
             distinct.size,
-            'testCount must be distinct tests; crashes.html:496-498 double-counts across paths ' +
+            'testCount must be distinct tests; old/crashes.html:496-498 double-counts across paths ' +
                 'and that page bug is deliberately not copied'
         );
     }
@@ -1219,7 +1219,7 @@ test('the other tree-wide commands default to xpcshell', async () => {
 
 test('errors rows are source locations, not message texts', async () => {
     // The row unit the page's "Message" option actually produces: `messageId`
-    // interns (kind, text, file, line, component) (`errors.html:367`,
+    // interns (kind, text, file, line, component) (`old/errors.html:367`,
     // `:489-497`), so the same string from two source locations is two rows.
     // The CLI names that grouping `location` — a declared naming divergence —
     // and the identity has to be the same or the divergence is hiding a real
@@ -1271,10 +1271,10 @@ test('errors ranks on occurrences descending, and covers one day', async () => {
     for (let i = 1; i < rows.length; i++) {
         assert.ok(
             rows[i - 1]!.count >= rows[i]!.count,
-            'errors must rank on occurrences descending (errors.html:232, comparator :476-483)'
+            'errors must rank on occurrences descending (old/errors.html:232, comparator :476-483)'
         );
     }
-    // One day, as `errors.html:1144-1152` says in as many words. There is no
+    // One day, as `old/errors.html:1144-1152` says in as many words. There is no
     // multi-day errors aggregate, so this is the one window both sides can have.
     assert.equal(result['date'], '2026-08-03');
     assert.equal(
@@ -1284,7 +1284,7 @@ test('errors ranks on occurrences descending, and covers one day', async () => {
 });
 
 test('errors counts every marker kind the file declares', async () => {
-    // `errors.html:184-190` — seven checkboxes, all checked. The CLI has no
+    // `old/errors.html:184-190` — seven checkboxes, all checked. The CLI has no
     // kind filter by default, and the check that says so is that the matched
     // total equals the file total.
     const { stdout } = await invoke(['errors', '--json', '--limit', '1']);
@@ -1292,7 +1292,7 @@ test('errors counts every marker kind the file declares', async () => {
     assert.equal(
         totals.matched,
         totals.file,
-        'with no --kind, every marker in the file must be counted (errors.html:184-190)'
+        'with no --kind, every marker in the file must be counted (old/errors.html:184-190)'
     );
 });
 
@@ -1301,7 +1301,7 @@ test('errors counts every marker kind the file declares', async () => {
 // =========================================================================
 
 test('manifests rows are manifest paths ranked on median descending', async () => {
-    // The one page whose default sort is not a count. `manifests.html:360-361`
+    // The one page whose default sort is not a count. `old/manifests.html:360-361`
     // sets `currentSortColumn = 'median'`, applied at `:499`.
     const { stdout } = await invoke(['manifests', '--json', '--limit', '0']);
     const result = json(stdout);
@@ -1323,14 +1323,14 @@ test('manifests rows are manifest paths ranked on median descending', async () =
         }
         assert.ok(
             row.durations.median <= previous,
-            `manifests must rank on median descending (manifests.html:360-361, applied :499); ` +
+            `manifests must rank on median descending (old/manifests.html:360-361, applied :499); ` +
                 `${row.manifest} has median ${row.durations.median} after ${previous}`
         );
         previous = row.durations.median;
     }
     // Row unit: one row per manifest, no repeats.
     const seen = new Set(rows.map((row) => row.manifest));
-    assert.equal(seen.size, rows.length, 'the row unit is the manifest path (manifests.html:642-679)');
+    assert.equal(seen.size, rows.length, 'the row unit is the manifest path (old/manifests.html:642-679)');
 });
 
 test('manifests reports skipped pairs as skipped, not as zero-duration', async () => {
@@ -1349,7 +1349,7 @@ test('manifests reports skipped pairs as skipped, not as zero-duration', async (
             assert.ok(
                 row.durations.median > 0,
                 'a manifest with statistics must have a non-zero median; a zero means a skipped ' +
-                    'pair leaked into the distribution (manifests.html:416, :441-442, :461)'
+                    'pair leaked into the distribution (old/manifests.html:416, :441-442, :461)'
             );
         }
     }
@@ -1376,7 +1376,7 @@ test('manifests covers one artifact, with no date control', async () => {
 test('summary is a 7-day window per harness, from the stats file', async () => {
     // The odd one out on two axes, and both are asserted because both are
     // easy to change by accident: 7 days where everything else is 21
-    // (`index.html:524`, `:534` call `getRecentStats(stats, 7)`), and a
+    // (`old/index.html:524`, `:534` call `getRecentStats(stats, 7)`), and a
     // different file — `{harness}-stats.json`, not the issues aggregate.
     const { stdout, requested } = await invoke(['summary', '--json']);
     const harnesses = json(stdout)['harnesses'] as {
@@ -1387,7 +1387,7 @@ test('summary is a 7-day window per harness, from the stats file', async () => {
     assert.deepEqual(
         harnesses.map((entry) => entry.harness),
         ['xpcshell', 'mochitest'],
-        'one row per harness, in source order — index.html:517-556 has no ranking'
+        'one row per harness, in source order — old/index.html:517-556 has no ranking'
     );
     for (const entry of harnesses) {
         assertFraming('summary', 'window', entry.current.dayCount, 7);
@@ -1402,7 +1402,7 @@ test('summary is a 7-day window per harness, from the stats file', async () => {
 
 test('summary reports invalid jobs separately rather than mixing them into one rate', async () => {
     // Not framing drift — a page bug the CLI declines to reproduce.
-    // `index.html:476` subtracts invalid jobs from the Flaky Job Failures
+    // `old/index.html:476` subtracts invalid jobs from the Flaky Job Failures
     // numerator and `:479` leaves them in the denominator, so the rate can go
     // negative when invalid jobs exceed failed ones. The CLI keeps the two as
     // separate rows, which is why the numbers here are both non-negative.
@@ -1542,7 +1542,7 @@ function job(jobName: string, taskId: string, result: string): TreeherderJob {
 
 test('try ranks on failing executions, not on distinct job runs', async () => {
     // PARITY.md §1's "order parity" row, and the only one of the three classes
-    // that produces the same set in a different order. `try.html:1749` sorts on
+    // that produces the same set in a different order. `old/try.html:1749` sorts on
     // `a.instances.length` — one entry per failing marker — so a test that
     // failed twice in one job outranks a test that failed once in two jobs.
     // Ranking on job runs instead flattens both to 2 and reverses them.
@@ -1601,7 +1601,7 @@ test('try ranks on failing executions, not on distinct job runs', async () => {
     assert.deepEqual(
         all.map((entry) => entry.path),
         [twice, onceEach],
-        'the ranking must put the 3-executions-in-1-job test first (try.html:1749, count = ' +
+        'the ranking must put the 3-executions-in-1-job test first (old/try.html:1749, count = ' +
             'instances.length). Ranking on distinct job runs puts the 2-jobs test first and ' +
             'produces the same set in the wrong order — the defect PARITY.md §1 records as ' +
             'uncatchable by a value diff.'
@@ -1612,7 +1612,7 @@ test('try breaks ties on the path, which the page does not', async () => {
     // The declared divergence. The page leaves equal counts in insertion order
     // and relies on the stability of two `sort()` calls, so its tie order is
     // the order eight web workers finished parsing profiles fetched 64 at a
-    // time (`try.html:1113`) — a race that reshuffles between reloads. A
+    // time (`old/try.html:1113`) — a race that reshuffles between reloads. A
     // command whose output is pasted into bugs cannot be non-deterministic.
     //
     // Asserted by feeding the tied tests in reverse alphabetical order: if the
@@ -1643,7 +1643,7 @@ test('try breaks ties on the path, which the page does not', async () => {
 });
 
 test('try counts an UNEXPECTED-PASS as a failure, as the page does', async () => {
-    // `try.html:1486` puts UNEXPECTED-PASS in FAILURE_STATUSES, and it is the
+    // `old/try.html:1486` puts UNEXPECTED-PASS in FAILURE_STATUSES, and it is the
     // one that reads as a contradiction: a test that passed when the manifest
     // said it would fail is a change the push caused, so leaving it out would
     // silently drop a real result. Asserted on output rather than by comparing
@@ -1685,7 +1685,7 @@ test('try counts an UNEXPECTED-PASS as a failure, as the page does', async () =>
     assert.deepEqual(
         all.map((entry) => entry.path),
         [path],
-        'an UNEXPECTED-PASS must become a failure row (try.html:1486)'
+        'an UNEXPECTED-PASS must become a failure row (old/try.html:1486)'
     );
 });
 
@@ -1695,7 +1695,7 @@ test('try groups into the three sections and covers the push, not a window', asy
         [job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed')],
         { TASKA: profileWithFailures([{ test: TEST_PATH, executions: 1 }]) }
     );
-    // The grouping is the page's three tables (`try.html:1765-1766`), and every
+    // The grouping is the page's three tables (`old/try.html:1765-1766`), and every
     // key must be present even when a section is empty — an absent key would
     // make "no perma-fails" indistinguishable from "the field was dropped".
     for (const key of ['permaFails', 'knownIntermittents', 'newIntermittents']) {
@@ -1708,7 +1708,7 @@ test('try groups into the three sections and covers the push, not a window', asy
 });
 
 test('try lists only test jobs by default; --all-jobs adds the rest', async () => {
-    // `try.html:706`/`:3775` — the "All jobs" checkbox starts unchecked, and it
+    // `old/try.html:706`/`:3775` — the "All jobs" checkbox starts unchecked, and it
     // changes the universe (`:1342-1344`) rather than only the display.
     const jobs = [
         job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed'),
@@ -1741,6 +1741,6 @@ test('try lists only test jobs by default; --all-jobs adds the rest', async () =
     assert.doesNotMatch(
         streams.stdout,
         /build-linux64/,
-        'non-test jobs are behind --all-jobs, as the unchecked "All jobs" box is (try.html:706)'
+        'non-test jobs are behind --all-jobs, as the unchecked "All jobs" box is (old/try.html:706)'
     );
 });

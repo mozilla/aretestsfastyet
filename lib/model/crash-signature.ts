@@ -1,7 +1,7 @@
 /**
  * Crash signatures, and reading a hang out of a minidump.
  *
- * A **port** of `crash-viewer.html:520`, whose own constants come from
+ * A **port** of `old/crash-viewer.html:520`, whose own constants come from
  * Mozilla's `mozcrash.py`. The heuristic is three rules that sound simpler than
  * they are, which is why `PLAN.md` §3 step 5 asks for it to be tested against
  * real dumps rather than reimplemented in a prompt:
@@ -51,7 +51,7 @@ import type { Frame, StackwalkFile, Thread } from '../formats/stackwalk.ts';
 /**
  * Frames that mean "the process deliberately aborted", not "here is the bug".
  *
- * Copied verbatim from `crash-viewer.html:474`, itself from `mozcrash.py`.
+ * Copied verbatim from `old/crash-viewer.html:474`, itself from `mozcrash.py`.
  * Matched **exactly**: these are full symbol names as the walker emits them,
  * parameter lists included, which is why `Abort(char const*)` and
  * `static void Abort(const char *)` both appear — two spellings from two
@@ -106,7 +106,7 @@ export const UNKNOWN_SIGNATURE = '@ Unknown';
  *
  * ## Why `||` and not `??`
  *
- * `crash-viewer.html:513` writes `frame.function || …`, and this used to write
+ * `old/crash-viewer.html:513` writes `frame.function || …`, and this used to write
  * `??`. The two differ on exactly one input — `function: ""` — where `??` keeps
  * the empty string and `||` falls back to the module. Differential fuzzing of
  * 200,000 synthetic dumps against a verbatim transcription of the original
@@ -219,7 +219,7 @@ export interface FaultingAddress {
 
 /**
  * Reads the faulting address and what the walker made of it
- * (`crash-viewer.html:729`).
+ * (`old/crash-viewer.html:729`).
  *
  * The null-pointer case is singled out because it is the one that changes what
  * a reader should do: a fault at `0x18` is a null dereference of a field at

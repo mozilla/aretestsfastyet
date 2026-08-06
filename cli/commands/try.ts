@@ -9,7 +9,7 @@
  * Not from an aggregate — the push's own results are not published as one.
  * `try.html` reads, per failed test job, the job's
  * `public/test_info/profile_resource-usage.json` artifact and extracts the
- * test-status markers from it (`try.html:955`, `profile-worker.js:112`). That
+ * test-status markers from it (`old/try.html:955`, `profile-worker.js:112`). That
  * is the only source of per-test outcomes for a push, so this command does the
  * same. `parseTestMarkers()` below is the port.
  *
@@ -36,7 +36,7 @@
  * reran it *within the same job* is intermittent almost by definition. The
  * profile records the rerun phase as a `retry` text marker, so a `PASS` marker
  * inside that range for a test that also failed is the signal
- * (`try.html:1393`). This is a within-job rerun, not the job-level `retryId`.
+ * (`old/try.html:1393`). This is a within-job rerun, not the job-level `retryId`.
  *
  * **Same message.** A test that already fails 8% of the time on central, but
  * with a *different* message than the one in your push, is **not** exonerated.
@@ -95,7 +95,7 @@ export const TRY_OPTIONS: OptionSpecs = {
     },
 };
 
-/** The harnesses whose profiles carry test markers. From `try.html:735`. */
+/** The harnesses whose profiles carry test markers. From `old/try.html:735`. */
 const SUPPORTED_HARNESSES = ['mochitest', 'xpcshell'];
 
 /** Default rows per section. */
@@ -129,8 +129,8 @@ export interface TryFailure {
      * one job run can hold several failing executions of it, and a test that
      * failed twice in one job is a worse failure than one that failed once.
      * `try.html`'s `count` column is `test.instances.length`
-     * (`try.html:1869`), one entry per failing marker, and its default sort is
-     * that column descending (`try.html:744`). Ranking on `failedRuns` instead
+     * (`old/try.html:1869`), one entry per failing marker, and its default sort is
+     * that column descending (`old/try.html:744`). Ranking on `failedRuns` instead
      * flattens every such test to its job count: measured on try push
      * 09028ab93fe1, that turned a top row of 4, 4, 3, 3, 3 into 2, 2, 2, 2, 2
      * and reordered the whole section.
@@ -426,7 +426,7 @@ function runKeyOf(timing: TestTiming): string {
     return `${timing.taskId}.${timing.retryId}`;
 }
 
-/** Statuses that mean the test did not pass. From `try.html:1486`. */
+/** Statuses that mean the test did not pass. From `old/try.html:1486`. */
 const FAILURE_STATUSES = new Set(['FAIL', 'TIMEOUT', 'CRASH', 'ERROR', 'UNEXPECTED-PASS']);
 
 /** Whether a status means failure, ignoring the execution-mode suffix. */
@@ -621,7 +621,7 @@ interface CrashMarker {
  * Extracts per-test outcomes from a job's resource-usage profile.
  *
  * Ported from `extractTestTimings()` (`profile-worker.js:112`) and the richer
- * copy in `try.html:955`. What it keeps from both:
+ * copy in `old/try.html:955`. What it keeps from both:
  *
  * - **The `parallel` and `retry` text markers are ranges**, not flags. A test
  *   marker overlapping the `parallel` range ran in parallel; one overlapping
@@ -633,7 +633,7 @@ interface CrashMarker {
  * - **The test path may be `manifest.toml:path/to/test.js`**, and only the part
  *   after the colon is the path the aggregates use.
  * - **`Crash` markers that no test marker claims become synthetic `CRASH`
- *   entries** (`try.html:1042`). This is not an edge case. Measured on the
+ *   entries** (`old/try.html:1042`). This is not an edge case. Measured on the
  *   five failed Linux mochitest jobs of try push 717fc67feaa071: four of them
  *   (`-gpu`, `-gpu-nofis`, `-gpu-swr`, `-gpu-swr-nofis`) had *every* `Test`
  *   marker at `PASS` or `SKIP` — `{SKIP: 9, PASS: 8}` in each — with the
@@ -699,7 +699,7 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
     // The failure messages, which live on separate `TestStatus` markers rather
     // than on the `Test` marker. Named `FAIL` or `ERROR` in the string table
     // — the marker *name*, not `data.status`, is what distinguishes them.
-    // `try.html:936`.
+    // `old/try.html:936`.
     const failStringId = stringArray.indexOf('FAIL');
     const errorStringId = stringArray.indexOf('ERROR');
     const testStatusMarkers: TestStatusMarker[] = [];
@@ -718,7 +718,7 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         }
         testStatusMarkers.push({ test: data.test, time: startTime[i] ?? 0, message });
     }
-    // `try.html:952` sorts by test then time, and then takes the *first* match
+    // `old/try.html:952` sorts by test then time, and then takes the *first* match
     // in that order — which for one test's one time range is its earliest
     // message. Sorting by time alone gives the same first element per range
     // and keeps the intent visible.
@@ -771,7 +771,7 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         let message = normalizeMessage(data.message ?? null);
         // A failing test's message comes from the `TestStatus` markers logged
         // inside its execution, and overrides the `Test` marker's own
-        // `message` when there is one — `try.html:983` assigns
+        // `message` when there is one — `old/try.html:983` assigns
         // `allMessages[0].message` over whatever it had. It is usually the
         // only message there is: the `Test` marker has no `message` field for
         // a plain assertion failure, so without this every `FAIL` on the push
@@ -809,7 +809,7 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         });
     }
 
-    // Crashes no test marker claimed. `try.html:1042`: these happen during
+    // Crashes no test marker claimed. `old/try.html:1042`: these happen during
     // manifest teardown or shutdown, so the test they are recorded against has
     // usually already reported PASS. Dropping them loses the only evidence of
     // the failure — measured on push 717fc67feaa071, where four of the five
@@ -848,7 +848,7 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
 /**
  * Normalizes a failure message so two runs of the same failure group together.
  *
- * From `try.html:865`. The substitutions strip the parts that differ per run —
+ * From `old/try.html:865`. The substitutions strip the parts that differ per run —
  * a task number, a rejection timestamp, an elapsed time — which would
  * otherwise make every occurrence its own message and defeat the same-message
  * comparison against central entirely.
@@ -876,7 +876,7 @@ function aggregateFailures(
     runsPerJobName: ReadonlyMap<string, number>
 ): TryFailure[] {
     // A test that passed when the harness reran it inside the same job is
-    // intermittent almost by definition (`try.html:1393`). Keyed by run, since
+    // intermittent almost by definition (`old/try.html:1393`). Keyed by run, since
     // the same test can pass on rerun in one job and fail outright in another.
     const passedOnRerunByRun = new Map<string, Set<string>>();
     for (const timing of timings) {
@@ -966,8 +966,8 @@ function aggregateFailures(
         //
         // Per-config, not per-test, because those are different questions and
         // only the per-config one matches `try.html`, which tags each failing
-        // *instance* intermittent (`try.html:1400`) and calls the test
-        // permanent when any instance is not (`try.html:1765`).
+        // *instance* intermittent (`old/try.html:1400`) and calls the test
+        // permanent when any instance is not (`old/try.html:1765`).
         //
         // Measured on push 7d16bff8: `browser_ml_heuristics.js` failed on
         // three configs — intermittently on `browser-chrome-3` and
@@ -1022,13 +1022,13 @@ function aggregateFailures(
             central: null,
         });
     }
-    // `try.html:744` — the page's default sort, and now this command's.
+    // `old/try.html:744` — the page's default sort, and now this command's.
     //
     // The tiebreak is deliberately *not* the page's. The page leaves equal
     // counts in `Array.from(testMap.values())` order and relies on the
     // stability of two `sort()` calls, so its order among ties is the order
     // the timings arrived — which is the order eight web workers finished
-    // parsing profiles fetched 64 at a time (`try.html:1113`). That is a
+    // parsing profiles fetched 64 at a time (`old/try.html:1113`). That is a
     // network and scheduler race: reloading the page reorders the ties. A
     // command whose output is diffed and pasted into bugs cannot be
     // non-deterministic, so ties break on the path.

@@ -11,11 +11,11 @@
  *   work someone owes.
  * - **`run-if`** — the test is explicitly scoped to some other platform. It
  *   not running here is the annotation working as intended, not a problem.
- *   `issues.html:641` says so in the UI.
+ *   `old/issues.html:641` says so in the UI.
  * - **no message** — every site counts these as skips. Not because anyone
  *   decided to: `msg?.startsWith('run-if')` is `undefined` for a null message,
  *   which is falsy, so `perma-fails.html:511`, `variant.html:575` and
- *   `test.html:2642` fall through to the counting path. That behaviour is
+ *   `old/test.html:2642` fall through to the counting path. That behaviour is
  *   preserved here, and made explicit rather than incidental — a skip whose
  *   reason was not recorded is still a skip, and dropping it would understate
  *   the count.
@@ -32,7 +32,7 @@
  * | --- | --- | --- |
  * | `xpcshell-timings.html:666` | `messageIds` | **1** (`skipCount++`) |
  * | `common-test-data.js:303` | `messageIds` | `getCountAtIndex(...)` |
- * | `perma-fails.html:504`, `test.html:2637`, `variant.html:575` | `jobNameIds` | `getCountAtIndex(...)` |
+ * | `perma-fails.html:504`, `old/test.html:2637`, `variant.html:575` | `jobNameIds` | `getCountAtIndex(...)` |
  *
  * Note which site is where. `common-test-data.js:303` iterates `messageIds`
  * like `xpcshell-timings.html` but adds `getCountAtIndex(statusGroup, i)`, so
@@ -111,8 +111,8 @@ export function countsAsSkip(message: string | null | undefined): boolean {
 /**
  * Strips the `skip-if: ` prefix for display.
  *
- * Every page that shows a skip message does this (`issues.html:1679`,
- * `test.html:927`, and five more), because the prefix is the same on every
+ * Every page that shows a skip message does this (`old/issues.html:1679`,
+ * `old/test.html:927`, and five more), because the prefix is the same on every
  * message and the condition after it is the informative part.
  */
 export function displaySkipMessage(message: string): string {

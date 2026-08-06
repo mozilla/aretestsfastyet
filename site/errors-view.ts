@@ -61,7 +61,7 @@
  *
  * The single most important framing fact. A row in the message view is one
  * **(kind, text, file, line)** tuple, so the same text emitted from two places
- * is two rows with two counts. `groupName()` (`errors.html:489`) spells the
+ * is two rows with two counts. `groupName()` (`old/errors.html:489`) spells the
  * display out: the text plus `" file:line"`.
  *
  * **The component is deliberately not in the key**, and that is a change from
@@ -130,7 +130,7 @@ export type ErrorView = 'message' | 'test' | 'component';
  * The default view.
  *
  * `message`, because it is the **first `<option>` and none carries `selected`**
- * (`errors.html:194-198`), so that is what `getView()` (`:599`) reads before
+ * (`old/errors.html:194-198`), so that is what `getView()` (`:599`) reads before
  * anything else runs. The hash can override it (`:1128-1130`) and nothing else
  * can.
  */
@@ -144,13 +144,13 @@ export function isErrorView(value: string | undefined): value is ErrorView {
 /**
  * The marker kinds and their checkbox/CSS slugs.
  *
- * **Seven, not six.** `errors.html:211`'s comment says "The six fixed marker
+ * **Seven, not six.** `old/errors.html:211`'s comment says "The six fixed marker
  * kinds" directly above a table of seven — a comment its own code contradicts,
  * which is one of the traps this project has been bitten by. The count is
  * stated here as a number that a test asserts (`test/errors-view.test.ts`), so
  * it cannot drift again silently.
  *
- * The order is the markup's (`errors.html:184-190`), which is the order the
+ * The order is the markup's (`old/errors.html:184-190`), which is the order the
  * checkboxes appear in and the order `getDisabledKindSlugs` (`:1113`) writes
  * them to the URL in. `Object.values` on an object literal preserves insertion
  * order for string keys, so upstream depends on this ordering too.
@@ -191,7 +191,7 @@ export interface ViewColumn {
 }
 
 /**
- * The columns each view shows, besides the name column. `errors.html:223-227`.
+ * The columns each view shows, besides the name column. `old/errors.html:223-227`.
  *
  * The message view has **no Messages column**, and that is not an omission: a
  * message-view row is one message *as a reader means the word* — one text at
@@ -221,7 +221,7 @@ export const VIEW_COLS: Readonly<Record<ErrorView, readonly ViewColumn[]>> = {
     ],
 };
 
-/** The name column's header per view. `errors.html:228`. */
+/** The name column's header per view. `old/errors.html:228`. */
 export const VIEW_NAME_LABEL: Readonly<Record<ErrorView, string>> = {
     message: 'Message',
     test: 'Test',
@@ -242,14 +242,14 @@ export interface SortState {
 /**
  * The sort every view starts on: most occurrences first.
  *
- * `errors.html:232`, and **re-asserted on every view change** (`:1053`) rather
+ * `old/errors.html:232`, and **re-asserted on every view change** (`:1053`) rather
  * than carried over — so switching from a name-sorted message view to the test
  * view lands on count-descending, not on name-ascending.
  */
 export const INITIAL_SORT: SortState = { column: 'count', ascending: false };
 
 /**
- * The next sort state after clicking a header. `errors.html:818-828`.
+ * The next sort state after clicking a header. `old/errors.html:818-828`.
  *
  * The asymmetry is upstream's and is the interesting part: clicking the *same*
  * column flips the direction, but clicking a **new** column starts descending
@@ -271,7 +271,7 @@ export function nextSort(current: SortState, column: SortColumn): SortState {
 /**
  * One errors file, with every per-message and per-test attribute resolved once.
  *
- * `prepareData` (`errors.html:259-350`). The shape is dictated by the size of
+ * `prepareData` (`old/errors.html:259-350`). The shape is dictated by the size of
  * the input: the pinned mochitest 2026-08-03 file holds 210,331 (test, message)
  * groups over 35,474 messages and 20,345 tests, carrying 67,840,668
  * occurrences. Every field here is either a typed array or a plain array
@@ -354,7 +354,7 @@ export interface PreparedErrors {
 /**
  * Compressed-sparse-row bucketing of marker groups by their group id.
  *
- * `getCSR` (`errors.html:357-386`). `order[gStart[g] … gStart[g+1])` lists every
+ * `getCSR` (`old/errors.html:357-386`). `order[gStart[g] … gStart[g+1])` lists every
  * marker group belonging to display group `g`, so a filter pass is a flat scan
  * of contiguous runs with no `Map` and no per-group `Set`, and expanding one row
  * touches only that row's run.
@@ -369,10 +369,10 @@ export interface Csr {
     labels: readonly string[] | null;
 }
 
-/** What a message with no text displays as. `errors.html:295`. */
+/** What a message with no text displays as. `old/errors.html:295`. */
 export const NO_MESSAGE = '(no message)';
 /**
- * What a message with no component displays as. `errors.html:298`.
+ * What a message with no component displays as. `old/errors.html:298`.
  *
  * The shared constant, not a second copy of the string: the CLI's rows use the
  * same sentinel, and `test/errors-parity.test.ts` compares the two sides'
@@ -425,7 +425,7 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
             groupTotal[g] = sum;
         }
     } else {
-        // The counts-only shape stores a scalar per group. `errors.html:288`.
+        // The counts-only shape stores a scalar per group. `old/errors.html:288`.
         const scalar = counts as number[];
         for (let g = 0; g < nGroups; g++) {
             groupTotal[g] = scalar[g]!;
@@ -440,7 +440,7 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
         id != null ? tables.components[id]! : UNKNOWN_COMPONENT
     );
     // The haystack a search matches a *message* against: its text, its file and
-    // its component, lowercased once. `errors.html:299`. Note what is absent —
+    // its component, lowercased once. `old/errors.html:299`. Note what is absent —
     // the **line number** and the **kind** are not searchable, so `1234` finds
     // nothing and `warning` matches only messages whose text says it.
     const msgBlob = msgText.map(
@@ -451,7 +451,7 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
         const path = tables.testPaths[pathId]!;
         const name = tables.testNames[testInfo.testNameIds[i]!]!;
         // A test at the repository root has an empty path and must not render
-        // as `/name`, which is the rule `joinTestPath` holds. `errors.html:306`.
+        // as `/name`, which is the rule `joinTestPath` holds. `old/errors.html:306`.
         return joinTestPath(path, name);
     });
     const testBlob = testFull.map((s) => s.toLowerCase());
@@ -493,7 +493,7 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
     }
 
     // The test view groups by the full path string, so two `testInfo` entries
-    // with the same path *and* name must share a row. `errors.html:325-331`.
+    // with the same path *and* name must share a row. `old/errors.html:325-331`.
     const testIndex = new Map<string, number>();
     const testGroupLabel: string[] = [];
     const testGroupId = new Int32Array(testFull.length);
@@ -511,7 +511,7 @@ export function prepareErrors(raw: ErrorsFile): PreparedErrors {
     // Per-kind grand totals, so the message view can refresh its Total row on a
     // checkbox toggle without re-grouping. `testKindMask` exists because the
     // distinct-test total is *not* summable across kinds: one test emitting a
-    // warning and an error is one test, not two. `errors.html:338-347`.
+    // warning and an error is one test, not two. `old/errors.html:338-347`.
     const msgKindId = messages.markerNameIds;
     const kindTotal = new Float64Array(tables.markerNames.length);
     const testKindMask = new Int32Array(testFull.length);
@@ -629,7 +629,7 @@ export function getCsr(data: PreparedErrors, view: ErrorView): Csr {
 /**
  * Which marker kinds are enabled, indexed by the file's `markerNameId`.
  *
- * `computeKindOn` (`errors.html:389-397`) with the DOM read lifted out: the
+ * `computeKindOn` (`old/errors.html:389-397`) with the DOM read lifted out: the
  * caller passes the set of *disabled slugs*, which is also exactly what the URL
  * carries (`hide=`, `:1113-1116`).
  *
@@ -654,7 +654,7 @@ export function kindStates(
     });
 }
 
-/** Bitmask of the enabled kinds. `kindOnMask` (`errors.html:701`). */
+/** Bitmask of the enabled kinds. `kindOnMask` (`old/errors.html:701`). */
 export function kindMask(kindOn: readonly boolean[]): number {
     let mask = 0;
     for (let k = 0; k < kindOn.length; k++) {
@@ -668,7 +668,7 @@ export function kindMask(kindOn: readonly boolean[]): number {
 /**
  * The disabled slugs a double-click on one checkbox produces.
  *
- * "Solo": show only that kind. `errors.html:1214-1223`. Every slug **in the
+ * "Solo": show only that kind. `old/errors.html:1214-1223`. Every slug **in the
  * markup's table** except the clicked one is disabled — including a slug for a
  * kind the loaded file does not have, which is harmless because `kindStates`
  * only reads the ones the file names.
@@ -713,7 +713,7 @@ export interface Totals {
      * Distinct messages, or `null` when the view has no Messages column.
      *
      * `null` rather than 0 for the message view: `buildGroups` never computes it
-     * there (`errors.html:424`, `needMsgs = view !== 'message'`), and 0 would be
+     * there (`old/errors.html:424`, `needMsgs = view !== 'message'`), and 0 would be
      * a number a reader could take for a measurement. The renderer never asks
      * for it, because `VIEW_COLS.message` has no `messages` column.
      */
@@ -731,7 +731,7 @@ export interface GroupingResult {
 /**
  * Groups every marker for one view, honouring the kind checkboxes.
  *
- * `buildGroups` (`errors.html:416-474`). One pass over the CSR runs,
+ * `buildGroups` (`old/errors.html:416-474`). One pass over the CSR runs,
  * accumulating into typed arrays.
  *
  * ## The kind filter is applied here **only outside the message view**
@@ -870,7 +870,7 @@ export function buildGroupRows(
 /**
  * A row's display name.
  *
- * `groupName` (`errors.html:489-497`). In the test and component views it is
+ * `groupName` (`old/errors.html:489-497`). In the test and component views it is
  * the label table's entry; in the message view it is built on demand from the
  * row's diagnostic and **cached onto the row**, because materializing a string
  * per row during grouping would allocate 31,530 strings the page may never
@@ -957,7 +957,7 @@ export function componentBreakdownTitle(shares: readonly ComponentShare[]): stri
     return componentBreakdownLines(shares).join('\n');
 }
 
-/** A row's value in one column. `colValue` (`errors.html:589-595`). */
+/** A row's value in one column. `colValue` (`old/errors.html:589-595`). */
 export function colValue(
     data: PreparedErrors,
     row: ErrorGroupRow,
@@ -976,7 +976,7 @@ export function colValue(
 }
 
 /**
- * Ranks the rows **in place**. `sortGroups` (`errors.html:476-483`).
+ * Ranks the rows **in place**. `sortGroups` (`old/errors.html:476-483`).
  *
  * In place because the page re-sorts the already-grouped array on a header click
  * rather than re-grouping (`:826`), and because `buildGroupRows` sorts the array
@@ -1063,7 +1063,7 @@ export function ensureHaystacks(
  *    that legitimately survived with a smaller count.
  * 2. **The search term**, a plain lowercase substring test against the
  *    haystack. Not a regex, no `!`-prefix negation, no word boundaries —
- *    `errors.html:678` is `g.hay.indexOf(term) < 0`. Checked against the whole
+ *    `old/errors.html:678` is `g.hay.indexOf(term) < 0`. Checked against the whole
  *    page: nothing anywhere in `errors.html` treats `!` specially, so a search
  *    for `!foo` looks for the literal three characters and matches nothing on
  *    the pinned files.
@@ -1097,7 +1097,7 @@ export function visibleRows(
 /**
  * The message view's totals, recomputed from the per-kind aggregates.
  *
- * `applyFilter`'s second half (`errors.html:686-695`). The message view does not
+ * `applyFilter`'s second half (`old/errors.html:686-695`). The message view does not
  * re-group on a checkbox toggle, so its Total row would otherwise keep the
  * all-kinds numbers — and because `pctTitle` divides by `total`, **every
  * percentage tooltip on the page would be wrong too**, not just the one row.
@@ -1345,7 +1345,7 @@ export function instanceRows(
 /**
  * The share-of-total tooltip on an occurrences cell, or `null` for none.
  *
- * `pctTitle` (`errors.html:631-635`). **The only ratio on this page** — there is
+ * `pctTitle` (`old/errors.html:631-635`). **The only ratio on this page** — there is
  * no run-count normalization anywhere, because the file's universe is the
  * markers it contains and a test that emitted nothing has no row.
  *
@@ -1393,7 +1393,7 @@ export function pctTitle(count: number, total: number, visibleTotal?: number): s
 
 // --- URL state ------------------------------------------------------------
 
-/** The four keys this page's hash carries. `errors.html:1169-1174`. */
+/** The four keys this page's hash carries. `old/errors.html:1169-1174`. */
 export interface UrlState {
     /** A date, or `21days`. */
     date: string;
@@ -1405,13 +1405,13 @@ export interface UrlState {
     hide: string;
 }
 
-/** Parses `hide=` into a set. `loadFromUrlHash` (`errors.html:1133`). */
+/** Parses `hide=` into a set. `loadFromUrlHash` (`old/errors.html:1133`). */
 export function parseHidden(hide: string | undefined): Set<string> {
     return new Set((hide ?? '').split(',').filter(Boolean));
 }
 
 /**
- * Serializes the disabled slugs. `getDisabledKindSlugs` (`errors.html:1113`).
+ * Serializes the disabled slugs. `getDisabledKindSlugs` (`old/errors.html:1113`).
  *
  * In markup order, not in the order they were unchecked, so the same visual
  * state always produces the same URL.
@@ -1433,7 +1433,7 @@ export function readUrlState(params: URLSearchParams): Partial<UrlState> {
     }
     const view = params.get('view');
     // Validated, not trusted: `#view=bogus` must leave the page on its current
-    // view rather than on a view with no columns. `errors.html:1128`.
+    // view rather than on a view with no columns. `old/errors.html:1128`.
     if (view !== null && isErrorView(view)) {
         state.view = view;
     }
@@ -1444,7 +1444,7 @@ export function readUrlState(params: URLSearchParams): Partial<UrlState> {
     return state;
 }
 
-/** The hash value meaning the 21-day aggregate. `errors.html:1145`. */
+/** The hash value meaning the 21-day aggregate. `old/errors.html:1145`. */
 export const HISTORICAL_DATE = '21days';
 
 /**
@@ -1453,7 +1453,7 @@ export const HISTORICAL_DATE = '21days';
  * **Only the exact string `21days`.** This is the opposite of
  * `site/drilldown-view.ts`'s `isHistoricalDate`, where an absent date *also*
  * means historical — and the difference is real, not an oversight on either
- * side: `errors.html:1144-1152`'s comment says "Default: most recent single
+ * side: `old/errors.html:1144-1152`'s comment says "Default: most recent single
  * day", and its `else` branch toggles *out* of historical mode. A link with no
  * `date` therefore gives the crashes page the 21-day view and this page one day.
  */

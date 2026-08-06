@@ -55,7 +55,7 @@ export interface IssueRow {
     /**
      * Non-passing runs of the requested types — the dashboard's `issueCount`.
      *
-     * `issues.html:1071-1076` computes exactly this: the sum of `skipCount`,
+     * `old/issues.html:1071-1076` computes exactly this: the sum of `skipCount`,
      * `failCount`, `timeoutCount` and `crashCount` over the *enabled* issue-type
      * checkboxes, all four of which are checked by default (`:626-638`). It is a
      * count of runs, not of tests, and it is what the page's default ranking
@@ -113,7 +113,7 @@ export interface IssuesOptions {
 
 /**
  * Every issue type, matching the dashboard's four checkboxes, all of which
- * default to checked (`issues.html:626-638`).
+ * default to checked (`old/issues.html:626-638`).
  */
 export const DEFAULT_TYPES: readonly IssueType[] = ['fail', 'timeout', 'crash', 'skip'];
 
@@ -203,7 +203,7 @@ export function findIssues(
         const nonPass = row.failCount + row.timeoutCount + row.crashCount;
         row.failRate = row.runCount > 0 ? (nonPass / row.runCount) * 100 : 0;
 
-        // The dashboard's `issueCount`/`issuePercentage`, `issues.html:1071-1080`.
+        // The dashboard's `issueCount`/`issuePercentage`, `old/issues.html:1071-1080`.
         row.issueCount = issueCountOf(row, types);
         const rateDenominator = row.runCount + (types.has('skip') ? row.skipCount : 0);
         row.issueRate = rateDenominator > 0 ? (row.issueCount / rateDenominator) * 100 : 0;

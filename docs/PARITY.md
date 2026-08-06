@@ -55,7 +55,7 @@ Migrating first gives every comparison **one variable**:
 
 It also dissolves the seam problem. Comparing against today's pages needs
 `window.__parity` getters retrofitted onto files that gate everything behind
-`DOMContentLoaded` (`try.html:3759`) with logic inline across seven `<script>`
+`DOMContentLoaded` (`old/try.html:3759`) with logic inline across seven `<script>`
 blocks. A page being rewritten onto `lib/` can expose its view model as a design
 property instead.
 

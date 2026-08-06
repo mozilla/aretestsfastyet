@@ -33,13 +33,13 @@
  * `onclick="handleCellClick(this, event)"` attributes to reach global
  * functions, and what forces `originalCellContent` — a `WeakMap` of each cell's
  * original HTML, re-parsed with `innerHTML` every time a day filter is cleared
- * (`test.html:2267`). Building nodes removes the need for both: a listener is
+ * (`old/test.html:2267`). Building nodes removes the need for both: a listener is
  * attached to the element it belongs to, and clearing a filter restores values
  * rather than re-parsing markup.
  *
  * It also removes the escaping question. The old page is careful and, as far as
  * the corpus shows, correct — but it also contains
- * `class="issue-badge badge-fail "data-type="fail"` (`test.html:2769`), a
+ * `class="issue-badge badge-fail "data-type="fail"` (`old/test.html:2769`), a
  * missing space that makes `data-type` part of the class attribute's value.
  *
  * ## Declared divergences from `test.html`
@@ -53,7 +53,7 @@
  * parsed-DOM diff non-empty belongs here as a numbered entry, so that a
  * reviewer can check the diff off against it item by item.
  *
- *  1. **The malformed badge attribute is fixed.** `test.html:2769`, `:2773`
+ *  1. **The malformed badge attribute is fixed.** `old/test.html:2769`, `:2773`
  *     and `:2777` write `badge-fail "data-type="fail"` — no space before
  *     `data-type`, inside the quoted class value. The browser parses that as
  *     `class="issue-badge badge-fail "` followed by a bare attribute
@@ -69,14 +69,14 @@
  *     listed because a DOM diff sees it.
  *  2. **A day filter restores values, not markup.** Upstream snapshots each
  *     cell's `innerHTML` before any filtering and re-assigns it to clear
- *     (`test.html:3171`, `:2267`), which discards the min-widths it just
+ *     (`old/test.html:3171`, `:2267`), which discards the min-widths it just
  *     applied to `.badge-pct` and re-applies them never. Here the badges are
  *     elements the renderer holds, so clearing a filter sets their text and
  *     visibility back. The rendered result is the same; the min-width survives,
  *     which upstream loses.
  *  3. **`copyTestPath` reads a real event.** Upstream's
  *     `copyTestPath(testPath)` uses the implicit global `event`
- *     (`test.html:1054`) to find the button. Here the listener has the button.
+ *     (`old/test.html:1054`) to find the button. Here the listener has the button.
  *     Same behaviour, no reliance on a deprecated global.
  *  4. **The `?kind=` parameter still does not select the harness.** Preserved
  *     deliberately, because it is a framing property the audit flags: the
@@ -406,7 +406,7 @@ function renderHeader(
 
     // The copy button holds its own listener rather than an `onclick` attribute
     // reaching a global, so it also no longer depends on the implicit `event`
-    // global that `copyTestPath` reads (`test.html:1054`).
+    // global that `copyTestPath` reads (`old/test.html:1054`).
     const copyButton = el('button', {
         class: 'copy-btn',
         text: '📋 Copy',
@@ -503,7 +503,7 @@ function renderSummary(stats: SummaryStat[]): HTMLElement {
  * The `Pass/Fail by Job` table.
  *
  * A pivot: one row per job variant, one column per platform
- * (`test.html:2670`). The row order and the badge contents are the view
+ * (`old/test.html:2670`). The row order and the badge contents are the view
  * model's; this only draws them and wires the hover and click.
  */
 function renderJobTable(s: PageState): HTMLElement | null {
@@ -514,7 +514,7 @@ function renderJobTable(s: PageState): HTMLElement | null {
 
     // `Pass/Fail by Job ` with a trailing space when the date span follows:
     // upstream writes `Pass/Fail by Job${dateInfo ? ' <span…' : ''}`
-    // (`test.html:2709`), so the space belongs to the heading's own text node
+    // (`old/test.html:2709`), so the space belongs to the heading's own text node
     // rather than being a separator node of its own. Appending it separately
     // splits one text node into two, which the parsed-DOM diff reports and a
     // reader cannot see. Found that way.
@@ -560,7 +560,7 @@ function renderJobTable(s: PageState): HTMLElement | null {
 /**
  * One cell: three stacked layers, of which two start hidden.
  *
- * The stack is upstream's (`test.html:2749`) and exists because a day filter
+ * The stack is upstream's (`old/test.html:2749`) and exists because a day filter
  * has to be able to replace the badges with an em-dash or a bare `PASS` without
  * re-laying-out the table. All three occupy the same grid area.
  */
@@ -668,7 +668,7 @@ function renderJobCell(s: PageState, cell: JobCell): HTMLTableCellElement {
 /**
  * Clicking a cell.
  *
- * `handleCellClick` (`test.html:1824`). Ctrl/Cmd toggles one cell in or out of
+ * `handleCellClick` (`old/test.html:1824`). Ctrl/Cmd toggles one cell in or out of
  * the set; a plain click selects only that cell, or clears the selection if it
  * was already the only one — so clicking the same cell twice returns to the
  * unfiltered view, which is the affordance that makes the filter safe to try.
@@ -692,7 +692,7 @@ function handleCellClick(s: PageState, key: string, event: MouseEvent): void {
 /**
  * Clicking a day in the chart.
  *
- * `handleDayClick` (`test.html:1848`). Shift extends from the anchor, which is
+ * `handleDayClick` (`old/test.html:1848`). Shift extends from the anchor, which is
  * the last day clicked without shift; Ctrl/Cmd toggles; a plain click behaves
  * like a cell click. Shift **without** ctrl clears first, so shift-clicking a
  * new range replaces the old one rather than accumulating.
@@ -807,7 +807,7 @@ function renderHistogram(histogram: Histogram | null): Node[] | null {
  * The `Issue Details` section, or `null` when the test has no issues.
  *
  * Returning nothing rather than an empty section is upstream
- * (`test.html:2549`), and it is the right call: a heading over nothing reads as
+ * (`old/test.html:2549`), and it is the right call: a heading over nothing reads as
  * a loading failure.
  */
 function renderIssueDetails(s: PageState): HTMLElement | null {
@@ -970,13 +970,13 @@ interface RunInfo {
 /**
  * The runs behind one issue, honouring the current selection.
  *
- * `getIssueRuns` (`test.html:912`). Filtered by the same day and cell selection
+ * `getIssueRuns` (`old/test.html:912`). Filtered by the same day and cell selection
  * as everything else, so expanding an issue while a cell is selected lists that
  * cell's runs rather than all of them.
  *
  * Skips are the exception and are never listed: a skip has no task, so there is
  * nothing to link to. The old page has a SKIP branch here but never reaches it,
- * because a SKIP row is not expandable (`test.html:2562`) — reproduced by
+ * because a SKIP row is not expandable (`old/test.html:2562`) — reproduced by
  * simply not having the branch.
  */
 function renderIssueRuns(s: PageState, issue: Issue, container: HTMLElement): void {
@@ -1120,7 +1120,7 @@ function issueMatchesEntryForRuns(
 /**
  * The links for one run.
  *
- * `createRunInfo` (`test.html:869`). The job name gets its chunk suffix back
+ * `createRunInfo` (`old/test.html:869`). The job name gets its chunk suffix back
  * from `taskInfo.chunks` — bucket files strip it from `tables.jobNames` and
  * keep it as a parallel array, so a run's *actual* job name has to be
  * reassembled to be recognizable in Treeherder.
@@ -1168,7 +1168,7 @@ function buildRunInfo(
 
 // --- charts --------------------------------------------------------------
 
-/** The chart colours, per issue type. `test.html:1578`. */
+/** The chart colours, per issue type. `old/test.html:1578`. */
 const ISSUE_CHART_COLOURS: Record<Issue['type'], { bg: string; border: string }> = {
     SKIP: { bg: 'rgba(108, 117, 125, 0.7)', border: '#6c757d' },
     FAIL: { bg: 'rgba(255, 140, 0, 0.7)', border: '#ff8c00' },
@@ -1176,7 +1176,7 @@ const ISSUE_CHART_COLOURS: Record<Issue['type'], { bg: string; border: string }>
     CRASH: { bg: 'rgba(220, 53, 69, 0.7)', border: '#dc3545' },
 };
 
-/** Chart.js options shared by all three charts. `test.html:1167`. */
+/** Chart.js options shared by all three charts. `old/test.html:1167`. */
 function commonChartOptions(
     yAxisLabel: string,
     tooltipCallback: (context: TooltipContext) => string | null,
@@ -1224,7 +1224,7 @@ interface TooltipContext {
 /**
  * A dataset and its dimmed remainder.
  *
- * `makeDatasetPair` (`test.html:1207`). The pair is what makes a cell filter
+ * `makeDatasetPair` (`old/test.html:1207`). The pair is what makes a cell filter
  * legible: the bright half shows the selection's contribution and the dim half
  * shows what the rest of the runs contributed, stacked on top, so the total bar
  * height stays the same and the selection reads as a share of it.
@@ -1296,7 +1296,7 @@ let chartPointerInside = false;
 /**
  * Builds the two daily-rate charts and wires the whole chart area.
  *
- * `createFailureRateChart` (`test.html:1233`). The hover target is the
+ * `createFailureRateChart` (`old/test.html:1233`). The hover target is the
  * containing `#daily-chart-area`, not just the canvases, so the x-axis labels
  * and the gap between the two charts also select a day — without that, moving
  * the pointer down from a bar to read its date loses the selection.
@@ -1312,7 +1312,7 @@ function createDailyCharts(s: PageState): void {
     const chartHover = (event: { native?: MouseEvent }, elements: { index: number }[]): void => {
         // Chart.js fires `onHover` from `chart.update()` too, which lands here
         // after the pointer has already left. Upstream guards with the same
-        // flag (`test.html:1249`).
+        // flag (`old/test.html:1249`).
         if (!chartPointerInside) {
             return;
         }
@@ -1457,7 +1457,7 @@ function dailyTooltipLabel(context: TooltipContext, rates: readonly DailyRate[])
     let line = `${formatCount(count)} ${typeName} out of ${formatCount(total)} runs (${percentage}%)`;
     if (cellCount !== undefined) {
         // Upstream's plural here is inverted — `cellCount !== count ? '' : 's'`
-        // (`test.html:1318`) — so it says "job" when the counts differ and
+        // (`old/test.html:1318`) — so it says "job" when the counts differ and
         // "jobs" when they match. Reproduced: it is cosmetic, it is what the
         // page says today, and changing it silently would make the parity
         // comparison's remaining differences harder to trust.
@@ -1469,7 +1469,7 @@ function dailyTooltipLabel(context: TooltipContext, rates: readonly DailyRate[])
 /**
  * Makes the whole chart section a hover and click target.
  *
- * `test.html:1370`. Chart.js only reports hits inside its plot area, so the
+ * `old/test.html:1370`. Chart.js only reports hits inside its plot area, so the
  * x-axis labels and the gap between the two charts would otherwise be dead
  * space that clears the selection as the pointer crosses it.
  */
@@ -1545,7 +1545,7 @@ function wireChartArea(s: PageState): void {
 /**
  * The per-issue chart under an expanded issue.
  *
- * `calculateIssueMessageDailyRates` (`test.html:1441`) plus
+ * `calculateIssueMessageDailyRates` (`old/test.html:1441`) plus
  * `createIssueMessageChart` (`:1568`). The denominator is every run that day,
  * with skips included only when the issue itself is a skip — the same
  * scheduled-versus-happened distinction the main charts make.
@@ -1723,7 +1723,7 @@ function updateSelection(s: PageState): void {
 /**
  * The charts' response to the current selection.
  *
- * `updateChartHighlight` (`test.html:2168`). Hovering an *issue* overrides a
+ * `updateChartHighlight` (`old/test.html:2168`). Hovering an *issue* overrides a
  * cell filter, and it only drives the chart the issue's type belongs to — a
  * SKIP issue redraws the skip chart and leaves the failure chart alone, because
  * a skip contributes to neither of the failure chart's series.
@@ -1834,7 +1834,7 @@ function cellFilteredRates(s: PageState, cells: ReadonlySet<string>): RateRow[] 
 /**
  * Applies a filter to one chart, or clears it.
  *
- * `updateSingleChartHighlight` (`test.html:2089`). The cache key is not an
+ * `updateSingleChartHighlight` (`old/test.html:2089`). The cache key is not an
  * optimization detail — `chart.update()` on every mouse move over a 21-bar
  * chart is what makes hovering feel heavy, and Chart.js's own `onHover` fires
  * again from inside `update()`, so without the guard a redraw can retrigger
@@ -1926,7 +1926,7 @@ function applyChartHighlight(
 /**
  * The job table's response to the current selection.
  *
- * `updateTableHighlight` (`test.html:2190`). Two independent things happen: the
+ * `updateTableHighlight` (`old/test.html:2190`). Two independent things happen: the
  * clicked cells get a background, and — if any *day* is selected — every cell's
  * badges are recomputed over just those days.
  *
@@ -2009,7 +2009,7 @@ function restoreCell(rendered: RenderedCell): void {
 /**
  * The issue list's response to the current selection.
  *
- * `updateIssueListFilter` (`test.html:2273`). An expanded issue's runs and
+ * `updateIssueListFilter` (`old/test.html:2273`). An expanded issue's runs and
  * chart are rebuilt so they keep matching the filter — expanding an issue and
  * then selecting a day should narrow the list already on screen, not leave a
  * stale one under a filtered count.
@@ -2059,7 +2059,7 @@ function updateIssueListFilter(s: PageState): void {
 /**
  * The runtime panel's response to a cell selection.
  *
- * `updateRuntimeForSelection` (`test.html:2401`). Days are deliberately not a
+ * `updateRuntimeForSelection` (`old/test.html:2401`). Days are deliberately not a
  * filter here: durations are recorded per pass entry and the panel's question
  * is "how long does this take on this config", which a three-day slice answers
  * with too few samples to be worth a percentile. Upstream makes the same
@@ -2067,7 +2067,7 @@ function updateIssueListFilter(s: PageState): void {
  *
  * A selection whose cells have **no** durations leaves the panel showing what
  * it showed before, rather than emptying: upstream's `if (combined.length > 0)`
- * guard (`test.html:2423`). Preserved, though it does mean the panel can
+ * guard (`old/test.html:2423`). Preserved, though it does mean the panel can
  * describe a different selection than the one highlighted.
  */
 function updateRuntimeForSelection(s: PageState): void {
@@ -2119,7 +2119,7 @@ function updateRuntimeForSelection(s: PageState): void {
 /**
  * The union of every test path in both harnesses' 21-day aggregates.
  *
- * `loadAllTestPaths` (`test.html:2814`). Both files, because the autocomplete
+ * `loadAllTestPaths` (`old/test.html:2814`). Both files, because the autocomplete
  * should find a test whichever harness runs it — and because `detectHarness`
  * cannot be trusted to have guessed right, which is the same reason the loader
  * has a fallback.
@@ -2160,7 +2160,7 @@ interface IssuesPathsFile {
 /**
  * The search form, which is what the page becomes with no `?test=`.
  *
- * `showSearchForm` (`test.html:2833`). A framing property the audit calls out:
+ * `showSearchForm` (`old/test.html:2833`). A framing property the audit calls out:
  * this page has no default listing, because there is no useful ranking of
  * 100,000 tests — the page's whole job is one test at a time, so with no test
  * named it asks for one.
@@ -2445,7 +2445,7 @@ function showSearchForm(options: { initialValue?: string; preloadedTests?: strin
 /**
  * The page's whole flow.
  *
- * `loadTestData` (`test.html:3005`). The sequence, and why each step is where
+ * `loadTestData` (`old/test.html:3005`). The sequence, and why each step is where
  * it is:
  *
  * 1. **No `?test=`** → the search form. There is no default listing.
@@ -2579,7 +2579,7 @@ async function loadTestData(): Promise<void> {
 /**
  * Draws the whole page for a test that was found.
  *
- * The section order is upstream's (`test.html:2452`): header, status line,
+ * The section order is upstream's (`old/test.html:2452`): header, status line,
  * summary, Daily Issue Rates, the job table and runtime panel side by side,
  * Issue Details.
  */
@@ -2694,7 +2694,7 @@ function render(
 
     // The job table and the runtime panel, inside the `#runtime-sections`
     // wrapper. The wrapper is emitted unconditionally and even when empty,
-    // matching upstream (`test.html:2499`), which reserves it in `renderPage`
+    // matching upstream (`old/test.html:2499`), which reserves it in `renderPage`
     // and fills it afterwards. Keeping it is not cosmetic: it is a stable
     // anchor a bookmark or a future selector can reach, and its absence was
     // the first structural difference the browser diff reported.

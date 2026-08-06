@@ -74,7 +74,7 @@
  * A duration in milliseconds, with the unit chosen by magnitude.
  *
  * The shape four pages independently arrived at, verbatim from
- * `test.html:552`, `issues.html:683` and `xpcshell-timings.html:400`, which are
+ * `old/test.html:552`, `old/issues.html:683` and `xpcshell-timings.html:400`, which are
  * character-for-character identical apart from `test.html` writing the em-dash
  * as `—`; `site/test-view.ts:1866` was the transcription of the first.
  *

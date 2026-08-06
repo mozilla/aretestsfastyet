@@ -348,7 +348,7 @@ test('the page and the CLI differ only where declared', async () => {
             what: 'a component whose every test is clean',
             reason:
                 'The page renders it as a `(N tests)` row that cannot be expanded ' +
-                '(`issues.html:2111-2112`, marked `non-clickable` at `:2094`); the CLI drops it ' +
+                '(`old/issues.html:2111-2112`, marked `non-clickable` at `:2094`); the CLI drops it ' +
                 '(`lib/query/issues.ts:329`, "a group whose every test is clean is not a triage ' +
                 'row"). Both are right for what they are: the page is a browsable inventory of ' +
                 'the tree, so a component with nothing wrong is a useful thing to see and to ' +
@@ -365,7 +365,7 @@ test('the page and the CLI differ only where declared', async () => {
             reason:
                 'The CLI adds a `localeCompare` on the component name ' +
                 '(`lib/query/issues.ts:339`); the page leaves equal counts in the order the ' +
-                'walk first saw them (`issues.html:2081` returns `valueB - valueA` and relies ' +
+                'walk first saw them (`old/issues.html:2081` returns `valueB - valueA` and relies ' +
                 "on `Array.prototype.sort` being stable). A command whose output is diffed and " +
                 'pasted into bugs cannot be non-deterministic, and the page has no such ' +
                 'requirement — a reader re-sorts by clicking. Same population and same ranking ' +

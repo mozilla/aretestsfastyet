@@ -197,8 +197,8 @@ function hooksWithLog(options: { suffix?: boolean; inertSingle?: boolean } = {})
  * The two trees `inlineLinksCell` produces, written out from the two upstream
  * pages rather than from the function.
  *
- * `crashes.html:713` drops `renderCrashLinks`'s `<span class="view-links">`
- * into a bare `<td>`; `failures.html:809` puts the links straight into a
+ * `old/crashes.html:713` drops `renderCrashLinks`'s `<span class="view-links">`
+ * into a bare `<td>`; `old/failures.html:809` puts the links straight into a
  * `<td class="view-links">` with no span. So the class sits on a different
  * element on each page, and that is a difference in *shape* — the one thing the
  * `Vocabulary` record cannot express, and the one branch in the renderer that
@@ -306,7 +306,7 @@ test('both pages label the links cell "View: " before the first link', () => {
 
 test('the expanded occurrence table uses td.view-links on BOTH pages', () => {
     // The counterpart fact, and the reason `inlineLinksCell` is the *only*
-    // `vocab.kind` branch: `crashes.html:820` and `failures.html:919` agree
+    // `vocab.kind` branch: `old/crashes.html:820` and `old/failures.html:919` agree
     // here. A renderer that applied the crashes nesting everywhere would fail
     // this while passing the two tests above.
     const { hooks } = hooksWithLog();
@@ -425,7 +425,7 @@ test('insertAfter with a single element, and with none, leaves the rest alone', 
 
 test('insertAfter and removeFollowing round-trip the rows an expansion adds', () => {
     // The pair as the pages use them: open a row, then close it and get the
-    // list back byte for byte. `crashes.html:863` against `:841`.
+    // list back byte for byte. `old/crashes.html:863` against `:841`.
     const { parent, children } = tree('row', 'next-row', 'after');
     const before = classesOf(parent);
     insertAfter(children[0]!, [
@@ -823,7 +823,7 @@ test('only the active column is marked, and the arrow follows the direction', ()
 });
 
 test('the inactive column keeps an empty sort-arrow span, which sets the width', () => {
-    // `crashes.html:559` emits the span either way. Dropping it when inactive
+    // `old/crashes.html:559` emits the span either way. Dropping it when inactive
     // would render the same text and change the column width, so the assertion
     // is that the element exists and is empty.
     const { hooks } = hooksWithLog();
@@ -913,7 +913,7 @@ test('an expandable test row carries its path and name, its count and its toolti
     assert.equal(shape(row!), 'div.test-row', 'no direct-child class');
     assert.equal(row!.dataset['path'], 'netwerk/test/unit');
     assert.equal(row!.dataset['test'], 'test_a.js');
-    // A row under a path row shows only the file name. `crashes.html:781`.
+    // A row under a path row shows only the file name. `old/crashes.html:781`.
     assert.equal(row!.querySelector('.test-name')!.textContent, 'test_a.js');
 
     const countCell = row!.querySelector('.test-crash-count')!;
@@ -925,7 +925,7 @@ test('an expandable test row carries its path and name, its count and its toolti
     assert.deepEqual(log.totalRunsOf, ['netwerk/test/unit|test_a.js']);
 
     // The first stat cell is an empty spacer: the tests column has no number on
-    // a test row. `crashes.html:725`.
+    // a test row. `old/crashes.html:725`.
     const stats = row!.querySelector('.crash-stats')!;
     assert.equal(stats.children.length, 2);
     assert.equal(stats.children[0]!.textContent, '');
@@ -933,7 +933,7 @@ test('an expandable test row carries its path and name, its count and its toolti
 });
 
 test('a direct-child test row shows its full path, an indented one does not', () => {
-    // The collapse rule made visible: `crashes.html:724` against `:781`.
+    // The collapse rule made visible: `old/crashes.html:724` against `:781`.
     const { hooks } = hooksWithLog();
     const [direct, indented] = renderSubRows(
         [
@@ -1023,7 +1023,7 @@ test('a single-occurrence row is a test-row carrying the page"s single class', (
     assert.equal(crash.querySelector('.run-date')!.textContent, '2026-07-30');
 
     // The job-name anchor is an `externalLink` here — it must not also toggle
-    // the row underneath. `crashes.html:712`.
+    // the row underneath. `old/crashes.html:712`.
     const anchor = crash.querySelector('.crash-job-name a') as HTMLAnchorElement;
     assert.equal(anchor.getAttribute('href'), 'https://example.invalid/job/ONE');
     assert.equal(anchor.textContent, 'test-linux1804-64/opt-xpcshell-1');
@@ -1213,7 +1213,7 @@ test('the occurrence table shows a date once per day', () => {
 });
 
 test('the job-name anchor in the occurrence table does NOT stop propagation', () => {
-    // Deliberate, and observable: `crashes.html:819` has no
+    // Deliberate, and observable: `old/crashes.html:819` has no
     // `onclick="event.stopPropagation()"` where `:712` does, and the crashes
     // row underneath is clickable — so clicking the job name there both follows
     // the link and opens the crash viewer. Reproduced rather than tidied, so

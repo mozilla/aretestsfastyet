@@ -67,7 +67,7 @@ declare module 'jsdom' {
          * Turns on `requestAnimationFrame`, which is off by default.
          *
          * Needed by `test/index-page.test.ts`: the landing page defers its
-         * whole render into an animation frame (`index.html:766`), so without
+         * whole render into an animation frame (`old/index.html:766`), so without
          * this `start()` throws `requestAnimationFrame is not a function` and
          * nothing renders. Enabling it keeps the page's real
          * frame-then-timeout sequencing under test rather than stubbing it.

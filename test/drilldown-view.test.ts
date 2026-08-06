@@ -22,7 +22,7 @@
  * the fixture by a path that does not call `site/drilldown-view.ts`.**
  *
  * The independent path is `walkFixture()` at the top of this file, which reads
- * the raw JSON the way `crashes.html:225-374` does — by hand, branching on the
+ * the raw JSON the way `old/crashes.html:225-374` does — by hand, branching on the
  * status-group shape — and is deliberately *not* built on
  * `lib/formats/status-entries.ts` either, since that is what the code under test
  * uses. Two independent readings of the same bytes agreeing is evidence; one
@@ -94,7 +94,7 @@ interface RawTally {
  * Reads a raw timing file the way the *old pages* do, by hand.
  *
  * Deliberately duplicated rather than shared with the code under test. It
- * branches on `taskIdIds && days` exactly as `crashes.html:254` does, decodes
+ * branches on `taskIdIds && days` exactly as `old/crashes.html:254` does, decodes
  * the day deltas itself, and expands a bucket into one row per task ID. If this
  * and `buildGroups` agree, two independent readings of the same bytes agree.
  */
@@ -584,7 +584,7 @@ test('the failures search rewrites the counts on a row that did not match by mes
 
 test('a matching path keeps every test under it, matching name or not', () => {
     // The asymmetry inside `rewriteGroupsBySearch`'s second branch, which is
-    // upstream's (`failures.html:569`: `if (pathMatches || testMatches)`). A
+    // upstream's (`old/failures.html:569`: `if (pathMatches || testMatches)`). A
     // mutation dropping the `pathMatches ||` survived every other search test
     // here, because they all searched for a *test name*; this one searches for a
     // directory.

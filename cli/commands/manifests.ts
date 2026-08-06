@@ -18,7 +18,7 @@
  * ## The all-zero-durations rule
  *
  * A manifest whose durations are all zero on a config was **skipped** there,
- * not run instantly (`manifests.html:415`), and `FORMATS.md` measures 71,272 of
+ * not run instantly (`old/manifests.html:415`), and `FORMATS.md` measures 71,272 of
  * 433,836 runs at zero — 16.4%. Those pairs carry no duration statistics at all
  * rather than zeros, sort last rather than first, and are listed under
  * "Skipped on". Getting this wrong makes every skipped config the fastest row

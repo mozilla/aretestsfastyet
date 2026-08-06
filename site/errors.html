@@ -182,7 +182,7 @@
             <select id="dateSelect"></select>
             <span class="status-text" id="statusText">Loading...</span>
             <!--
-                `errors.html:173-174` has a "Show Last 21 Days" button and a
+                `old/errors.html:173-174` has a "Show Last 21 Days" button and a
                 "Load task details" button here. Both are deliberately omitted:
                 the two aggregate files they exist to fetch do not exist. See
                 divergence 6 in `site/errors.ts` for the measurement.
@@ -224,7 +224,7 @@
     <script src="common-links.js"></script>
     <script type="module" src="./errors.ts"></script>
     <!--
-        `errors.html:211` loads Chart.js from a CDN. Dropped with the per-day
+        `old/errors.html:211` loads Chart.js from a CDN. Dropped with the per-day
         chart, which was the page's only use of it: the chart drew only in
         21-day mode, and that mode is gone. Divergence 6.
     -->

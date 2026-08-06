@@ -296,7 +296,7 @@ test('the summary rows are harnesses then flavors, in source order, unsorted', (
 });
 
 test('the four rates match a tally computed independently of the view model', () => {
-    // A second implementation, written from `index.html:470-481` rather than
+    // A second implementation, written from `old/index.html:470-481` rather than
     // from `site/index-view.ts`, so the assertion is not the code under test
     // compared against itself.
     const stats = toMerged(xpcshell());
@@ -450,7 +450,7 @@ test('a flavor row divides by processedJobCount alone, not by the wider populati
 });
 
 test('a flavor with zero test runs in the window is hidden, and hides nothing else', () => {
-    // `index.html:545`. The aggregate row must not move when a flavor drops
+    // `old/index.html:545`. The aggregate row must not move when a flavor drops
     // out, because it comes from the top-level arrays.
     const moch = mergedMochitest();
     const before = summaryRows(null, moch);
@@ -470,7 +470,7 @@ test('a flavor with zero test runs in the window is hidden, and hides nothing el
 });
 
 test('a flavor absent from the data is skipped', () => {
-    // `index.html:540`, the other implicit hider.
+    // `old/index.html:540`, the other implicit hider.
     const moch = mergedMochitest();
     const trimmed = structuredClone(moch);
     delete trimmed.flavors!['media'];
@@ -525,7 +525,7 @@ test('a missing required series throws rather than reading as zero', () => {
 });
 
 test('a missing optional job series degrades to zero', () => {
-    // `index.html:452-455`. The three arrays a flavor lacks.
+    // `old/index.html:452-455`. The three arrays a flavor lacks.
     const file = toMerged(syntheticFile({ dates: ['2026-08-03'], totalTestRuns: [10] }));
     delete (file as unknown as Record<string, unknown>)['processedJobCount'];
     delete (file as unknown as Record<string, unknown>)['failedJobs'];

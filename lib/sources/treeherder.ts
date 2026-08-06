@@ -1,7 +1,7 @@
 /**
  * Treeherder push and job lookup.
  *
- * Extracted from `try.html:759` (`fetchPushId`, `fetchAllJobs`, `parseJobs`)
+ * Extracted from `old/try.html:759` (`fetchPushId`, `fetchAllJobs`, `parseJobs`)
  * and `fetch-utils.js:92`, which are two copies of the same three requests. Both
  * `try.html` and `fx-tests try` need this, and neither should own it.
  *
@@ -19,7 +19,7 @@
  * — and if a name is absent, `indexOf` returns `-1`, which indexes as
  * `undefined` and silently produces a job with no task ID.
  *
- * `try.html:791` does exactly that and then drops such jobs with
+ * `old/try.html:791` does exactly that and then drops such jobs with
  * `if (!jobName || !taskId) continue;`, so a Treeherder field rename would
  * present as "the push has no jobs" rather than as an error. Here a missing
  * required field throws once, up front, naming the field.
@@ -96,7 +96,7 @@ export interface TreeherderJob {
 /**
  * Treeherder results that mean the job did not pass.
  *
- * From `try.html:814`. `retry` is deliberately **not** here: a retried job was
+ * From `old/try.html:814`. `retry` is deliberately **not** here: a retried job was
  * superseded by another run of the same task, and counting it as a failure
  * double-counts an infrastructure hiccup as a test failure.
  */
@@ -181,7 +181,7 @@ export function treeherderClient(options: TreeherderOptions): TreeherderClient {
     return {
         async findPush(repository: string, revision: string): Promise<Push> {
             // `full=true` is what returns the `revisions` array; `count=10`
-            // is inherited from `try.html:760` — a revision prefix can in
+            // is inherited from `old/try.html:760` — a revision prefix can in
             // principle match more than one push, and the first is taken.
             const url =
                 `${root}/api/project/${encodeURIComponent(repository)}/push/` +

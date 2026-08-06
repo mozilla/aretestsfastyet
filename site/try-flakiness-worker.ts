@@ -9,7 +9,7 @@
  *
  * The old page builds its worker by calling `.toString()` on six functions from
  * `common-test-data.js` and concatenating the source into a `Blob`
- * (`try.html:2584`):
+ * (`old/try.html:2584`):
  *
  * ```js
  * const sharedCode = [getChunkIndex, getCountAtIndex, findTest, computeTestStats,
@@ -28,7 +28,7 @@
  * `.toString()` of the bundled function would produce a program referring to
  * transitive dependencies that were never copied in. The worker would throw
  * `ReferenceError` on its first message, and the page's `catch` at
- * `try.html:2610` turns that into `notFound` for every test in the file, so the
+ * `old/try.html:2610` turns that into `notFound` for every test in the file, so the
  * flakiness column would just be **empty** with no error anywhere.
  *
  * The fix is to let the bundler do what it is for: this file is its own entry
@@ -53,7 +53,7 @@
  * failing where I saw it fail" rather than "is this test flaky somewhere".
  *
  * `hasMatchingMessage` is `configs.some(c => c.sameMsgFailCount > 0)`
- * (`try.html:2606`) and not a whole-file question: it must agree with the rates
+ * (`old/try.html:2606`) and not a whole-file question: it must agree with the rates
  * the tooltip shows, which are these configs' and no others'.
  */
 
@@ -100,7 +100,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>): void => {
             }
             const stats = computeTestStats(file, found.testId);
             // `file.days` is the aggregate's window. Upstream reads
-            // `data.metadata.days` and falls back to 0 (`try.html:2601`); a
+            // `data.metadata.days` and falls back to 0 (`old/try.html:2601`); a
             // daily file would give `null` here, which the display code treats
             // the same way its `|| HISTORY_DAYS` fallback does.
             const totalDays = file.days ?? 0;

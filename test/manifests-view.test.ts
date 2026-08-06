@@ -377,7 +377,7 @@ test('sortRows returns a new array and leaves its argument alone', () => {
 });
 
 test('clicking the active column toggles, and another column starts descending', () => {
-    // `manifests.html:487-493`, including the part a reader might not expect:
+    // `old/manifests.html:487-493`, including the part a reader might not expect:
     // even `manifest` starts descending, i.e. Z→A on the first click.
     assert.deepEqual(nextSort({ column: 'median', ascending: false }, 'median'), {
         column: 'median',
@@ -398,7 +398,7 @@ test('clicking the active column toggles, and another column starts descending',
 });
 
 test('the sortable columns are the five header cells, in header order', () => {
-    // The order is `updateSortIndicators`' column map (`manifests.html:522-528`)
+    // The order is `updateSortIndicators`' column map (`old/manifests.html:522-528`)
     // and it is what maps a header index to a column, so a reordering here
     // silently sorts by the wrong column.
     assert.deepEqual(SORT_COLUMNS, ['manifest', 'jobTypes', 'runs', 'median', 'mean']);
@@ -606,7 +606,7 @@ test('jobKey joins the two names with the separator the page uses', () => {
     // than the claim: on the pinned 2026-08-04 file **0 of 6,227** manifest
     // paths and **0 of 4,165** job names contain even a single `|`, and the
     // fixture below has none either. Upstream uses the same separator
-    // (`manifests.html:625`), so changing it here would be a difference with no
+    // (`old/manifests.html:625`), so changing it here would be a difference with no
     // observable effect on any input either page can be given.
     const names = [...FIXTURE.manifests, ...FIXTURE.jobNames];
     assert.equal(names.filter((name) => name.includes('|')).length, 0);

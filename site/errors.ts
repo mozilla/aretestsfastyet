@@ -45,7 +45,7 @@
  * `dashboards.js`, `common-ui.js`, `common-links.js`.
  *
  * **The Chart.js CDN tag is gone**, and it is the one script tag this migration
- * drops. Upstream loads it (`errors.html:211`) for `createDayChart`
+ * drops. Upstream loads it (`old/errors.html:211`) for `createDayChart`
  * (`:975-1014`), its own bar chart — this page never loaded
  * `common-charts.js` or called `createRateChart`. That chart drew only in
  * 21-day mode, which is omitted (divergence 6), so the tag was a third-party
@@ -167,7 +167,7 @@
  *     §4 requires it be declared with its reason. It is stated here and nowhere
  *     else.
  *
- *     Upstream has both buttons at `errors.html:173-174`. `initHistoricalToggle`
+ *     Upstream has both buttons at `old/errors.html:173-174`. `initHistoricalToggle`
  *     fetches `{harness}-errors.json` (`:1190`) and `loadTaskDetails` fetches
  *     `{harness}-errors-with-taskids.json` (`:1098`).
  *
@@ -302,7 +302,7 @@
  * than assumed:
  *
  * - **The status line still reads `N test jobs · 0 markers`.**
- *   `errors.html:1076` reads `meta.markerCount`, and the published files carry
+ *   `old/errors.html:1076` reads `meta.markerCount`, and the published files carry
  *   `markerCounts` (a per-kind object) and no `markerCount`. So `(undefined ||
  *   0).toLocaleString()` is `"0"` on both pages: the pinned xpcshell 2026-08-04
  *   file shows `1,301 test jobs · 0 markers` where the file holds 315,376
@@ -403,7 +403,7 @@ const viewSelect = (): HTMLSelectElement =>
 const kindBox = (slug: string): HTMLInputElement =>
     document.getElementById(`kind-${slug}`) as HTMLInputElement;
 
-/** The active view. `getView()` (`errors.html:599`). */
+/** The active view. `getView()` (`old/errors.html:599`). */
 const view = (): ErrorView => viewSelect().value as ErrorView;
 
 /** The trimmed, lowercased search term — what every filter compares against. */
@@ -432,7 +432,7 @@ const expandedSubs = new Set<number>();
 /**
  * ### Where upstream's `g.subArr` cache went
  *
- * `errors.html:881` caches an expanded row's detail **on the row object**
+ * `old/errors.html:881` caches an expanded row's detail **on the row object**
  * (`g.subArr = buildGroupDetail(g).subArr`) and `buildGroupDetail` itself caches
  * on `g.detail` (`:505`). Neither cache is kept here, and there is no field for
  * them: `renderSubRow` closes over the `SubGroup` it is rendering, so the click
@@ -463,7 +463,7 @@ let subOf = new WeakMap<HTMLElement, { sub: SubGroup; index: number }>();
 /**
  * Full rebuild: re-group, re-sort, re-filter, re-render.
  *
- * `renderList` (`errors.html:652-660`). Used on data load, on a view change,
+ * `renderList` (`old/errors.html:652-660`). Used on data load, on a view change,
  * and — test and component views only — on a kind change.
  */
 function renderList(): void {
@@ -481,7 +481,7 @@ function renderList(): void {
 /**
  * Cheap path: re-pick the visible rows and re-render, without re-grouping.
  *
- * `applyFilter` (`errors.html:666-698`). A message-view kind toggle and every
+ * `applyFilter` (`old/errors.html:666-698`). A message-view kind toggle and every
  * search change come through here.
  */
 function applyFilter(): void {
@@ -518,7 +518,7 @@ function replaceContent(node: Node): void {
 /**
  * The virtualized group list.
  *
- * Ported unchanged in behaviour from `errors.html:709-798`, and it is load
+ * Ported unchanged in behaviour from `old/errors.html:709-798`, and it is load
  * bearing rather than decorative: the pinned mochitest 2026-08-03 file produces
  * 35,474 message-view rows and 20,345 test-view rows. Every chunk is a placeholder
  * `<div>` sized to its rows; an `IntersectionObserver` fills it while it (or its
@@ -531,7 +531,7 @@ let rowHeight = 29;
 /** The chunk holding the expanded row, kept filled while it scrolls away. */
 let pinnedChunk: Element | null = null;
 
-/** `renderVirtualList` (`errors.html:709`). */
+/** `renderVirtualList` (`old/errors.html:709`). */
 function renderVirtualList(): void {
     const currentView = view();
     const cols = VIEW_COLS[currentView];
@@ -601,7 +601,7 @@ function onChunkIntersect(entries: IntersectionObserverEntry[]): void {
 }
 
 /**
- * Renders a chunk's rows. `fillChunk` (`errors.html:780`).
+ * Renders a chunk's rows. `fillChunk` (`old/errors.html:780`).
  *
  * Upstream's comment is worth keeping because it is the invariant that makes
  * this correct: a freshly visible chunk never holds the expanded row, because
@@ -634,7 +634,7 @@ function clearChunk(chunk: HTMLElement): void {
 
 // --- the rows -------------------------------------------------------------
 
-/** The sortable header. `errors.html:728-734`. */
+/** The sortable header. `old/errors.html:728-734`. */
 function renderSortHeader(currentView: ErrorView, cols: readonly ViewColumn[]): HTMLElement {
     const header = el('div', { class: 'sort-header' });
 
@@ -679,7 +679,7 @@ function sortButton(column: SortColumn, label: string): HTMLElement {
 }
 
 /**
- * The `📊 Total` row. `errors.html:737-741`.
+ * The `📊 Total` row. `old/errors.html:737-741`.
  *
  * `non-clickable` and no percentage tooltip: `statsHtml` is called without a
  * `total` here (`:738`), so `pctTitle` is never reached for this row even though
@@ -710,7 +710,7 @@ function renderTotalRow(cols: readonly ViewColumn[]): HTMLElement {
     return row;
 }
 
-/** One top-level row. `renderGroupRow` (`errors.html:800-811`). */
+/** One top-level row. `renderGroupRow` (`old/errors.html:800-811`). */
 function renderGroupRow(currentView: ErrorView, row: ErrorGroupRow, index: number): HTMLElement {
     const element = el('div', { class: 'data-row marker-row' });
     // Kept because the virtualization and a reader inspecting the DOM both use
@@ -771,7 +771,7 @@ function visibleOccurrences(): number {
 }
 
 /**
- * The stats area. `statsHtml` (`errors.html:638-646`).
+ * The stats area. `statsHtml` (`old/errors.html:638-646`).
  *
  * `total` enables the percentage tooltip on the occurrences cell only; passing
  * `null` suppresses it, which is what the Total row does.
@@ -807,7 +807,7 @@ function renderStats(
 /**
  * The badge + message + `file:line` + component area for one diagnostic.
  *
- * `diagnosticMain` (`errors.html:616-629`). Used for message-view top rows and
+ * `diagnosticMain` (`old/errors.html:616-629`). Used for message-view top rows and
  * for test/component-view sub-rows — the same element in both places, which is
  * why it takes a `messageId` rather than a row.
  *
@@ -865,7 +865,7 @@ function summaryComponentSpan(row: ErrorGroupRow): HTMLElement {
     });
 }
 
-/** The Searchfox link on a `file:line`. `searchfoxFileLink` (`errors.html:601`). */
+/** The Searchfox link on a `file:line`. `searchfoxFileLink` (`old/errors.html:601`). */
 function searchfoxLink(file: string, line: number | null | undefined): HTMLAnchorElement {
     let url = `https://searchfox.org/mozilla-central/source/${file}`;
     if (line != null) {
@@ -880,7 +880,7 @@ function searchfoxLink(file: string, line: number | null | undefined): HTMLAncho
 // Sorting
 // =========================================================================
 
-/** `sortBy` (`errors.html:818-828`). Re-sorts and re-filters; never re-groups. */
+/** `sortBy` (`old/errors.html:818-828`). Re-sorts and re-filters; never re-groups. */
 function sortBy(column: SortColumn): void {
     if (data === null) {
         return;
@@ -894,17 +894,17 @@ function sortBy(column: SortColumn): void {
 // Expansion
 // =========================================================================
 
-/** A top-level row's subtree runs until the next one. `errors.html:845`. */
+/** A top-level row's subtree runs until the next one. `old/errors.html:845`. */
 const endsGroup = (element: Element): boolean =>
     element.classList.contains('marker-row') ||
     element.classList.contains('sort-header') ||
     element.classList.contains('total-row');
 
-/** A sub-row's subtree also ends at the next sub-row. `errors.html:916`. */
+/** A sub-row's subtree also ends at the next sub-row. `old/errors.html:916`. */
 const endsSub = (element: Element): boolean =>
     endsGroup(element) || element.classList.contains('sub-row');
 
-/** `toggleGroup` (`errors.html:841-874`). */
+/** `toggleGroup` (`old/errors.html:841-874`). */
 function toggleGroup(row: ErrorGroupRow, element: HTMLElement): void {
     if (expandedRow === row) {
         element.classList.remove('expanded');
@@ -932,7 +932,7 @@ function toggleGroup(row: ErrorGroupRow, element: HTMLElement): void {
 
     const detail = buildDetail(data!, view(), row, kindOn, term());
 
-    // `errors.html:846-871` inserts a per-day bar chart above the sub-rows when
+    // `old/errors.html:846-871` inserts a per-day bar chart above the sub-rows when
     // `isHistoricalMode && data.hasDays`. Omitted with the 21-day control — see
     // divergence 6. `detail.dayCounts` is still built by `buildDetail`, and is
     // `null` on every file this page can load.
@@ -947,7 +947,7 @@ function toggleGroup(row: ErrorGroupRow, element: HTMLElement): void {
     pinnedChunk = element.closest('.vchunk');
 }
 
-/** One sub-row. `renderSubRow` (`errors.html:894-909`). */
+/** One sub-row. `renderSubRow` (`old/errors.html:894-909`). */
 function renderSubRow(currentView: ErrorView, sub: SubGroup, index: number): HTMLElement {
     const clickable = data!.hasTasks;
     const element = el('div', {
@@ -996,7 +996,7 @@ function renderSubRow(currentView: ErrorView, sub: SubGroup, index: number): HTM
     return element;
 }
 
-/** `toggleSub` (`errors.html:911-933`). */
+/** `toggleSub` (`old/errors.html:911-933`). */
 function toggleSub(sub: SubGroup, index: number, element: HTMLElement): void {
     if (!data!.hasTasks) {
         return;
@@ -1015,7 +1015,7 @@ function toggleSub(sub: SubGroup, index: number, element: HTMLElement): void {
     // The test name the profiler's marker search is seeded with. Known in the
     // message view (the sub *is* a test) and in the test view (the row is), and
     // **null in the component view**, where neither level names one — so a
-    // component-view profile link has no `markerSearch`. `errors.html:927-930`.
+    // component-view profile link has no `markerSearch`. `old/errors.html:927-930`.
     const currentView = view();
     const testName =
         currentView === 'message'
@@ -1130,7 +1130,7 @@ function setupClickHandlers(): void {
 // =========================================================================
 
 /**
- * `onKindFilterChange` (`errors.html:1042-1049`).
+ * `onKindFilterChange` (`old/errors.html:1042-1049`).
  *
  * The branch is the page's most important behavioural detail: a message-view row
  * is one kind, so a checkbox only shows or hides rows (and refreshes the Total),
@@ -1146,7 +1146,7 @@ function onKindFilterChange(): void {
     }
 }
 
-/** `onViewChange` (`errors.html:1051-1056`). Resets the sort to the default. */
+/** `onViewChange` (`old/errors.html:1051-1056`). Resets the sort to the default. */
 function onViewChange(): void {
     currentSort = { ...INITIAL_SORT };
     updateUrlHash();
@@ -1157,7 +1157,7 @@ function onViewChange(): void {
 // Data loading
 // =========================================================================
 
-/** `loadSelectedDate` (`errors.html:1060-1084`). */
+/** `loadSelectedDate` (`old/errors.html:1060-1084`). */
 async function loadSelectedDate(): Promise<void> {
     const date = dateSelect().value;
     if (!date) {
@@ -1202,7 +1202,7 @@ function updateUrlHash(): void {
 }
 
 /**
- * Applies the hash to the page. `loadFromUrlHash` (`errors.html:1122-1154`).
+ * Applies the hash to the page. `loadFromUrlHash` (`old/errors.html:1122-1154`).
  *
  * Note this page **already** clears a stale search box — `setValue(state.q ||
  * '')` at `:1141`, with no `&& state.q` guard — so it does not have the bug

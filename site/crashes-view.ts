@@ -39,7 +39,7 @@ import {
     sortRows,
 } from './drilldown-view.ts';
 
-/** The word the per-test tooltip uses. `crashes.html:721`. */
+/** The word the per-test tooltip uses. `old/crashes.html:721`. */
 export const CRASH_NOUN = 'signature';
 
 /**
@@ -111,7 +111,7 @@ export function crashLinksOf(occurrence: Occurrence, treeherderAvailable: boolea
 /**
  * Whether a single-occurrence row opens the crash viewer when clicked.
  *
- * `crashes.html:650-655`: a `test-row single-crash` carries `data-crash-url`,
+ * `old/crashes.html:650-655`: a `test-row single-crash` carries `data-crash-url`,
  * and clicking anywhere on it opens that URL — but only when there *is* one. A
  * row for a crash with no dump has `data-crash-url=""` and the click handler's
  * `if (crashUrl)` makes it inert. The row still looks clickable, because the

@@ -8,7 +8,7 @@
  *
  * The rule that is not visible in the format: **a manifest whose durations are
  * all zero on a config was skipped there, not run instantly**
- * (`manifests.html:415`). Zero durations are common — 71,272 of 433,836 runs
+ * (`old/manifests.html:415`). Zero durations are common — 71,272 of 433,836 runs
  * on 2026-08-03 — so missing this makes every skipped config read as
  * infinitely fast.
  *

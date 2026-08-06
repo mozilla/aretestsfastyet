@@ -16,7 +16,7 @@
  *
  * The rule that is invisible in the format and changes a sixth of the data: **a
  * manifest whose durations are all zero on a config was skipped there, not run
- * instantly** (`manifests.html:415`). `FORMATS.md` measures 71,272 of 433,836
+ * instantly** (`old/manifests.html:415`). `FORMATS.md` measures 71,272 of 433,836
  * runs at zero on 2026-08-03 — 16.4%.
  *
  * Miss it and every skipped config reads as infinitely fast, which inverts the

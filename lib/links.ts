@@ -36,7 +36,7 @@
  * The second is the trap. A test that fails uploads a profile captured at the
  * moment of failure, under a name derived from the test — and the only place
  * that name is recorded is the failure message itself
- * (`"… profile uploaded in profile_foo.js.json"`, parsed at `try.html:2900`).
+ * (`"… profile uploaded in profile_foo.js.json"`, parsed at `old/try.html:2900`).
  * There is no listing to consult and no naming rule to apply: two tests in the
  * same job produce two different filenames, and a job where nothing failed
  * produced none at all.
@@ -97,7 +97,7 @@ export function resourceUsageProfileUrl(taskId: string, retryId: number): string
  * The filename of the profile a failing test uploaded, from its failure
  * message, or `null` when the message names none.
  *
- * Ported verbatim from `extractUploadedProfileName()` (`try.html:2903`),
+ * Ported verbatim from `extractUploadedProfileName()` (`old/try.html:2903`),
  * including the regex. The message looks like:
  *
  * ```
@@ -226,7 +226,7 @@ export function crashViewerUrl(taskId: string, retryId: number, minidumpId: stri
  * `~` is crash-stats' "contains" operator, and the `@ ` prefix is stripped
  * before searching because crash-stats' own signatures do not carry it —
  * searching for `~@ Foo` matches nothing. Both are upstream's
- * (`crash-viewer.html:625`).
+ * (`old/crash-viewer.html:625`).
  */
 export function crashStatsSearchUrl(signature: string): string {
     const bare = signature.replace(/^@ /, '');
@@ -246,7 +246,7 @@ export interface FileInfo {
 /**
  * Parses the walker's source-file reference.
  *
- * Ported from `parseFileInfo()` (`crash-viewer.html:997`) unchanged, including
+ * Ported from `parseFileInfo()` (`old/crash-viewer.html:997`) unchanged, including
  * the `parts.length >= 4` guard and the `slice(2, -1).join(':')` that puts a
  * path containing a colon back together.
  *
@@ -290,7 +290,7 @@ export function parseFileInfo(file: string | null | undefined): FileInfo | null 
  * `hg:` goes to hg.mozilla.org's file view and `git:` to GitHub's blob view,
  * and the two use different line-anchor spellings — `#l177` lowercase for hg,
  * `#L1976` uppercase for GitHub. Both are upstream's
- * (`crash-viewer.html:1023`) and both matter: the wrong case scrolls nowhere.
+ * (`old/crash-viewer.html:1023`) and both matter: the wrong case scrolls nowhere.
  */
 export function sourceUrl(file: string | null | undefined, line: number | null): string | null {
     const info = parseFileInfo(file);
@@ -306,7 +306,7 @@ export function sourceUrl(file: string | null | undefined, line: number | null):
 /**
  * A Searchfox link to a frame's source, or `null` for non-Mozilla code.
  *
- * Ported from `makeSearchfoxSearchUrl()` (`crash-viewer.html:1042`). Two
+ * Ported from `makeSearchfoxSearchUrl()` (`old/crash-viewer.html:1042`). Two
  * conditions are load-bearing and both are upstream's:
  *
  * - **`hg:` only.** A `git:` reference is a vendored third-party repository

@@ -194,7 +194,7 @@ export interface ChartCall {
  *
  * `site/issues.ts` does not go through `common-charts.js` — its two chart kinds
  * are the old page's own `createFailureRateChart` and `createIssueMessageChart`
- * (`issues.html:2743`, `:2813`), which live nowhere but that page. So the seam
+ * (`old/issues.html:2743`, `:2813`), which live nowhere but that page. So the seam
  * for those is Chart.js itself, which is genuinely a global from a CDN tag.
  *
  * **What is recorded is the whole configuration**, not a summary of it: the

@@ -32,7 +32,7 @@
  *    Unfalsifiable by construction, not by omission: removing elements from a
  *    sorted list leaves the survivors in the same relative order, so the two
  *    orders are equal for *every* input. `issueEntries` keeps upstream's
- *    order (`issues.html:3037` then `:3040`) because it is upstream's; no test
+ *    order (`old/issues.html:3037` then `:3040`) because it is upstream's; no test
  *    can distinguish them and none pretends to.
  * 2. **Counting `run-if` skips as issues.** Measured: **0 of 189 SKIP entries
  *    in the fixture and 0 of 27,024 in the full pinned 21-day xpcshell file**
@@ -264,7 +264,7 @@ function handGroups(filters: IssueFilters): Map<
 
 test('a component row totals every test in it, clean ones included', () => {
     // The order-of-operations rule the CLI needed `keepClean` for
-    // (`issues.html:2007-2013` runs before the `:2016` gate). The
+    // (`old/issues.html:2007-2013` runs before the `:2016` gate). The
     // discriminating case is `WebExtensions :: General`, which holds the
     // 500-run clean test: an implementation that summed only the tests it was
     // going to *list* would report 96,973 runs instead of 97,473, and the
@@ -313,7 +313,7 @@ test('a test with no issue is never listed as a child row', () => {
 });
 
 test('a component whose every test is clean is still a row', () => {
-    // `issues.html:2111-2112` renders it as `(N tests)`. `lib/query/issues.ts`
+    // `old/issues.html:2111-2112` renders it as `(N tests)`. `lib/query/issues.ts`
     // drops it (`:329`), so this is the page keeping something the CLI does
     // not — a declared page-vs-CLI divergence, and the reason
     // `buildComponentRows` has an `emptyGroup` path at all.
@@ -502,7 +502,7 @@ test('sorting by name uses the component name, both directions', () => {
 });
 
 test('the rate sort uses the exact ratio, not the displayed percentage', () => {
-    // `issues.html:2046` sorts on `issueCount / totalCount` — unrounded. Two
+    // `old/issues.html:2046` sorts on `issueCount / totalCount` — unrounded. Two
     // components that both display the same rounded percentage must still
     // order by their real rates.
     const rows = buildComponentRows(file, ALL_FILTERS, '');
@@ -646,7 +646,7 @@ test('a search is case-insensitive on both the component and the path', () => {
 });
 
 test('a component whose only matching tests are clean is dropped', () => {
-    // `issues.html:2024-2029`: with a search, a component survives if its name
+    // `old/issues.html:2024-2029`: with a search, a component survives if its name
     // matched *or* it kept a test with an issue. `test_ext_always_green.js`
     // matches on path, has no issue, and its component name does not contain
     // the term — so the row goes.
@@ -917,7 +917,7 @@ test('the failure tooltip divides by runCount and rounds once', () => {
 // =========================================================================
 
 test('an absent date means the 21-day aggregate', () => {
-    // The migration's one deliberate behaviour change. `issues.html:3709-3712`
+    // The migration's one deliberate behaviour change. `old/issues.html:3709-3712`
     // fell through to the date select; this treats no-date as the aggregate.
     assert.equal(isHistoricalDate(undefined), true, 'no hash at all');
     assert.equal(isHistoricalDate(''), true, 'an empty date');

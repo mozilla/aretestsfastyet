@@ -10,7 +10,7 @@
  * ## The decisions
  *
  * **`CRASH` is its own kind, not a failure.** This was the one live
- * disagreement: `issues.html:1350` and `xpcshell-timings.html:656` fold
+ * disagreement: `old/issues.html:1350` and `xpcshell-timings.html:656` fold
  * crashes into failures, everything else counts them separately. The library
  * reports `crash` and lets the caller aggregate — `isFailureLike()` is
  * provided for callers that want the union, so neither side has to reimplement
@@ -36,7 +36,7 @@
  * is unaffected: zero is zero at any scale.
  *
  * **No duration heuristics.** `xpcshell-timings.html:684`, `:1213` and
- * `issues.html:1024` guess an outcome from a runtime (`<100ms` → skip,
+ * `old/issues.html:1024` guess an outcome from a runtime (`<100ms` → skip,
  * `>300s` → timeout, else pass). They exist only to give `UNKNOWN` runs an
  * outcome, they are dead now that `UNKNOWN` does not occur, and guessing an
  * outcome from a runtime does not belong in a tested library. Not ported.

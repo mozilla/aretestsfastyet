@@ -2492,7 +2492,7 @@ test('try reads a failure message off the TestStatus markers, not the Test marke
 });
 
 /**
- * The precedence, which `try.html:983` sets by assigning `allMessages[0]`
+ * The precedence, which `old/try.html:983` sets by assigning `allMessages[0]`
  * *over* whatever the `Test` marker held. Some `Test` markers do carry a
  * `message`, and it is the generic harness summary ("Found unexpected failures
  * during the test") rather than the assertion that failed — so preferring it
@@ -2777,7 +2777,7 @@ test('try ignores a TestStatus marker recorded against a different test', async 
  * — another run of the same job name passed outright. On CONFIG-B every run
  * failed and none passed. `try.html` lists the test under "Permanent failures"
  * because it tags each failing *instance* and calls the test permanent when any
- * instance is not intermittent (`try.html:1400`, `:1765`).
+ * instance is not intermittent (`old/try.html:1400`, `:1765`).
  *
  * Asking "did every run of this test fail?" of the whole test answers no, and
  * hides a configuration the test never once passed on. That is the question
@@ -3179,9 +3179,9 @@ test('try keeps a perma-failing config when the test passed on rerun elsewhere',
 /**
  * The order of the sections, which is the thing the owner reported.
  *
- * `try.html:744` sets the page's default sort to `{ column: 'count',
+ * `old/try.html:744` sets the page's default sort to `{ column: 'count',
  * ascending: false }`, and its `count` is `test.instances.length`
- * (`try.html:1869`) — failing *executions*, not the job runs they happened in.
+ * (`old/try.html:1869`) — failing *executions*, not the job runs they happened in.
  * This command ranked on distinct failing job runs, which is a different
  * number whenever the harness reran a test: on try push 09028ab93fe1 it turned
  * a leading sequence of 4, 4, 3, 3, 3 into 2, 2, 2, 2, 2 and reordered the
@@ -3256,7 +3256,7 @@ test('try ranks failures by failing executions, as the dashboard does', async ()
  *
  * `try.html` leaves equal counts in insertion order and leans on `sort()`
  * being stable, so its tie order is the order eight web workers finished
- * parsing profiles fetched 64 at a time (`try.html:1113`) — a race that
+ * parsing profiles fetched 64 at a time (`old/try.html:1113`) — a race that
  * reorders on reload. Output that gets diffed and pasted into bugs has to be
  * stable instead, so this is a deliberate divergence and it is pinned here.
  */
