@@ -37,6 +37,7 @@ import {
     isFailureStatus,
     isTestJob,
     runKeyOf,
+    runOutcomes,
     selectTryJobs,
 } from '../lib/model/try-jobs.ts';
 
@@ -417,3 +418,227 @@ test('the caller keeps its own job objects', () => {
  * and the reason a mutation check is worth more here than another parity
  * assertion.
  */
+
+// --- runOutcomes -----------------------------------------------------------
+
+/**
+ * ## Why these timings are written out by hand
+ *
+ * The bug this covers is a *semantic* one — every number in `18/18` was
+ * arithmetically correct — so a test that recomputes the fraction from the
+ * fixture would have passed before the fix and after it. What has to be pinned
+ * is the shape of the run that produced it: `FAIL` followed by a passing
+ * execution flagged as the harness's in-job rerun, in every run of every
+ * configuration. That shape is three fields wide, so it is written here rather
+ * than mined out of a profile, and the expected buckets are counted by hand
+ * off the literals below.
+ *
+ * The real occurrence is recorded in the last test in this section.
+ */
+interface FakeTiming {
+    path: string;
+    status: string;
+    jobName: string;
+    taskId: string;
+    retryId: number;
+    rerun: boolean;
+}
+
+const timing = (
+    taskId: string,
+    status: string,
+    rerun = false,
+    jobName = 'test-linux2404-64/opt-mochitest-browser-chrome-1'
+): FakeTiming => ({ path: 'a/test.js', status, jobName, taskId, retryId: 0, rerun });
+
+/** Groups timings the way both callers do, without importing the grouping. */
+function execsByRun(
+    timings: readonly FakeTiming[]
+): Map<string, Map<string, FakeTiming[]>> {
+    const byJob = new Map<string, Map<string, FakeTiming[]>>();
+    for (const t of timings) {
+        let byRun = byJob.get(t.jobName);
+        if (byRun === undefined) {
+            byRun = new Map();
+            byJob.set(t.jobName, byRun);
+        }
+        const key = `${t.taskId}.${t.retryId}`;
+        byRun.set(key, [...(byRun.get(key) ?? []), t]);
+    }
+    return byJob;
+}
+
+const outcomesOf = (
+    timings: readonly FakeTiming[],
+    jobNames: string[],
+    runs: [string, number][]
+): ReturnType<typeof runOutcomes> =>
+    runOutcomes<FakeTiming>(execsByRun(timings), jobNames, new Map(runs), (t) => t.rerun);
+
+const ONE_CONFIG = 'test-linux2404-64/opt-mochitest-browser-chrome-1';
+
+test('a run the harness reran to green is passedOnRetry, not a plain failure', () => {
+    // One run, two executions: the failure and the rerun that passed. This is
+    // the exact shape behind the reported bug.
+    const outcomes = outcomesOf(
+        [timing('T1', 'FAIL'), timing('T1', 'PASS', true)],
+        [ONE_CONFIG],
+        [[ONE_CONFIG, 1]]
+    );
+    assert.deepEqual(outcomes, {
+        failedTwice: 0,
+        passedOnRetry: 1,
+        failedOnce: 0,
+        passed: 0,
+        notAnalyzed: 0,
+    });
+});
+
+test('a run whose rerun also failed is failedTwice, not passedOnRetry', () => {
+    // Same two-execution shape, opposite second verdict. The pair is what makes
+    // the rerun branch decide something: without it the two collapse.
+    const outcomes = outcomesOf(
+        [timing('T1', 'FAIL'), timing('T1', 'FAIL', true)],
+        [ONE_CONFIG],
+        [[ONE_CONFIG, 1]]
+    );
+    assert.deepEqual(outcomes, {
+        failedTwice: 1,
+        passedOnRetry: 0,
+        failedOnce: 0,
+        passed: 0,
+        notAnalyzed: 0,
+    });
+});
+
+test('a single failing execution is failedOnce', () => {
+    const outcomes = outcomesOf([timing('T1', 'FAIL')], [ONE_CONFIG], [[ONE_CONFIG, 1]]);
+    assert.deepEqual(outcomes, {
+        failedTwice: 0,
+        passedOnRetry: 0,
+        failedOnce: 1,
+        passed: 0,
+        notAnalyzed: 0,
+    });
+});
+
+test('a run of a failing config in which the test passed is counted as passed', () => {
+    // Two runs of one config: one failed, one did not. The second is `passed`
+    // and not `notAnalyzed` — its profile WAS read, which is the distinction
+    // `--all-jobs` turns on.
+    const outcomes = outcomesOf(
+        [timing('T1', 'FAIL'), timing('T2', 'PASS')],
+        [ONE_CONFIG],
+        [[ONE_CONFIG, 2]]
+    );
+    assert.deepEqual(outcomes, {
+        failedTwice: 0,
+        passedOnRetry: 0,
+        failedOnce: 1,
+        passed: 1,
+        notAnalyzed: 0,
+    });
+});
+
+test('runs of the config whose profiles were never read are notAnalyzed', () => {
+    // One run seen, four runs on the push. The three unseen ones are not
+    // evidence of anything — calling them failures is what `4/4` would do.
+    const outcomes = outcomesOf([timing('T1', 'FAIL')], [ONE_CONFIG], [[ONE_CONFIG, 4]]);
+    assert.deepEqual(outcomes, {
+        failedTwice: 0,
+        passedOnRetry: 0,
+        failedOnce: 1,
+        passed: 0,
+        notAnalyzed: 3,
+    });
+});
+
+test('the buckets sum to the runs of the configurations the test failed on', () => {
+    // The invariant the fraction's denominator rests on: whatever the mix, the
+    // five buckets account for every run of every failed config, so a reader
+    // can subtract. Two configs, 3 runs and 2 runs, five runs of five kinds.
+    const other = 'test-windows11-64-25h2/opt-mochitest-browser-chrome-2';
+    const outcomes = outcomesOf(
+        [
+            timing('A1', 'FAIL'),
+            timing('A1', 'PASS', true),
+            timing('A2', 'FAIL'),
+            timing('A2', 'FAIL', true),
+            timing('A3', 'PASS'),
+            timing('B1', 'TIMEOUT', false, other),
+        ],
+        [ONE_CONFIG, other],
+        [
+            [ONE_CONFIG, 3],
+            [other, 2],
+        ]
+    );
+    assert.deepEqual(outcomes, {
+        failedTwice: 1,
+        passedOnRetry: 1,
+        failedOnce: 1,
+        passed: 1,
+        notAnalyzed: 1,
+    });
+    const total =
+        outcomes.failedTwice +
+        outcomes.passedOnRetry +
+        outcomes.failedOnce +
+        outcomes.passed +
+        outcomes.notAnalyzed;
+    assert.equal(total, 3 + 2, 'the five buckets partition the runs of the failed configs');
+});
+
+test('a config the test never failed on contributes nothing', () => {
+    // `runsPerJobName` holds every config on the push; only the ones named in
+    // `failedJobNames` are in the denominator. A config that ran 40 times and
+    // never failed must not appear as 40 `notAnalyzed`.
+    const never = 'test-linux2404-64/opt-mochitest-browser-chrome-99';
+    const outcomes = outcomesOf(
+        [timing('T1', 'FAIL')],
+        [ONE_CONFIG],
+        [
+            [ONE_CONFIG, 1],
+            [never, 40],
+        ]
+    );
+    assert.equal(outcomes.notAnalyzed, 0);
+    assert.equal(outcomes.failedOnce, 1);
+});
+
+test('every run failing while every run passed on rerun is representable', () => {
+    // The reported bug, reduced. `browser_878452_drag_to_panel.js` on try push
+    // 7d16bff81bb1: 12 configurations, 18 runs between them, every run a
+    // `FAIL` followed by a passing rerun. The fraction is `18/18` and true;
+    // the outcome breakdown is what says the test passed in the end every
+    // single time. Both are asserted here so neither can drift.
+    //
+    // Two of those 12 configs ran 4 times and ten ran once, which is where 18
+    // comes from — read off the fixture, not from the module.
+    const configs = Array.from({ length: 12 }, (_, i) => `config-${i}`);
+    const runsPer: [string, number][] = configs.map((c, i) => [c, i < 2 ? 4 : 1]);
+    const timings: FakeTiming[] = [];
+    for (const [config, runs] of runsPer) {
+        for (let r = 0; r < runs; r++) {
+            timings.push(timing(`${config}-${r}`, 'FAIL', false, config));
+            timings.push(timing(`${config}-${r}`, 'PASS', true, config));
+        }
+    }
+    assert.equal(
+        runsPer.reduce((sum, [, n]) => sum + n, 0),
+        18,
+        '2 configs x 4 runs + 10 configs x 1 run'
+    );
+
+    const outcomes = outcomesOf(timings, configs, runsPer);
+    assert.deepEqual(outcomes, {
+        failedTwice: 0,
+        passedOnRetry: 18,
+        failedOnce: 0,
+        passed: 0,
+        notAnalyzed: 0,
+    });
+    // The fraction on its own: 18 failing runs out of 18 runs of those configs.
+    // Correct, and the reason it needed qualifying rather than fixing.
+    assert.equal(outcomes.passedOnRetry, 18);
+});

@@ -155,6 +155,113 @@ export function runKeyOf(run: { taskId: string; retryId: number }): string {
     return `${run.taskId}.${run.retryId}`;
 }
 
+// --- how each job run of a test ended ---------------------------------------
+
+/**
+ * How the runs of one test ended, counted in **job runs**.
+ *
+ * The five buckets partition the runs of the configurations the test failed on,
+ * so they sum to the denominator of the "failed n of m runs" fraction. That is
+ * the distinction the fraction alone cannot make, and getting it wrong is what
+ * `browser_878452_drag_to_panel.js` exposed on try push 7d16bff81bb1: it failed
+ * in all 18 runs of the 12 configurations it failed on, and the harness's in-job
+ * rerun turned every one of those 18 runs green. `18/18` is arithmetically
+ * right and reads as "this test never once passed", which is the opposite of
+ * what happened. Only `passedOnRetry === 18` says what the push actually did.
+ *
+ * Counting job runs rather than executions is deliberate and is the axis the
+ * fraction is on. A failing execution is a different unit — the harness reruns
+ * a failing test, so one job run can hold two of them — and conflating the two
+ * is what `PARITY.md` §1 records as a user-reported defect.
+ */
+export interface RunOutcomes {
+    /** Failed, then failed again when the harness reran it in-job. */
+    failedTwice: number;
+    /** Failed, then passed when the harness reran it in-job. */
+    passedOnRetry: number;
+    /** Failed once and was not rerun. */
+    failedOnce: number;
+    /** Ran and did not fail. */
+    passed: number;
+    /**
+     * A run of one of those configurations whose profile was never parsed.
+     *
+     * Without `--all-jobs` (the page's "All jobs" unchecked) this is every
+     * *passing* run of the configuration, because only the failed jobs'
+     * profiles were read. It is not evidence the test failed there, and a
+     * reader who takes the fraction as "failed every time" is reading these as
+     * failures.
+     */
+    notAnalyzed: number;
+}
+
+/**
+ * The minimum a timing has to carry for its run outcome to be decidable.
+ *
+ * Structural rather than either side's concrete type, because the two spell the
+ * in-job rerun flag differently — `cli/commands/try.ts` has `isRerun` and
+ * `site/try-view.ts` has `isRetry`, for the reason the table above records — and
+ * neither spelling can be made to serve as the shared one without renaming a
+ * field that crosses a `postMessage` boundary. The caller passes a reader.
+ */
+export interface RunOutcomeTiming {
+    path: string;
+    status: string;
+    jobName: string;
+    taskId: string;
+    retryId: number;
+}
+
+/**
+ * Buckets the runs of one test, over the configurations it failed on.
+ *
+ * `execsByRun` holds **every** parsed execution of the test in each run of those
+ * configurations, passing ones included — that is what makes the in-job rerun
+ * visible, and reading only the failing executions is what reduces this to the
+ * fraction it is meant to qualify.
+ *
+ * Ported from `site/try-view.ts`'s `aggregateFailures`, whose bucketing this is,
+ * so that `fx-tests try` and `try.html` cannot answer it differently.
+ */
+export function runOutcomes<T extends RunOutcomeTiming>(
+    /** jobName -> runKey -> every parsed execution of the test in that run. */
+    execsByRun: ReadonlyMap<string, ReadonlyMap<string, readonly T[]>>,
+    /** The configurations the test failed on. */
+    failedJobNames: Iterable<string>,
+    /** Completed runs of each configuration, across the whole push. */
+    runsPerJobName: ReadonlyMap<string, number>,
+    /** Whether this execution fell in the harness's in-job rerun phase. */
+    isRerun: (timing: T) => boolean
+): RunOutcomes {
+    const outcomes: RunOutcomes = {
+        failedTwice: 0,
+        passedOnRetry: 0,
+        failedOnce: 0,
+        passed: 0,
+        notAnalyzed: 0,
+    };
+    for (const jobName of failedJobNames) {
+        const runs = execsByRun.get(jobName);
+        for (const execs of runs?.values() ?? []) {
+            const failed = execs.filter((exec) => isFailureStatus(exec.status));
+            if (failed.length === 0) {
+                outcomes.passed++;
+            } else if (execs.some((exec) => isRerun(exec) && exec.status.startsWith('PASS'))) {
+                outcomes.passedOnRetry++;
+            } else if (failed.length > 1) {
+                outcomes.failedTwice++;
+            } else {
+                outcomes.failedOnce++;
+            }
+        }
+        // Runs of this configuration whose profile was never parsed. One run of
+        // the test each; `Math.max` because a profile can hold a run the job
+        // list does not (a retriggered task the push query missed).
+        outcomes.notAnalyzed += Math.max(0, (runsPerJobName.get(jobName) ?? 0) - (runs?.size ?? 0));
+    }
+    return outcomes;
+}
+
 // --- the selection ---------------------------------------------------------
 
 /**

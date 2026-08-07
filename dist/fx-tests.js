@@ -7103,6 +7103,32 @@ function isFailureStatus(status) {
 function runKeyOf(run2) {
   return `${run2.taskId}.${run2.retryId}`;
 }
+function runOutcomes(execsByRun, failedJobNames, runsPerJobName, isRerun) {
+  const outcomes = {
+    failedTwice: 0,
+    passedOnRetry: 0,
+    failedOnce: 0,
+    passed: 0,
+    notAnalyzed: 0
+  };
+  for (const jobName of failedJobNames) {
+    const runs = execsByRun.get(jobName);
+    for (const execs of runs?.values() ?? []) {
+      const failed = execs.filter((exec) => isFailureStatus(exec.status));
+      if (failed.length === 0) {
+        outcomes.passed++;
+      } else if (execs.some((exec) => isRerun(exec) && exec.status.startsWith("PASS"))) {
+        outcomes.passedOnRetry++;
+      } else if (failed.length > 1) {
+        outcomes.failedTwice++;
+      } else {
+        outcomes.failedOnce++;
+      }
+    }
+    outcomes.notAnalyzed += Math.max(0, (runsPerJobName.get(jobName) ?? 0) - (runs?.size ?? 0));
+  }
+  return outcomes;
+}
 function selectTryJobs(jobs, options) {
   const failedTestJobs = [];
   const successfulTestJobs = [];
@@ -7525,6 +7551,29 @@ function aggregateFailures(timings, runsPerJobName) {
     const suffix = /-(PARALLEL|SEQUENTIAL)$/.exec(timing.status)?.[1];
     entry.modes.add(suffix ?? "UNRECORDED");
   }
+  const execsByTest = /* @__PURE__ */ new Map();
+  for (const timing of timings) {
+    if (!byTest.has(timing.path)) {
+      continue;
+    }
+    let byJob = execsByTest.get(timing.path);
+    if (byJob === void 0) {
+      byJob = /* @__PURE__ */ new Map();
+      execsByTest.set(timing.path, byJob);
+    }
+    let byRun = byJob.get(timing.jobName);
+    if (byRun === void 0) {
+      byRun = /* @__PURE__ */ new Map();
+      byJob.set(timing.jobName, byRun);
+    }
+    const key = runKeyOf(timing);
+    let execs = byRun.get(key);
+    if (execs === void 0) {
+      execs = [];
+      byRun.set(key, execs);
+    }
+    execs.push(timing);
+  }
   const failures = [];
   for (const entry of byTest.values()) {
     const jobNames = [...entry.failedRunsByJobName.keys()];
@@ -7544,12 +7593,19 @@ function aggregateFailures(timings, runsPerJobName) {
       return runsOfConfig > 0 && failed >= runsOfConfig;
     });
     const passedOnRerunConfigs = [...entry.passedOnRerunConfigs].sort();
+    const outcomes = runOutcomes(
+      execsByTest.get(entry.path) ?? /* @__PURE__ */ new Map(),
+      jobNames,
+      runsPerJobName,
+      (timing) => timing.isRerun
+    );
     failures.push({
       path: entry.path,
       jobNames: jobNames.sort(),
       failureCount: entry.failureCount,
       failedRuns,
       totalRuns: totalRuns2,
+      outcomes,
       everyRunFailed: permaFailingConfigs.length > 0,
       permaFailingConfigs: permaFailingConfigs.sort(),
       passedOnRerun: passedOnRerunConfigs.length > 0,
@@ -7716,6 +7772,27 @@ function preExistingLine(failure) {
   const configs = failure.permaFailingConfigs.length === 1 ? failure.permaFailingConfigs[0] : `the ${failure.permaFailingConfigs.length} configs it failed every run on`;
   return `Pre-existing: central already fails the same way on ${configs} (${onPermaConfigs} times in 21 days) \u2014 probably not yours.`;
 }
+function outcomesLine(failure) {
+  const { failedTwice, passedOnRetry, failedOnce, passed, notAnalyzed } = failure.outcomes;
+  const parts = [];
+  const runs = (n) => `${n} run${n === 1 ? "" : "s"}`;
+  if (failedTwice > 0) {
+    parts.push(`${runs(failedTwice)} failed, then failed again on rerun`);
+  }
+  if (passedOnRetry > 0) {
+    parts.push(`${runs(passedOnRetry)} failed, then passed on rerun`);
+  }
+  if (failedOnce > 0) {
+    parts.push(`${runs(failedOnce)} failed, not rerun`);
+  }
+  if (passed > 0) {
+    parts.push(`${runs(passed)} passed`);
+  }
+  if (notAnalyzed > 0) {
+    parts.push(`${runs(notAnalyzed)} not read`);
+  }
+  return parts.length > 1 ? `    Of those runs: ${parts.join("; ")}.` : null;
+}
 function rerunLine(failure) {
   const configs = failure.passedOnRerunConfigs;
   if (configs.length === 0) {
@@ -7841,6 +7918,10 @@ function section(title, failures, description, limit) {
     lines.push(
       `    ${failure.failureCount} ${failure.failureCount === 1 ? "failure" : "failures"} on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`} (${failure.failedRuns}/${failure.totalRuns} runs)`
     );
+    const outcomes = outcomesLine(failure);
+    if (outcomes !== null) {
+      lines.push(outcomes);
+    }
     if (failure.jobNames.length > 1) {
       for (const jobName of failure.jobNames.slice(0, 4)) {
         lines.push(`      ${jobName}`);

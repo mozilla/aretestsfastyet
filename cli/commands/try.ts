@@ -48,7 +48,13 @@ import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } f
 import { computeConfigStats } from '../../lib/query/config-stats.ts';
 import { computeTestStats } from '../../lib/query/test-stats.ts';
 import { stripChunkSuffix } from '../../lib/model/job-name.ts';
-import { isFailureStatus, runKeyOf, selectTryJobs } from '../../lib/model/try-jobs.ts';
+import {
+    type RunOutcomes,
+    isFailureStatus,
+    runKeyOf,
+    runOutcomes,
+    selectTryJobs,
+} from '../../lib/model/try-jobs.ts';
 import { resourceUsageProfileUrl, uploadedProfileUrl } from '../../lib/links.ts';
 import { treeherderPushUrl } from '../../lib/links.ts';
 import { type TreeherderJob } from '../../lib/sources/treeherder.ts';
@@ -146,6 +152,16 @@ export interface TryFailure {
     /** Failing runs, and how many runs of those jobs there were. */
     failedRuns: number;
     totalRuns: number;
+    /**
+     * How each of those `totalRuns` runs ended. Sums to `totalRuns`.
+     *
+     * The fraction on its own is not readable, and on this push it was actively
+     * misleading: `browser_878452_drag_to_panel.js` failed in all 18 runs of
+     * the 12 configurations it failed on, so it printed `18/18` — and the
+     * harness's in-job rerun turned all 18 of those runs green.
+     * `passedOnRetry === 18` is the fact `18/18` hides.
+     */
+    outcomes: RunOutcomes;
     /**
      * True when at least one affected configuration failed in every run.
      *
@@ -966,6 +982,34 @@ function aggregateFailures(
         entry.modes.add(suffix ?? 'UNRECORDED');
     }
 
+    // Every parsed execution of each failing test, by config and by run —
+    // the PASSING ones included, which is the whole point. A run's outcome is
+    // not decidable from its failures alone: `FAIL` and `FAIL -> PASS(rerun)`
+    // have the same failing executions and are opposite outcomes.
+    const execsByTest = new Map<string, Map<string, Map<string, TestTiming[]>>>();
+    for (const timing of timings) {
+        if (!byTest.has(timing.path)) {
+            continue;
+        }
+        let byJob = execsByTest.get(timing.path);
+        if (byJob === undefined) {
+            byJob = new Map();
+            execsByTest.set(timing.path, byJob);
+        }
+        let byRun = byJob.get(timing.jobName);
+        if (byRun === undefined) {
+            byRun = new Map();
+            byJob.set(timing.jobName, byRun);
+        }
+        const key = runKeyOf(timing);
+        let execs = byRun.get(key);
+        if (execs === undefined) {
+            execs = [];
+            byRun.set(key, execs);
+        }
+        execs.push(timing);
+    }
+
     const failures: TryFailure[] = [];
     for (const entry of byTest.values()) {
         const jobNames = [...entry.failedRunsByJobName.keys()];
@@ -1012,12 +1056,23 @@ function aggregateFailures(
 
         const passedOnRerunConfigs = [...entry.passedOnRerunConfigs].sort();
 
+        // How each of those `totalRuns` runs actually ended. `failedRuns` alone
+        // cannot say: a run the harness reran to green is counted in it, so
+        // `18/18` is reachable by a test that passed on every single rerun.
+        const outcomes = runOutcomes<TestTiming>(
+            execsByTest.get(entry.path) ?? new Map(),
+            jobNames,
+            runsPerJobName,
+            (timing) => timing.isRerun
+        );
+
         failures.push({
             path: entry.path,
             jobNames: jobNames.sort(),
             failureCount: entry.failureCount,
             failedRuns,
             totalRuns,
+            outcomes,
             everyRunFailed: permaFailingConfigs.length > 0,
             permaFailingConfigs: permaFailingConfigs.sort(),
             passedOnRerun: passedOnRerunConfigs.length > 0,
@@ -1302,6 +1357,43 @@ function preExistingLine(failure: TryFailure): string | null {
  *
  * Returns `null` when the rerun never passed anywhere.
  */
+/**
+ * How the runs behind the `n/m` fraction ended, when that is not one thing.
+ *
+ * The fraction counts a run the harness reran to green as a failed run, so
+ * `18/18` is reachable by a test that passed on every rerun — it is what
+ * `browser_878452_drag_to_panel.js` printed on push 7d16bff81bb1. The buckets
+ * sum to `m` and are what makes the fraction readable.
+ *
+ * Suppressed when a single bucket holds every run: "18/18 runs" followed by
+ * "18 failed, not retried" says the same thing twice, and the line is worth
+ * printing only where the fraction is ambiguous.
+ */
+function outcomesLine(failure: TryFailure): string | null {
+    const { failedTwice, passedOnRetry, failedOnce, passed, notAnalyzed } = failure.outcomes;
+    const parts: string[] = [];
+    const runs = (n: number): string => `${n} run${n === 1 ? '' : 's'}`;
+    if (failedTwice > 0) {
+        parts.push(`${runs(failedTwice)} failed, then failed again on rerun`);
+    }
+    if (passedOnRetry > 0) {
+        parts.push(`${runs(passedOnRetry)} failed, then passed on rerun`);
+    }
+    if (failedOnce > 0) {
+        parts.push(`${runs(failedOnce)} failed, not rerun`);
+    }
+    if (passed > 0) {
+        parts.push(`${runs(passed)} passed`);
+    }
+    if (notAnalyzed > 0) {
+        // Named as unread rather than passed: without `--all-jobs` these are
+        // the runs whose profiles were never fetched, and calling them passes
+        // would assert something this run did not look at.
+        parts.push(`${runs(notAnalyzed)} not read`);
+    }
+    return parts.length > 1 ? `    Of those runs: ${parts.join('; ')}.` : null;
+}
+
 function rerunLine(failure: TryFailure): string | null {
     const configs = failure.passedOnRerunConfigs;
     if (configs.length === 0) {
@@ -1501,6 +1593,10 @@ function section(
                 ` on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`}` +
                 ` (${failure.failedRuns}/${failure.totalRuns} runs)`
         );
+        const outcomes = outcomesLine(failure);
+        if (outcomes !== null) {
+            lines.push(outcomes);
+        }
         if (failure.jobNames.length > 1) {
             for (const jobName of failure.jobNames.slice(0, 4)) {
                 lines.push(`      ${jobName}`);

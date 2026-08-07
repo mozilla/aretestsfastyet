@@ -67,11 +67,13 @@
 import { extractPlatform } from '../lib/model/job-name.ts';
 import {
     FAILURE_STATUSES,
+    type RunOutcomes,
     SUPPORTED_HARNESSES,
     baseStatus,
     isFailureStatus,
     isTestJob,
     runKeyOf,
+    runOutcomes,
     selectTryJobs,
 } from '../lib/model/try-jobs.ts';
 import type { ConfigStats } from '../lib/query/config-stats.ts';
@@ -158,6 +160,7 @@ export {
     isFailureStatus,
     isTestJob,
     runKeyOf,
+    runOutcomes,
     selectTryJobs,
 };
 export { FAILED_JOB_RESULTS } from '../lib/sources/treeherder.ts';
@@ -344,19 +347,14 @@ export function tagIntermittent(
 
 // --- the aggregation ------------------------------------------------------
 
-/** How each job run of a test ended. These count **job runs**, not failures. */
-export interface Outcomes {
-    /** Failed, then failed again when the harness reran it in-job. */
-    failedTwice: number;
-    /** Failed, then passed when the harness reran it in-job. */
-    passedOnRetry: number;
-    /** Failed once and was not rerun. */
-    failedOnce: number;
-    /** Ran and did not fail. */
-    passed: number;
-    /** A run of this job name whose profile was never parsed. */
-    notAnalyzed: number;
-}
+/**
+ * How each job run of a test ended. These count **job runs**, not failures.
+ *
+ * `lib/model/try-jobs.ts`'s `RunOutcomes`, under this page's name for it. The
+ * bucketing was written here first and is now shared, because the CLI had the
+ * fraction and not the breakdown.
+ */
+export type Outcomes = RunOutcomes;
 
 /** One row of the failures table: a test path, aggregated across the push. */
 export interface FailingTest {
@@ -560,39 +558,31 @@ export function aggregateFailures(
             (instance) => instance.intermittent === true
         ).length;
 
-        let failedTwice = 0;
-        let passedOnRetry = 0;
-        let failedOnce = 0;
-        let passed = 0;
-        let notAnalyzed = 0;
         const byJob = execsByTest.get(entry.path);
         // Only the configs it FAILED on. See `totalJobs`'s comment.
         for (const jobName of entry.jobs) {
             const jobRuns = options.jobRunCounts.get(jobName) ?? 0;
             const runs = byJob?.get(jobName);
             entry.totalJobs += jobRuns;
+            // `totalRuns` counts EXECUTIONS, unlike the buckets below, which
+            // count job runs — the harness reruns a failing test, so one run
+            // can hold two. Both are wanted: the tooltip says "ran 36 times and
+            // failed 18 times, in 18 jobs" and needs all three numbers.
             for (const execs of runs?.values() ?? []) {
                 entry.totalRuns += execs.length;
-                const failed = execs.filter((exec) => isFailureStatus(exec.status));
-                if (failed.length === 0) {
-                    passed++;
-                    continue;
-                }
-                if (execs.some((exec) => exec.isRetry === true && exec.status.startsWith('PASS'))) {
-                    passedOnRetry++;
-                } else if (failed.length > 1) {
-                    failedTwice++;
-                } else {
-                    failedOnce++;
-                }
             }
-            // Runs of this job name whose profile was never parsed — jobs that
-            // passed, unless "All jobs" is on. One run of the test each.
-            const unseen = Math.max(0, jobRuns - (runs?.size ?? 0));
-            notAnalyzed += unseen;
-            entry.totalRuns += unseen;
+            entry.totalRuns += Math.max(0, jobRuns - (runs?.size ?? 0));
         }
-        entry.outcomes = { failedTwice, passedOnRetry, failedOnce, passed, notAnalyzed };
+        // The bucketing itself is `lib/model/try-jobs.ts`'s, shared with
+        // `fx-tests try` — the CLI printed a bare `18/18` for a test that
+        // passed on rerun in all 18 of those runs, which is the fraction this
+        // breakdown exists to qualify, and it could only gain it by sharing.
+        entry.outcomes = runOutcomes<Timing>(
+            byJob ?? new Map(),
+            entry.jobs,
+            options.jobRunCounts,
+            (timing) => timing.isRetry === true
+        );
         entry.sortedPlatforms = sortedPlatforms(entry.platforms);
         entry.sortedBuildTypes = sortedBuildTypes(entry.buildTypes);
     }

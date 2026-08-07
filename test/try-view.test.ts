@@ -582,6 +582,120 @@ test('the run-count tooltip states both totals in one sentence', () => {
     }
 });
 
+test('a run the harness reran to green is bucketed as passedOnRetry, through aggregateFailures', () => {
+    // The pinned push's timings contain no rerun-passing execution, so the
+    // fixture-driven tests above never reach that branch of the bucketing —
+    // a mutation disabling it left all 74 of them green. This drives
+    // `aggregateFailures` with the shape the branch exists for, which is also
+    // the shape behind the CLI's `18/18` report.
+    const base = {
+        path: 'a/b/test_rerun.js',
+        duration: 1,
+        timestamp: 0,
+        allMessages: [],
+        jobName: 'test-linux2404-64/opt-mochitest-browser-chrome-1',
+        taskId: 'RERUN1',
+        retryId: 0,
+    };
+    const timings: Timing[] = [
+        { ...base, status: 'FAIL' },
+        { ...base, status: 'PASS', isRetry: true },
+    ];
+    const failures = aggregateFailures(timings, {
+        globalPlatforms: new Set(['linux']),
+        globalBuildTypes: new Set(['opt']),
+        jobRunCounts: new Map([[base.jobName, 1]]),
+    });
+
+    const row = failures.tests.find((t) => t.path === 'a/b/test_rerun.js')!;
+    assert.deepEqual(row.outcomes, {
+        failedTwice: 0,
+        passedOnRetry: 1,
+        failedOnce: 0,
+        passed: 0,
+        notAnalyzed: 0,
+    });
+    // One failing execution, one job run, and two executions of the test —
+    // the three counts the tooltip keeps separate.
+    assert.equal(row.instances.length, 1);
+    assert.equal(row.totalJobs, 1);
+    assert.equal(row.totalRuns, 2, 'FAIL plus the passing rerun');
+    assert.match(runCountTooltip(row), /• 1 job: failed, then passed when retried/);
+});
+
+test('a rerun that failed again is failedTwice, and the two branches are distinguishable', () => {
+    // The counterpart to the test above. Identical but for the second
+    // execution's status, which is what makes the rerun branch a decision:
+    // with only the passing case covered, disabling the branch changes nothing
+    // observable here.
+    const base = {
+        path: 'a/b/test_twice.js',
+        duration: 1,
+        timestamp: 0,
+        allMessages: [],
+        jobName: 'test-linux2404-64/opt-mochitest-browser-chrome-1',
+        taskId: 'TWICE1',
+        retryId: 0,
+    };
+    const timings: Timing[] = [
+        { ...base, status: 'FAIL' },
+        { ...base, status: 'FAIL', isRetry: true },
+    ];
+    const failures = aggregateFailures(timings, {
+        globalPlatforms: new Set(['linux']),
+        globalBuildTypes: new Set(['opt']),
+        jobRunCounts: new Map([[base.jobName, 3]]),
+    });
+
+    const row = failures.tests.find((t) => t.path === 'a/b/test_twice.js')!;
+    assert.deepEqual(row.outcomes, {
+        failedTwice: 1,
+        passedOnRetry: 0,
+        failedOnce: 0,
+        passed: 0,
+        // Three runs of the config on the push, one profile parsed.
+        notAnalyzed: 2,
+    });
+    assert.equal(row.instances.length, 2, 'both executions failed');
+    assert.equal(row.totalJobs, 3);
+    assert.match(runCountTooltip(row), /• 1 job: failed, then failed again when retried/);
+    assert.match(runCountTooltip(row), /• 2 jobs: not analyzed/);
+});
+
+test('a read run of a failing config that did not fail is passed, not notAnalyzed', () => {
+    // The bucket only "All jobs" can reach: a run whose profile WAS parsed and
+    // held no failure of this test. It is the distinction the checkbox exists
+    // for — the same run is `notAnalyzed` when its profile is not fetched, and
+    // reporting it as unread once it has been read would waste the fetch.
+    const common = {
+        path: 'a/b/test_mixed.js',
+        duration: 1,
+        timestamp: 0,
+        allMessages: [],
+        jobName: 'test-linux2404-64/opt-mochitest-browser-chrome-1',
+        retryId: 0,
+    };
+    const timings: Timing[] = [
+        { ...common, taskId: 'MIXED1', status: 'FAIL' },
+        { ...common, taskId: 'MIXED2', status: 'PASS' },
+    ];
+    const failures = aggregateFailures(timings, {
+        globalPlatforms: new Set(['linux']),
+        globalBuildTypes: new Set(['opt']),
+        jobRunCounts: new Map([[common.jobName, 2]]),
+    });
+
+    const row = failures.tests.find((t) => t.path === 'a/b/test_mixed.js')!;
+    assert.deepEqual(row.outcomes, {
+        failedTwice: 0,
+        passedOnRetry: 0,
+        failedOnce: 1,
+        passed: 1,
+        notAnalyzed: 0,
+    });
+    assert.match(runCountTooltip(row), /• 1 job: passed/);
+});
+
 test('singular and plural are chosen per count', () => {
     const row: FailingTest = {
         path: 'a/b/test_x.js',

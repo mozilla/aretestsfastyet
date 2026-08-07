@@ -3177,6 +3177,205 @@ test('try keeps a perma-failing config when the test passed on rerun elsewhere',
 });
 
 /**
+ * The `n/m runs` fraction, and the fact it cannot state on its own.
+ *
+ * Reported against `--all-jobs` on try push 7d16bff81bb1:
+ * `browser_878452_drag_to_panel.js` printed `18/18 runs` while also reporting
+ * `passedOnRerun`. Both were true — it failed in all 18 runs of the 12
+ * configurations it failed on, and the harness reran it to green in every one
+ * of those 18 runs — and `18/18` alone reads as "this test never passed".
+ *
+ * The fraction was not wrong and is unchanged. What was missing is the
+ * breakdown that makes it readable, so this pins the breakdown against a run
+ * whose two executions are written out here rather than derived.
+ */
+test('try reports how each run of a failing config ended, not just the fraction', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([job('test-linux/opt-xpcshell-a', 'TASKA1', 'testfailed')]),
+        fetchUrl: profileFetcher({
+            // One run, two executions: the failure and the rerun that passed.
+            TASKA1: profileWith([
+                { type: 'Text', text: 'retry', start: 10, end: 20 },
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+                { type: 'Test', test: MOCHITEST_PATH, status: 'PASS', start: 12, end: 14 },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as Record<string, unknown>[]),
+        ...(result['knownIntermittents'] as Record<string, unknown>[]),
+        ...(result['newIntermittents'] as Record<string, unknown>[]),
+    ];
+    assert.equal(all.length, 1);
+    const failure = all[0]!;
+    // The fraction: the one run of the one config failed. Unchanged.
+    assert.equal(failure['failedRuns'], 1);
+    assert.equal(failure['totalRuns'], 1);
+    // And what `1/1` does not say.
+    assert.deepEqual(failure['outcomes'], {
+        failedTwice: 0,
+        passedOnRetry: 1,
+        failedOnce: 0,
+        passed: 0,
+        notAnalyzed: 0,
+    });
+});
+
+/**
+ * The other two buckets, which the rerun case cannot reach.
+ *
+ * `failedTwice` is the rerun that did *not* rescue the run, and it is the one
+ * that decides whether a `passedOnRetry` reading is real: without a case where
+ * the second execution fails, the branch can be disabled and nothing notices.
+ * `notAnalyzed` is the default run's blind spot — the runs of a failing
+ * configuration whose profiles were never fetched, which are the runs a reader
+ * of the bare fraction takes for failures.
+ */
+test('try separates a rerun that failed again from runs it never read', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        // Three runs of one configuration; only the failed one has its profile
+        // read, which is what the default (no `--all-jobs`) does.
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell-a', 'TASKA1', 'testfailed'),
+            job('test-linux/opt-xpcshell-a', 'TASKA2', 'success'),
+            job('test-linux/opt-xpcshell-a', 'TASKA3', 'success'),
+        ]),
+        fetchUrl: profileFetcher({
+            // Failed, then failed AGAIN when the harness reran it.
+            TASKA1: profileWith([
+                { type: 'Text', text: 'retry', start: 10, end: 20 },
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 1,
+                    end: 2,
+                },
+                {
+                    type: 'Test',
+                    test: MOCHITEST_PATH,
+                    status: 'FAIL',
+                    message: 'a message central has never seen',
+                    start: 12,
+                    end: 14,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as Record<string, unknown>[]),
+        ...(result['knownIntermittents'] as Record<string, unknown>[]),
+        ...(result['newIntermittents'] as Record<string, unknown>[]),
+    ];
+    assert.equal(all.length, 1);
+    const failure = all[0]!;
+    assert.deepEqual(failure['outcomes'], {
+        failedTwice: 1,
+        passedOnRetry: 0,
+        failedOnce: 0,
+        passed: 0,
+        // The two passing runs of the same configuration, whose profiles the
+        // default run does not fetch. Not failures, and not asserted to be
+        // passes either — they were not looked at.
+        notAnalyzed: 2,
+    });
+    // Two failing executions in one job run: the fraction's numerator is runs,
+    // so it stays 1, while the ranking count is 2.
+    assert.equal(failure['failureCount'], 2);
+    assert.equal(failure['failedRuns'], 1);
+    assert.equal(failure['totalRuns'], 3, 'all three runs of the config it failed on');
+});
+
+/**
+ * The bucket only `--all-jobs` can reach.
+ *
+ * A run of a failing configuration whose profile was read and held no failure
+ * is a *pass*, not an unread run — and the default cannot tell the two apart
+ * because it never fetches that profile. This is the payoff of the flag stated
+ * as a number: the same push, the same test, `notAnalyzed: 1` without it and
+ * `passed: 1` with it.
+ */
+test('try --all-jobs turns an unread run of a failing config into a counted pass', async () => {
+    const jobs = [
+        job('test-linux/opt-xpcshell-a', 'TASKA1', 'testfailed'),
+        job('test-linux/opt-xpcshell-a', 'TASKA2', 'success'),
+    ];
+    const profiles = {
+        TASKA1: profileWith([
+            {
+                type: 'Test',
+                test: MOCHITEST_PATH,
+                status: 'FAIL',
+                message: 'a message central has never seen',
+                start: 1,
+                end: 2,
+            },
+        ]),
+        // The green run: the test ran there and passed.
+        TASKA2: profileWith([
+            { type: 'Test', test: MOCHITEST_PATH, status: 'PASS', start: 1, end: 2 },
+        ]),
+    };
+    const outcomesFor = async (argv: string[]): Promise<Record<string, number>> => {
+        const streams = captureStreams();
+        await run({
+            argv,
+            streams,
+            source: fixtureSource(),
+            cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+            treeherder: fakeTreeherder(jobs),
+            fetchUrl: profileFetcher(profiles),
+        });
+        const result = json(streams.stdout);
+        const all = [
+            ...(result['permaFails'] as Record<string, unknown>[]),
+            ...(result['knownIntermittents'] as Record<string, unknown>[]),
+            ...(result['newIntermittents'] as Record<string, unknown>[]),
+        ];
+        assert.equal(all.length, 1);
+        return all[0]!['outcomes'] as Record<string, number>;
+    };
+
+    const byDefault = await outcomesFor(['try', 'abcdef123456', '--json']);
+    assert.deepEqual(byDefault, {
+        failedTwice: 0,
+        passedOnRetry: 0,
+        failedOnce: 1,
+        passed: 0,
+        notAnalyzed: 1,
+    });
+
+    const widened = await outcomesFor(['try', 'abcdef123456', '--json', '--all-jobs']);
+    assert.deepEqual(widened, {
+        failedTwice: 0,
+        passedOnRetry: 0,
+        failedOnce: 1,
+        passed: 1,
+        notAnalyzed: 0,
+    });
+});
+
+/**
  * The order of the sections, which is the thing the owner reported.
  *
  * `old/try.html:744` sets the page's default sort to `{ column: 'count',
