@@ -7,9 +7,11 @@
 # is `tools/assemble-site.ts`, which also refuses to hand over an artifact whose
 # pages reference files that are not in it. See `docs/DEPLOY.md`.
 #
-# This targets the fork (fqueze.github.io/aretestsfastyet), which is the staging
-# instance. Pointing it at mozilla/aretestsfastyet and tests.firefox.dev is a
-# later change, deliberately not made until the fork has deployed successfully.
+# Nothing here names a repository: the workflow publishes whichever one it runs
+# in. On mozilla/aretestsfastyet that is tests.firefox.dev; on the fork it is
+# fqueze.github.io/aretestsfastyet, which is the staging instance and where this
+# was proven first. Both need Pages set to the GitHub Actions source once, and
+# both have it.
 #
 # ---------------------------------------------------------------------------
 # ROLLBACK
@@ -27,9 +29,10 @@
 #    want → "Re-run all jobs". It rebuilds from that commit. Nothing here reads
 #    mutable state, so a re-run of a green commit reproduces it.
 #
-# 3. **Revert and push.** `git revert <sha> && git push origin main` re-runs
-#    this workflow and republishes. Use it when the bad commit is a source
-#    change rather than a deploy problem.
+# 3. **Revert and push.** `git revert <sha>` and push to whichever remote serves
+#    the broken site — pushing to the fork does not fix tests.firefox.dev. That
+#    re-runs this workflow and republishes. Use it when the bad commit is a
+#    source change rather than a deploy problem.
 #
 # If the deploy itself is what is broken — the site is empty, or serving the
 # wrong tree — turn Pages off (Settings → Pages → Source: None) rather than
@@ -37,12 +40,22 @@
 # accident: the assembly asserts its own output and fails the job first.
 #
 # ---------------------------------------------------------------------------
-# FIRST RUN
+# IF A DEPLOY HANGS
 # ---------------------------------------------------------------------------
 #
-# Pages was serving the branch root directly. Publishing a built artifact needs
-# Settings → Pages → Source: **GitHub Actions**, which a workflow cannot set for
-# itself. Until that is done this job succeeds and publishes nothing.
+# Publishing an artifact needs Settings → Pages → Source: **GitHub Actions**,
+# which a workflow cannot set for itself. Both repositories have it; if someone
+# switches one back to a branch source, `deploy-pages` fails outright, because
+# the create-deployment call is rejected.
+#
+# A different symptom is not a configuration problem: if the deployment *is*
+# created and returns an ID, then sits at `deployment_queued` or
+# `deployment_in_progress` until the 600 s timeout, the artifact was accepted
+# and GitHub has not processed it. That happened on 2026-08-06 across three
+# attempts and was a Pages incident affecting many repositories, with the status
+# page reporting all systems operational throughout. It cleared on its own.
+# Retrying does not help while it lasts, and nothing in this repository is at
+# fault. Check https://github.com/orgs/community/discussions before debugging.
 
 name: Deploy
 

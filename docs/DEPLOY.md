@@ -99,11 +99,14 @@ The lesson generalises past this one paragraph: a claim that "nothing reads
 these files" is a `grep` for `readFileSync`, not a memory. Anything else in
 `test/` and `site/` naming one of the nine is a comment citation.
 
-**Decided:** the workflow lands on the **fork** first
-(`origin` → `fqueze.github.io/aretestsfastyet`), which is already the staging
-instance. Pointing it at `upstream` → `tests.firefox.dev` is a separate,
-later change, and should not be attempted until the fork has deployed
-successfully at least once.
+**Done:** the workflow landed on the **fork** first
+(`origin` → `fqueze.github.io/aretestsfastyet`), the staging instance, and has
+deployed successfully. The nine pages were then read in a browser there.
+
+Pointing it at `upstream` → `tests.firefox.dev` needs no change to the
+workflow, which names no repository and publishes whichever one it runs in. It
+needs the commits pushed to `upstream/main` — a clean fast-forward — and the
+Pages source on that repository set to GitHub Actions, which is done.
 
 ### Why `old/` works without rewriting any link
 
@@ -174,13 +177,16 @@ and must *not* be copied.
 
 ## 2. The workflow
 
-One workflow, on push to `main`, in `.github/workflows/`. There is none today,
-so this is new — and note **GitHub Pages is currently serving the branch root
-directly**, configured in repository settings, with no `CNAME` and no
-`.nojekyll` in the tree. Publishing a built artifact means changing the Pages
-source to GitHub Actions, which is a settings change the workflow cannot make
-for you. Plan for that step and for the possibility that the first run
-publishes nothing until it is done.
+One workflow, on push to `main`: `.github/workflows/deploy.yml`. It names no
+repository and publishes whichever one it runs in.
+
+Both repositories previously served the branch root directly. Publishing a
+built artifact needs the Pages source set to **GitHub Actions**, which a
+workflow cannot set for itself; both have it now. If one is ever switched back
+to a branch source, `deploy-pages` fails outright, because the
+create-deployment call is rejected — see the header of the workflow for the
+symptom that is *not* this, and was a GitHub incident rather than a
+configuration problem.
 
 **Gates before publishing, all of them (decided):**
 
@@ -277,8 +283,9 @@ person who needs it will be reading that file, not this document.
 
 ## 5. Not in scope
 
-- **Deploying to `upstream` / `tests.firefox.dev`.** Separate change, after the
-  fork works.
+- **Deploying to `upstream` / `tests.firefox.dev`.** No longer out of scope —
+  the fork works and the browser pass is done, so this is the next step. It is
+  `git push upstream main`, a clean fast-forward; the workflow needs no edit.
 - **Deleting the nine superseded pages.** §0 moved them to `old/`; deleting them
   is the follow-up, once the new pages have been trusted long enough. At that
   point it is `git rm -r old/` and dropping step 3 of the assembly — which is
