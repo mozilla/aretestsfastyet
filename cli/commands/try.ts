@@ -48,12 +48,10 @@ import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } f
 import { computeConfigStats } from '../../lib/query/config-stats.ts';
 import { computeTestStats } from '../../lib/query/test-stats.ts';
 import { stripChunkSuffix } from '../../lib/model/job-name.ts';
+import { isFailureStatus, runKeyOf, selectTryJobs } from '../../lib/model/try-jobs.ts';
 import { resourceUsageProfileUrl, uploadedProfileUrl } from '../../lib/links.ts';
 import { treeherderPushUrl } from '../../lib/links.ts';
-import {
-    type TreeherderJob,
-    FAILED_JOB_RESULTS,
-} from '../../lib/sources/treeherder.ts';
+import { type TreeherderJob } from '../../lib/sources/treeherder.ts';
 import { fetchJson, timingsIndex } from '../../lib/sources/source.ts';
 import { type OptionSpecs, type ParsedArgs, boolOption, stringOption } from '../args.ts';
 import { type CommandContext, emit, progress, warn } from '../context.ts';
@@ -106,9 +104,6 @@ export const TRY_OPTIONS: OptionSpecs = {
         describe: 'How many job profiles to fetch at once. Default 8.',
     },
 };
-
-/** The harnesses whose profiles carry test markers. From `old/try.html:735`. */
-const SUPPORTED_HARNESSES = ['mochitest', 'xpcshell'];
 
 /** Default rows per section. */
 const DEFAULT_LIMIT = 10;
@@ -299,43 +294,16 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
     progress(context, `Fetching jobs for push ${push.pushId}…`);
     const jobs = await treeherder.jobsOfPush(push.pushId);
 
-    const failedTestJobs = jobs.filter(
-        (job) =>
-            job.state === 'completed' && job.result === 'testfailed' && isTestJob(job.jobName)
-    );
-    const successfulTestJobs = jobs.filter(
-        (job) => job.state === 'completed' && job.result === 'success' && isTestJob(job.jobName)
-    );
-    const otherFailedJobs = jobs.filter(
-        (job) =>
-            job.state === 'completed' &&
-            FAILED_JOB_RESULTS.has(job.result) &&
-            !isTestJob(job.jobName)
-    );
-
-    // `--all-jobs` changes the UNIVERSE, not the rows: it adds the successful
-    // test jobs' profiles, which is the only way a test that failed and then
-    // passed on retry can surface at all — the job is green on Treeherder, so
-    // nothing about it is reachable from the failed jobs. Same set the page's
-    // "All jobs" checkbox adds (`site/try.ts:944`), same default of off, and
-    // for the same reason it is off there: measured on try push 7d16bff81bb1,
-    // 46 failed test jobs against 1538 successful ones, so the flag reads 34x
-    // the artifacts. It is worth it when flakiness is the question — that same
-    // run reports 116 failing tests against the default's 26, and all 90 of
-    // the added ones passed on the harness's rerun.
-    const readPassingJobs = boolOption(args, 'all-jobs');
-    const jobsToProcess = readPassingJobs
-        ? failedTestJobs.concat(successfulTestJobs)
-        : failedTestJobs;
-
-    // Every completed run of each config, so "3/3 runs" has a real denominator
-    // rather than counting only the runs that failed.
-    const runsPerJobName = new Map<string, number>();
-    for (const job of jobs) {
-        if (job.state === 'completed' && isTestJob(job.jobName)) {
-            runsPerJobName.set(job.jobName, (runsPerJobName.get(job.jobName) ?? 0) + 1);
-        }
-    }
+    // `--all-jobs` changes the UNIVERSE, not the rows, and `selectTryJobs` is
+    // where that is decided — the same call `site/try.ts` makes for the "All
+    // jobs" checkbox, so the two cannot answer it differently. It is off by
+    // default on both sides for the reason `lib/model/try-jobs.ts` records: on
+    // try push 7d16bff81bb1 it reads 1,584 profiles against 46.
+    const selection = selectTryJobs(jobs, {
+        readPassingJobs: boolOption(args, 'all-jobs'),
+    });
+    const { failedTestJobs, successfulTestJobs, otherFailedJobs, jobsToProcess } = selection;
+    const { readPassingJobs, runsPerJobName } = selection;
 
     let timings: TestTiming[] = [];
     if (jobsToProcess.length > 0) {
@@ -382,9 +350,10 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
     const blamed = new Set(
         timings.filter((timing) => isFailureStatus(timing.status)).map(runKeyOf)
     );
-    const unblamedJobCount = failedTestJobs.filter(
-        (job) => !blamed.has(`${job.taskId}.${job.retryId}`)
-    ).length;
+    // `runKeyOf` on the job, not a hand-written template: the key has to be the
+    // one the timings were mapped through above, and this line spelled it out
+    // itself only because the CLI's `runKeyOf` used to take a `TestTiming`.
+    const unblamedJobCount = failedTestJobs.filter((job) => !blamed.has(runKeyOf(job))).length;
 
     const result: TryJson = {
         revision: push.revision,
@@ -475,27 +444,16 @@ interface TestTiming {
     message: string | null;
     jobName: string;
     taskId: string;
+    /** The **job-level** retry, Taskcluster's `runs/<n>` — a different axis from `isRerun`. */
     retryId: number;
-    /** True when the marker fell inside the harness's rerun phase. */
+    /**
+     * True when the marker fell inside the harness's rerun phase.
+     *
+     * `site/try-view.ts` calls this field `isRetry` and its derived flag
+     * `passedOnRetry`; the table in `lib/model/try-jobs.ts` lines the two
+     * vocabularies up and says why the page's cannot simply be renamed.
+     */
     isRerun: boolean;
-}
-
-/** `taskId.retryId`, the key that identifies one job run. */
-function runKeyOf(timing: TestTiming): string {
-    return `${timing.taskId}.${timing.retryId}`;
-}
-
-/** Statuses that mean the test did not pass. From `old/try.html:1486`. */
-const FAILURE_STATUSES = new Set(['FAIL', 'TIMEOUT', 'CRASH', 'ERROR', 'UNEXPECTED-PASS']);
-
-/** Whether a status means failure, ignoring the execution-mode suffix. */
-function isFailureStatus(status: string): boolean {
-    return FAILURE_STATUSES.has(status.replace(/-(PARALLEL|SEQUENTIAL)$/, ''));
-}
-
-/** Whether a job name is one whose profile carries test markers. */
-function isTestJob(jobName: string): boolean {
-    return SUPPORTED_HARNESSES.some((harness) => jobName.includes(harness));
 }
 
 /**

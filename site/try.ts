@@ -177,7 +177,6 @@ import {
     type Timing,
     type UnblamedGroup,
     type UploadedProfile,
-    FAILED_JOB_RESULTS,
     aggregateFailures,
     baseStatus,
     cleanFailureSummary,
@@ -200,7 +199,6 @@ import {
     instanceMessages,
     instanceUploadedProfile,
     isFailureStatus,
-    isTestJob,
     needsPermanentHeader,
     nextSort,
     noFailuresText,
@@ -209,6 +207,7 @@ import {
     readUrlState,
     runCountTooltip,
     runKeyOf,
+    selectTryJobs,
     sortConsoleFailures,
     sortTests,
     sortedBuildTypes,
@@ -913,47 +912,44 @@ async function loadRevision(): Promise<void> {
         const jobs = parseJobs(allJobs, propertyNames);
 
         const totalJobs = jobs.length;
-        const failedTestJobs = jobs.filter(
-            (job) =>
-                job.state === 'completed' &&
-                job.result === 'testfailed' &&
-                isTestJob(job.jobName)
-        );
-        const successfulTestJobs = jobs.filter(
-            (job) =>
-                job.state === 'completed' && job.result === 'success' && isTestJob(job.jobName)
-        );
-        const successfulJobNames = new Set(successfulTestJobs.map((job) => job.jobName));
+
+        // The "All jobs" checkbox changes the UNIVERSE, not just the visible
+        // rows: it adds the successful test jobs' profiles, so tests that failed
+        // initially and passed on retry surface at all. Unchecked by default
+        // (`old/try.html:706`, forced at `:3775`). The checkbox is the only part
+        // of this the page owns — `selectTryJobs` decides what the answer means,
+        // and `fx-tests try --all-jobs` calls it with the same argument.
+        const selection = selectTryJobs(jobs, {
+            readPassingJobs: requireInput('alljobs-checkbox').checked,
+        });
+        const { failedTestJobs, jobsToProcess, successfulJobNames } = selection;
 
         // Failures this page cannot dig into: builds, lint, and test harnesses
         // other than the ones we parse profiles for. Surfaced as a pointer to
         // Treeherder rather than hidden — a green verdict next to a busted
         // build is the one way this page could actively mislead.
-        state.otherFailedJobs = jobs.filter(
-            (job) =>
-                job.state === 'completed' &&
-                FAILED_JOB_RESULTS.has(job.result) &&
-                !isTestJob(job.jobName)
-        );
+        state.otherFailedJobs = selection.otherFailedJobs;
         state.treeherderUrl = `${TH_BASE}/jobs?repo=${repo}&revision=${revision}`;
 
-        // The "All jobs" checkbox changes the UNIVERSE, not just the visible
-        // rows: it adds the successful test jobs' profiles, so tests that failed
-        // initially and passed on retry surface at all. Unchecked by default
-        // (`old/try.html:706`, forced at `:3775`).
-        const fetchPassing = requireInput('alljobs-checkbox').checked;
-        const passingTestJobs = fetchPassing ? successfulTestJobs : [];
-        const jobsToProcess = failedTestJobs.concat(passingTestJobs);
+        const passingTestJobs = selection.readPassingJobs ? selection.successfulTestJobs : [];
 
         if (jobsToProcess.length === 0) {
             // No table renders at all — green favicon, the `no-failures` block,
             // and an early return. `old/try.html:1346`.
-            const completedTestJobs = jobs.filter(
-                (job) => job.state === 'completed' && isTestJob(job.jobName)
-            );
+            //
+            // `runsPerJobName` counts every completed run of every test job, so
+            // its total is the count this line used to `filter` for. The word
+            // "successfully" in the message is upstream's and is a shade
+            // optimistic either way: a test job that ended `exception` is in
+            // this total, and reaching this branch only means no test job
+            // ended `testfailed`.
+            let completedTestJobs = 0;
+            for (const runs of selection.runsPerJobName.values()) {
+                completedTestJobs += runs;
+            }
             setFavicon('#4caf50');
             setStatus(
-                `${completedTestJobs.length} test jobs completed successfully out of ` +
+                `${completedTestJobs} test jobs completed successfully out of ` +
                     `${totalJobs} total jobs.`
             );
             setProgress(-1);
@@ -994,13 +990,9 @@ async function loadRevision(): Promise<void> {
         }
 
         // Completed runs per job name, across the whole push — the denominator
-        // of the intermittent ratio.
-        const jobRunCounts = new Map<string, number>();
-        for (const job of jobs) {
-            if (job.state === 'completed' && isTestJob(job.jobName)) {
-                jobRunCounts.set(job.jobName, (jobRunCounts.get(job.jobName) ?? 0) + 1);
-            }
-        }
+        // of the intermittent ratio. Counted over the whole push rather than
+        // over `jobsToProcess`, so ticking the checkbox cannot move it.
+        const jobRunCounts = selection.runsPerJobName;
         state.jobRunCounts = jobRunCounts;
 
         const failures = aggregateFailures(result.timings, {

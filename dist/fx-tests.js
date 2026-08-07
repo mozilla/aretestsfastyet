@@ -7082,6 +7082,58 @@ function readJob(row, columns) {
   };
 }
 
+// lib/model/try-jobs.ts
+var SUPPORTED_HARNESSES = ["mochitest", "xpcshell"];
+function isTestJob(jobName) {
+  return SUPPORTED_HARNESSES.some((harness) => jobName.includes(harness));
+}
+var FAILURE_STATUSES = /* @__PURE__ */ new Set([
+  "FAIL",
+  "TIMEOUT",
+  "CRASH",
+  "ERROR",
+  "UNEXPECTED-PASS"
+]);
+function baseStatus(status) {
+  return status.replace(/-(PARALLEL|SEQUENTIAL)$/, "");
+}
+function isFailureStatus(status) {
+  return FAILURE_STATUSES.has(baseStatus(status));
+}
+function runKeyOf(run2) {
+  return `${run2.taskId}.${run2.retryId}`;
+}
+function selectTryJobs(jobs, options) {
+  const failedTestJobs = [];
+  const successfulTestJobs = [];
+  const otherFailedJobs = [];
+  const runsPerJobName = /* @__PURE__ */ new Map();
+  for (const job of jobs) {
+    if (job.state !== "completed") {
+      continue;
+    }
+    if (isTestJob(job.jobName)) {
+      runsPerJobName.set(job.jobName, (runsPerJobName.get(job.jobName) ?? 0) + 1);
+      if (job.result === "testfailed") {
+        failedTestJobs.push(job);
+      } else if (job.result === "success") {
+        successfulTestJobs.push(job);
+      }
+    } else if (FAILED_JOB_RESULTS.has(job.result)) {
+      otherFailedJobs.push(job);
+    }
+  }
+  return {
+    failedTestJobs,
+    successfulTestJobs,
+    otherFailedJobs,
+    jobsToProcess: options.readPassingJobs ? failedTestJobs.concat(successfulTestJobs) : [...failedTestJobs],
+    readPassingJobs: options.readPassingJobs,
+    runsPerJobName,
+    successfulJobNames: new Set(successfulTestJobs.map((job) => job.jobName))
+  };
+}
+
 // cli/commands/try.ts
 var TRY_OPTIONS = {
   project: {
@@ -7115,7 +7167,6 @@ var TRY_OPTIONS = {
     describe: "How many job profiles to fetch at once. Default 8."
   }
 };
-var SUPPORTED_HARNESSES = ["mochitest", "xpcshell"];
 var DEFAULT_LIMIT5 = 10;
 var PERMA_FAIL_DESCRIPTION = "failed in every run of at least one configuration here. Each row says what central shows on that same configuration.";
 var DEFAULT_CONCURRENCY = 8;
@@ -7143,23 +7194,11 @@ async function runTry(context, args) {
   const push = await treeherder.findPush(project, revision);
   progress(context, `Fetching jobs for push ${push.pushId}\u2026`);
   const jobs = await treeherder.jobsOfPush(push.pushId);
-  const failedTestJobs = jobs.filter(
-    (job) => job.state === "completed" && job.result === "testfailed" && isTestJob(job.jobName)
-  );
-  const successfulTestJobs = jobs.filter(
-    (job) => job.state === "completed" && job.result === "success" && isTestJob(job.jobName)
-  );
-  const otherFailedJobs = jobs.filter(
-    (job) => job.state === "completed" && FAILED_JOB_RESULTS.has(job.result) && !isTestJob(job.jobName)
-  );
-  const readPassingJobs = boolOption(args, "all-jobs");
-  const jobsToProcess = readPassingJobs ? failedTestJobs.concat(successfulTestJobs) : failedTestJobs;
-  const runsPerJobName = /* @__PURE__ */ new Map();
-  for (const job of jobs) {
-    if (job.state === "completed" && isTestJob(job.jobName)) {
-      runsPerJobName.set(job.jobName, (runsPerJobName.get(job.jobName) ?? 0) + 1);
-    }
-  }
+  const selection = selectTryJobs(jobs, {
+    readPassingJobs: boolOption(args, "all-jobs")
+  });
+  const { failedTestJobs, successfulTestJobs, otherFailedJobs, jobsToProcess } = selection;
+  const { readPassingJobs, runsPerJobName } = selection;
   let timings = [];
   if (jobsToProcess.length > 0) {
     progress(
@@ -7186,9 +7225,7 @@ async function runTry(context, args) {
   const blamed = new Set(
     timings.filter((timing) => isFailureStatus(timing.status)).map(runKeyOf)
   );
-  const unblamedJobCount = failedTestJobs.filter(
-    (job) => !blamed.has(`${job.taskId}.${job.retryId}`)
-  ).length;
+  const unblamedJobCount = failedTestJobs.filter((job) => !blamed.has(runKeyOf(job))).length;
   const result = {
     revision: push.revision,
     pushId: push.pushId,
@@ -7228,16 +7265,6 @@ function isPermaFail(failure) {
 }
 function isKnownOnCentral(failure) {
   return failure.central !== null && failure.central.failCount > 0;
-}
-function runKeyOf(timing) {
-  return `${timing.taskId}.${timing.retryId}`;
-}
-var FAILURE_STATUSES = /* @__PURE__ */ new Set(["FAIL", "TIMEOUT", "CRASH", "ERROR", "UNEXPECTED-PASS"]);
-function isFailureStatus(status) {
-  return FAILURE_STATUSES.has(status.replace(/-(PARALLEL|SEQUENTIAL)$/, ""));
-}
-function isTestJob(jobName) {
-  return SUPPORTED_HARNESSES.some((harness) => jobName.includes(harness));
 }
 function isStreamedProfile(bytes2) {
   const head = new TextDecoder().decode(bytes2.subarray(0, 64 * 1024));

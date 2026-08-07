@@ -51,7 +51,7 @@ import {
     extractBuildTypes,
     extractPlatform,
     initialSort,
-    isTestJob,
+    selectTryJobs,
     sortTests,
     splitTables,
     tagIntermittent,
@@ -78,37 +78,33 @@ const PUSH = fixtureJson<PushFixture>('try-7d16bff81bb1.json');
 // The page side, driven as site/try.ts drives it
 // =========================================================================
 
-const FAILED_TEST_JOBS = PUSH.jobs.filter(
-    (job) => job.state === 'completed' && job.result === 'testfailed' && isTestJob(job.jobName)
-);
-const SUCCESSFUL_TEST_JOBS = PUSH.jobs.filter(
-    (job) => job.state === 'completed' && job.result === 'success' && isTestJob(job.jobName)
-);
+// The page's default selection, through the same call `site/try.ts` makes.
+const PAGE_SELECTION = selectTryJobs(PUSH.jobs, { readPassingJobs: false });
+const FAILED_TEST_JOBS = PAGE_SELECTION.failedTestJobs;
+const SUCCESSFUL_TEST_JOBS = PAGE_SELECTION.successfulTestJobs;
 
 /** The page's failure aggregation over the pinned push. */
 function pageFailures(): ReturnType<typeof aggregateFailures> {
     // `tagIntermittent` mutates, so it gets its own copies.
     const timings = PUSH.timings.map((timing) => ({ ...timing })) as unknown as Timing[];
     tagIntermittent(timings, {
-        jobsToProcess: FAILED_TEST_JOBS,
-        successfulJobNames: new Set(SUCCESSFUL_TEST_JOBS.map((job) => job.jobName)),
+        jobsToProcess: PAGE_SELECTION.jobsToProcess,
+        successfulJobNames: PAGE_SELECTION.successfulJobNames,
     });
 
     const globalPlatforms = new Set<string>();
     const globalBuildTypes = new Set<string>();
-    for (const job of FAILED_TEST_JOBS) {
+    for (const job of PAGE_SELECTION.jobsToProcess) {
         globalPlatforms.add(extractPlatform(job.jobName));
         for (const buildType of extractBuildTypes(job.jobName)) {
             globalBuildTypes.add(buildType);
         }
     }
-    const jobRunCounts = new Map<string, number>();
-    for (const job of PUSH.jobs) {
-        if (job.state === 'completed' && isTestJob(job.jobName)) {
-            jobRunCounts.set(job.jobName, (jobRunCounts.get(job.jobName) ?? 0) + 1);
-        }
-    }
-    return aggregateFailures(timings, { globalPlatforms, globalBuildTypes, jobRunCounts });
+    return aggregateFailures(timings, {
+        globalPlatforms,
+        globalBuildTypes,
+        jobRunCounts: PAGE_SELECTION.runsPerJobName,
+    });
 }
 
 const PAGE = pageFailures();
@@ -645,10 +641,25 @@ test('the CLI splits intermittents by central history where the page does not', 
  *
  * The expectations are literals read off this fixture's job list — 46 failed
  * test jobs and 1,538 successful ones, the same two numbers
- * `test/try-view.test.ts` pins for the page — and the two sides are computed
- * by different code: the page's from `site/try-view.ts`'s `isTestJob` over the
- * fixture, the CLI's from `profilesRead` on a real invocation. Neither derives
- * its expectation from the other.
+ * `test/try-view.test.ts` pins for the page.
+ *
+ * ## What this stopped proving, and what it still proves
+ *
+ * When this test was written the two sides ran different code, and "they agree"
+ * was the finding. They now both call `selectTryJobs`, so agreement is a
+ * property of `===` and is worth nothing — a parity test that passes because
+ * both sides call one function proves only that the function was called twice.
+ *
+ * What it still proves is the part that was never about agreement: that 46 and
+ * 1,584 are the **right** numbers. Both are literals read off the fixture's job
+ * list, and the CLI's side of each is `profilesRead` from a real `run()` — a
+ * count of artifacts a display filter cannot change, taken at the far end of
+ * the command from the selection. Between `selectTryJobs` and that number sit
+ * the flag parsing, the progress line and the fetch loop, any of which can lose
+ * the widening; `cde2ebd` records a mutation where exactly one of them did.
+ *
+ * The claim that both sides *reach* the shared code is not assertable here at
+ * all. It is a mutation check, recorded at the bottom of `test/try-jobs.test.ts`.
  */
 test('the page and the CLI put the same jobs in the universe', async () => {
     assert.equal(FAILED_TEST_JOBS.length, 46, 'the pinned push has 46 failed test jobs');

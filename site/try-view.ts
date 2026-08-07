@@ -65,6 +65,15 @@
  */
 
 import { extractPlatform } from '../lib/model/job-name.ts';
+import {
+    FAILURE_STATUSES,
+    SUPPORTED_HARNESSES,
+    baseStatus,
+    isFailureStatus,
+    isTestJob,
+    runKeyOf,
+    selectTryJobs,
+} from '../lib/model/try-jobs.ts';
 import type { ConfigStats } from '../lib/query/config-stats.ts';
 import type { TestStats } from '../lib/query/test-stats.ts';
 
@@ -93,14 +102,24 @@ export interface Timing {
     message?: string | undefined;
     crashSignature?: string | undefined;
     minidump?: string | undefined;
-    /** The marker fell inside the harness's in-job `retry` phase. */
+    /**
+     * The marker fell inside the harness's in-job `retry` phase.
+     *
+     * `cli/commands/try.ts` calls this same field `isRerun`, and the flag below
+     * `passedOnRerun` — which is the name `lib/model/execution.ts` owns and the
+     * one this repository has settled on. The spelling here is `retry` because
+     * it is set inside `WORKER_CODE`, carried verbatim from `old/try.html`. See
+     * the table in `lib/model/try-jobs.ts`: a grep for one spelling finding
+     * nothing on the other side is how the `--all-jobs` defect survived.
+     */
     isRetry?: boolean | undefined;
     jobName: string;
     taskId: string;
+    /** The **job-level** retry, Taskcluster's `runs/<n>` — a different axis from `isRetry`. */
     retryId: number;
     /** Set by `tagIntermittent`. */
     intermittent?: boolean | undefined;
-    /** Set by `tagIntermittent`, only on the rerun-passed case. */
+    /** Set by `tagIntermittent`, only on the rerun-passed case. `cli/`'s `passedOnRerun`. */
     passedOnRetry?: boolean | undefined;
 }
 
@@ -123,73 +142,25 @@ export interface Job {
     cleanedSummary?: string[] | undefined;
 }
 
-/** `old/try.html:735`. The harnesses whose profiles carry test markers. */
-export const SUPPORTED_HARNESSES = ['mochitest', 'xpcshell'];
-
 /**
- * Treeherder results that mean the job did not pass. `old/try.html:816`.
+ * Job classification and selection, shared with `fx-tests try`.
  *
- * `retry` is deliberately absent: a retried job was superseded by another run
- * of the same task, so counting it would double-count an infrastructure hiccup.
+ * These were defined here and again in `cli/commands/try.ts`, character for
+ * character in the case of `isTestJob`. `lib/model/try-jobs.ts` states why one
+ * definition matters more than either copy being right; re-exported rather than
+ * imported through, because this page's own tests and the parity harness read
+ * them from here.
  */
-export const FAILED_JOB_RESULTS: ReadonlySet<string> = new Set([
-    'testfailed',
-    'busted',
-    'exception',
-]);
-
-/** Whether a job name names one of the harnesses this page can parse. */
-export function isTestJob(jobName: string): boolean {
-    return SUPPORTED_HARNESSES.some((harness) => jobName.includes(harness));
-}
-
-// --- status classification ------------------------------------------------
-
-/**
- * The statuses that count as a failure on this page. `old/try.html:1486`.
- *
- * **`UNEXPECTED-PASS` is one of them**, and that is not a slip. A test annotated
- * `fail-if` that *passed* means the annotation is now wrong, which is a thing
- * the push broke and a thing someone has to go and fix — so the page ranks it
- * alongside the failures. Note the asymmetry with `EXPECTED-FAIL`, which the
- * worker produces for a `FAIL` marker coloured green and which is **not** here:
- * an annotation that fired as intended is not news.
- *
- * `ERROR` is here too. The worker emits it for a `Test` marker whose status is
- * literally `ERROR`, which mochitest uses for a harness-level problem inside a
- * test's range.
- *
- * Deliberately *not* `classifyStatus`'s `isFail`. `lib/model/status.ts` answers
- * "did this run reach a failing verdict" for the published aggregates, where
- * `UNEXPECTED-PASS` does not occur and `EXPECTED-FAIL` is its own kind. This
- * page's question is "is this a row in the failures table", and the two sets
- * differ by exactly `UNEXPECTED-PASS`. Keeping the page's own set is what stops
- * a unification from silently dropping a column of rows.
- */
-export const FAILURE_STATUSES: ReadonlySet<string> = new Set([
-    'FAIL',
-    'TIMEOUT',
-    'CRASH',
-    'ERROR',
-    'UNEXPECTED-PASS',
-]);
-
-/**
- * The status with any `-PARALLEL`/`-SEQUENTIAL` phase suffix removed.
- *
- * The worker appends the suffix for the four statuses it can place in the
- * parallel range (`old/try.html:979`), so `FAIL-PARALLEL` and `FAIL` are the same
- * verdict in a different phase. Everything that asks *what happened* strips it;
- * only the detail rows keep it.
- */
-export function baseStatus(status: string): string {
-    return status.replace(/-(PARALLEL|SEQUENTIAL)$/, '');
-}
-
-/** Whether a status means the test failed, for this page. `old/try.html:1488`. */
-export function isFailureStatus(status: string): boolean {
-    return FAILURE_STATUSES.has(baseStatus(status));
-}
+export {
+    FAILURE_STATUSES,
+    SUPPORTED_HARNESSES,
+    baseStatus,
+    isFailureStatus,
+    isTestJob,
+    runKeyOf,
+    selectTryJobs,
+};
+export { FAILED_JOB_RESULTS } from '../lib/sources/treeherder.ts';
 
 // --- platform and build badges --------------------------------------------
 
@@ -258,11 +229,6 @@ export function sortedBuildTypes(builds: ReadonlySet<string>): string[] {
 export { extractPlatform };
 
 // --- intermittency --------------------------------------------------------
-
-/** `"<taskId>.<retryId>"` — the key identifying one job run. */
-export function runKeyOf(timing: { taskId: string; retryId: number }): string {
-    return `${timing.taskId}.${timing.retryId}`;
-}
 
 /**
  * Marks each failing timing intermittent or not, in place.

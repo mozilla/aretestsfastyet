@@ -84,6 +84,7 @@ import {
     readUrlState,
     runCountTooltip,
     runKeyOf,
+    selectTryJobs,
     sortTests,
     sortedBuildTypes,
     sortedPlatforms,
@@ -114,23 +115,17 @@ const PUSH: PushFixture = JSON.parse(
  * friends, never against another call of the code under test.
  */
 function buildFailures(options: { allJobs?: boolean } = {}): ReturnType<typeof aggregateFailures> {
-    const failedTestJobs = PUSH.jobs.filter(
-        (job) =>
-            job.state === 'completed' && job.result === 'testfailed' && isTestJob(job.jobName)
-    );
-    const successfulTestJobs = PUSH.jobs.filter(
-        (job) => job.state === 'completed' && job.result === 'success' && isTestJob(job.jobName)
-    );
-    const jobsToProcess = options.allJobs
-        ? failedTestJobs.concat(successfulTestJobs)
-        : failedTestJobs;
+    // `selectTryJobs`, not a fourth hand-rolled partition. This helper used to
+    // reproduce the filters `site/try.ts` ran, which meant the page's own tests
+    // could pass while the page selected something else — the same shape of
+    // hole the extraction closed between the page and the CLI, one level down.
+    const { jobsToProcess, successfulJobNames, runsPerJobName } = selectTryJobs(PUSH.jobs, {
+        readPassingJobs: options.allJobs === true,
+    });
 
     // `tagIntermittent` mutates, so each call gets its own copies.
     const timings: Timing[] = PUSH.timings.map((timing) => ({ ...timing }));
-    tagIntermittent(timings, {
-        jobsToProcess,
-        successfulJobNames: new Set(successfulTestJobs.map((job) => job.jobName)),
-    });
+    tagIntermittent(timings, { jobsToProcess, successfulJobNames });
 
     const globalPlatforms = new Set<string>();
     const globalBuildTypes = new Set<string>();
@@ -140,13 +135,11 @@ function buildFailures(options: { allJobs?: boolean } = {}): ReturnType<typeof a
             globalBuildTypes.add(buildType);
         }
     }
-    const jobRunCounts = new Map<string, number>();
-    for (const job of PUSH.jobs) {
-        if (job.state === 'completed' && isTestJob(job.jobName)) {
-            jobRunCounts.set(job.jobName, (jobRunCounts.get(job.jobName) ?? 0) + 1);
-        }
-    }
-    return aggregateFailures(timings, { globalPlatforms, globalBuildTypes, jobRunCounts });
+    return aggregateFailures(timings, {
+        globalPlatforms,
+        globalBuildTypes,
+        jobRunCounts: runsPerJobName,
+    });
 }
 
 const FAILURES = buildFailures();
@@ -780,7 +773,11 @@ test('"All jobs" changes the universe that intermittency is judged against', () 
         'the fixture holds only the failed jobs\' profiles, so no NEW failure appears'
     );
 
-    // The seeded universe really is larger, which is the property under test.
+    // The seeded universe really is larger, which is the property under test —
+    // and on this fixture it is the ONLY observable the checkbox moves, since
+    // no profile exists for a passing job. So it is asserted directly rather
+    // than left to the rows: the two filters below are written out here, not
+    // taken from `selectTryJobs`, and are what the selection is checked against.
     const failedTestJobs = PUSH.jobs.filter(
         (j) => j.state === 'completed' && j.result === 'testfailed' && isTestJob(j.jobName)
     );
@@ -789,6 +786,17 @@ test('"All jobs" changes the universe that intermittency is judged against', () 
     );
     assert.equal(failedTestJobs.length, 46);
     assert.equal(successfulTestJobs.length, 1538);
+
+    assert.equal(
+        selectTryJobs(PUSH.jobs, { readPassingJobs: false }).jobsToProcess.length,
+        46,
+        'unchecked, the page reads the failed test jobs'
+    );
+    assert.equal(
+        selectTryJobs(PUSH.jobs, { readPassingJobs: true }).jobsToProcess.length,
+        46 + 1538,
+        'checked, it reads every completed test job — 34x the artifacts'
+    );
 
     // And the rule DOES respond to the larger universe: with only one job
     // processed a failure is permanent, and with a sibling run processed it is

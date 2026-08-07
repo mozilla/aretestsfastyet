@@ -82,6 +82,24 @@ The general lesson for the table: **a field whose two sides are prose can only
 detect a difference someone wrote down.** Every dimension needs a quantity the
 CLI emits, or it is documentation rather than a check.
 
+**And the fix was not the end of it.** `cde2ebd` made the two sides agree by
+writing the rule a second time: `isTestJob` was then defined twice, character
+for character, in `cli/commands/try.ts` and `site/try-view.ts`, with the
+"which jobs get their profiles read" rule written independently on each side.
+Agreement restored, and the room for the next divergence left exactly as it was
+— which is what the table below promises does not happen. The classification and
+selection now live in `lib/model/try-jobs.ts` and both sides call it; only the
+*fetching* stayed separate, since a Web Worker pool and a disk cache with a
+`--concurrency` bound are not one implementation written twice.
+
+That extraction found a third copy nobody had counted: `test/try-view.test.ts`'s
+own helper reproduced the page's filters rather than calling them, so the page's
+tests could have passed while the page selected something else. It is the same
+shape of hole one level down, and it is why the check that mattered was a
+mutation — break the shared function, confirm **both** sides go red — rather
+than another assertion that the two agree. After the extraction they agree by
+construction, and a test of that is a test of `===`.
+
 ## 2. Why migrate first, then compare
 
 An earlier draft compared the CLI directly against today's pages. That is worse,
