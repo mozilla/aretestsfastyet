@@ -38,6 +38,50 @@ checks:
 Class 3 has never been tested here, and it is where the two worst reports landed
 (`issues`, `--coverage`).
 
+### A seventh defect, and the fourth class it names
+
+`fx-tests try --all-jobs` printed the push's non-test job failures — builds and
+lint — from data it had already fetched. `try.html`'s "All jobs" checkbox
+fetches the *successful test jobs' profiles*, so that tests which failed and
+then passed on the harness's rerun appear at all: those jobs are green on
+Treeherder, so nothing in the default set references them. Measured on try push
+`7d16bff81bb1`, that is 90 tests — every one of them a `passedOnRerun` — out of
+116, against 26 by default. Not a ranking difference and not a rounding
+difference: 90 rows that were **absent**.
+
+Two controls on two different axes, sharing a name. Someone reaching for the
+page's behaviour got plausible output and no indication they had asked a
+different question.
+
+| Defect | Numbers agreed? | Would a value diff catch it? |
+| --- | --- | --- |
+| `--all-jobs` on the wrong axis | **no** — 26 rows vs 116 | **no** — nothing ran the flag on both sides |
+
+**Why `framing.test.ts` did not catch it, which is the more useful finding.**
+The table had a `filters` field and both sides said, in nearly the same words,
+"test jobs only, non-test jobs opt-in". Both statements were **true**. The
+field conflated two questions — which rows are shown, and which data the rows
+are computed from — and a single field cannot disagree with itself. The
+cross-side check compares the two prose strings, so matching prose about
+different mechanisms passes; and `filters` for `try` was never asserted against
+behaviour at all, only against the other column.
+
+So the fix was a fourth dimension, `universe`, and a behavioural assertion for
+it. What makes it real rather than more prose is the quantity it is checked
+against: **the number of profiles read**, which the command now reports as
+`profilesRead`. A display filter cannot change that number, so a flag that
+claims to widen the universe and does not fails, whatever the table says.
+
+Three mutations confirm it: the flag not widening, the flag ignored and always
+widening, and the widening losing its `isTestJob` guard each fail the new
+tests. A fourth — the progress line reporting the failed-job count while
+reading the wider set — survived until a test was added for it, which is the
+same "Reading vs Fetching" defect the command already carries a comment about.
+
+The general lesson for the table: **a field whose two sides are prose can only
+detect a difference someone wrote down.** Every dimension needs a quantity the
+CLI emits, or it is documentation rather than a check.
+
 ## 2. Why migrate first, then compare
 
 An earlier draft compared the CLI directly against today's pages. That is worse,

@@ -87,6 +87,20 @@ interface Framing {
     window: string;
     /** What the default view includes or excludes. */
     filters: string;
+    /**
+     * What data the side **reads**, and what control widens it.
+     *
+     * Separate from `filters`, and the separation is the lesson: `filters` is
+     * about rows, this is about the set the rows are computed from. Both sides
+     * of `try` once said "test jobs only, non-test jobs opt-in" and both
+     * strings were true — but the page's opt-in added successful test jobs'
+     * profiles to what was fetched, while the CLI's opt-in only un-hid rows
+     * printed from data it had already read. Two controls on two different
+     * axes, sharing a name, with matching prose in the one field that could
+     * have noticed. A view that never reads more than one published file says
+     * so here; a view with a control that fetches more names it.
+     */
+    universe: string;
     /** Which harness's data the default view reads. */
     harness: string;
 }
@@ -163,6 +177,7 @@ const FRAMING: FramingEntry[] = [
             // what closed the divergence that used to be declared here.
             window: '21-day aggregate',
             filters: 'fail, timeout, crash, skip — all four issue types',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         cli: {
@@ -172,6 +187,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: '21-day aggregate',
             filters: 'fail, timeout, crash, skip — all four issue types',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         // Empty, and that is the point: the `window` divergence that lived here
@@ -213,6 +229,7 @@ const FRAMING: FramingEntry[] = [
             // carries it as a null message and labels it at render time. Same
             // population, and the assertion below checks the row exists.
             filters: 'FAIL* statuses only; the unrecorded-message group is a real row',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         cli: {
@@ -222,6 +239,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: '21 days',
             filters: 'FAIL* statuses only; the unrecorded-message group is a real row',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         divergences: [],
@@ -241,6 +259,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: '21 days',
             filters: 'CRASH statuses only',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         cli: {
@@ -250,6 +269,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: '21 days',
             filters: 'CRASH statuses only',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         divergences: [],
@@ -286,6 +306,7 @@ const FRAMING: FramingEntry[] = [
             // is what removed the `window` divergence this entry used to carry.
             window: '21-day aggregate',
             filters: 'skips counted alongside fail, timeout and crash',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         cli: {
@@ -295,6 +316,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: '21-day aggregate',
             filters: 'skip-if only; run-if excluded (--include-run-if keeps them)',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
             harness: 'xpcshell',
         },
         divergences: [
@@ -353,6 +375,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: 'single most recent day',
             filters: 'all seven marker kinds',
+            universe: 'one `{harness}-{date}-errors.json`; the date control swaps the file, it does not add one',
             harness: 'mochitest',
         },
         cli: {
@@ -366,6 +389,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: 'single most recent day with a published errors file',
             filters: 'all marker kinds the file declares',
+            universe: 'one `{harness}-{date}-errors.json`; the date control swaps the file, it does not add one',
             harness: 'mochitest',
         },
         divergences: [
@@ -419,6 +443,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: 'a single artifact — one day, no date control',
             filters: 'all-zero-duration pairs treated as skipped, excluded from stats',
+            universe: 'one `manifests.json`; no control fetches a second file',
             harness: 'both — the file is per-manifest, not per-harness',
         },
         cli: {
@@ -428,6 +453,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: 'a single artifact — one day, no date control',
             filters: 'all-zero-duration pairs treated as skipped, excluded from stats',
+            universe: 'one `manifests.json`; no control fetches a second file',
             harness: 'both — the file is per-manifest, not per-harness',
         },
         divergences: [],
@@ -463,6 +489,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: null,
             window: '7 days',
             filters: 'none — every job and test run in the window',
+            universe: 'one `{harness}-stats.json`; no control fetches a second file',
             harness: 'both — xpcshell and mochitest',
         },
         cli: {
@@ -472,6 +499,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: null,
             window: '7 days',
             filters: 'none — every job and test run in the window',
+            universe: 'one `{harness}-stats.json`; no control fetches a second file',
             harness: 'both — xpcshell and mochitest',
         },
         divergences: [],
@@ -498,6 +526,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: '21 days — the chunk file window',
             filters: 'none — every status the file records',
+            universe: 'the one bucket file holding the test; no control fetches a second file',
             harness: 'inferred from the test path',
         },
         cli: {
@@ -514,6 +543,7 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: '21 days — the chunk file window',
             filters: 'default view lists failing configs only; --coverage lists every config',
+            universe: 'the one bucket file holding the test; no control fetches a second file',
             harness: 'inferred from the test path',
         },
         divergences: [
@@ -566,7 +596,10 @@ const FRAMING: FramingEntry[] = [
             grouping: 'old/try.html:1765-1766 (up to 3 tables, the split is data-driven)',
             sortKey: 'old/try.html:744 (currentSort), :1749 (count = a.instances.length)',
             window: 'try.html — the push; central history uses MIN_RECENT_RUNS = 100 (:2572)',
-            filters: 'old/try.html:706, :3775 ("All jobs" checkbox unchecked by default)',
+            filters: 'old/try.html:1486 (the five failure statuses), :816 (non-test jobs listed apart)',
+            universe:
+                'site/try.ts:944 (`fetchPassing` concatenates `successfulTestJobs`); ' +
+                'old/try.html:706, :3775 ("All jobs" unchecked by default)',
         },
         page: {
             rowUnit: 'test path',
@@ -585,11 +618,19 @@ const FRAMING: FramingEntry[] = [
             window: 'the push',
             // Identical sets on both sides, verified: `old/try.html:1486` and
             // `cli/commands/try.ts:430` declare the same five failure statuses,
-            // UNEXPECTED-PASS included. Non-test jobs are behind the unchecked
-            // "All jobs" box on the page and behind `--all-jobs` here.
+            // UNEXPECTED-PASS included.
+            //
+            // This field used to also carry "non-test jobs opt-in", which was
+            // true of both sides and hid the defect the `universe` field now
+            // separates out: the page's opt-in adds fetches, the CLI's added
+            // rows. Non-test failures are a row question and stay here; which
+            // jobs are read is not, and does not.
             filters:
-                'test jobs only, non-test jobs opt-in; FAIL, TIMEOUT, CRASH, ERROR and ' +
-                'UNEXPECTED-PASS all count as failures',
+                'test-job rows only, non-test job failures listed apart; FAIL, TIMEOUT, ' +
+                'CRASH, ERROR and UNEXPECTED-PASS all count as failures',
+            universe:
+                'failed test jobs; the successful ones opt-in, which is the only way a test ' +
+                'that failed then passed on retry can appear',
             harness: 'mochitest and xpcshell — whichever the push ran',
         },
         cli: {
@@ -599,8 +640,11 @@ const FRAMING: FramingEntry[] = [
             sortDirection: 'desc',
             window: 'the push',
             filters:
-                'test jobs only, non-test jobs opt-in; FAIL, TIMEOUT, CRASH, ERROR and ' +
-                'UNEXPECTED-PASS all count as failures',
+                'test-job rows only, non-test job failures listed apart; FAIL, TIMEOUT, ' +
+                'CRASH, ERROR and UNEXPECTED-PASS all count as failures',
+            universe:
+                'failed test jobs; the successful ones opt-in, which is the only way a test ' +
+                'that failed then passed on retry can appear',
             harness: 'mochitest and xpcshell — whichever the push ran',
         },
         divergences: [
@@ -833,6 +877,7 @@ test('every field where the two sides differ is a declared divergence', () => {
         'sortDirection',
         'window',
         'filters',
+        'universe',
         'harness',
     ];
     for (const entry of FRAMING) {
@@ -1707,9 +1752,11 @@ test('try groups into the three sections and covers the push, not a window', asy
     assert.equal(result['jobCount'], 1);
 });
 
-test('try lists only test jobs by default; --all-jobs adds the rest', async () => {
-    // `old/try.html:706`/`:3775` — the "All jobs" checkbox starts unchecked, and it
-    // changes the universe (`:1342-1344`) rather than only the display.
+test('try lists only test jobs by default; --other-jobs adds the rest', async () => {
+    // Row framing, not universe framing: which failures get a row. The page
+    // renders non-test failures apart from the tables (`old/try.html:816`), and
+    // the command does the same. `--all-jobs` is a different axis and is
+    // asserted by the two tests below it.
     const jobs = [
         job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed'),
         job('build-linux64/opt', 'TASKBUILD', 'busted'),
@@ -1741,6 +1788,209 @@ test('try lists only test jobs by default; --all-jobs adds the rest', async () =
     assert.doesNotMatch(
         streams.stdout,
         /build-linux64/,
-        'non-test jobs are behind --all-jobs, as the unchecked "All jobs" box is (old/try.html:706)'
+        'non-test job failures are behind --other-jobs; the default states the count only'
     );
+
+    // And the flag prints them, so the assertion above is about the default
+    // rather than about the list being unreachable.
+    const withFlag = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--other-jobs'],
+        streams: withFlag,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder(jobs),
+        fetchUrl: profileFetcher(profiles),
+    });
+    assert.match(withFlag.stdout, /build-linux64/);
 });
+
+/**
+ * The `universe` field, asserted behaviourally on the one command that has a
+ * control on that axis.
+ *
+ * This is what the table was missing. `filters` said "non-test jobs opt-in" on
+ * both sides and both statements were true, so nothing here could see that the
+ * page's opt-in fetched more jobs while the command's opt-in only printed more
+ * rows. The claim under test is a **count of profiles read**, which is the one
+ * number that separates the two axes: a display filter cannot change it.
+ *
+ * The expected counts are literals read off the job list built two lines up —
+ * 1 failed test job, 2 successful ones, 1 build. Deriving them by re-running
+ * the command's own selector would assert nothing.
+ */
+test('try --all-jobs widens which jobs are read, not which rows are printed', async () => {
+    const jobs = [
+        job('test-linux2404-64/opt-xpcshell', 'TASKFAIL', 'testfailed'),
+        job('test-linux2404-64/opt-xpcshell-2', 'TASKPASS1', 'success'),
+        job('test-windows11-64-25h2/opt-mochitest-plain', 'TASKPASS2', 'success'),
+        job('build-linux64/opt', 'TASKBUILD', 'success'),
+    ];
+    const profiles = {
+        TASKFAIL: profileWithFailures([{ test: TEST_PATH, executions: 1 }]),
+        TASKPASS1: profileWithFailures([]),
+        TASKPASS2: profileWithFailures([]),
+        TASKBUILD: profileWithFailures([]),
+    };
+
+    const byDefault = await invokeTry(['try', 'abcdef123456', '--json'], jobs, profiles);
+    assert.equal(byDefault['profilesRead'], 1, 'the default reads the one failed test job');
+    assert.equal(byDefault['readPassingJobs'], false);
+    assert.equal(byDefault['passingTestJobCount'], 2, 'and says how many it did not read');
+
+    const widened = await invokeTry(['try', 'abcdef123456', '--json', '--all-jobs'], jobs, profiles);
+    assert.equal(widened['profilesRead'], 3, '--all-jobs adds the two successful TEST jobs');
+    assert.equal(widened['readPassingJobs'], true);
+    // Not the build job: `isTestJob` gates the addition on both sides, and a
+    // build's artifact carries no test markers. 3, not 4.
+    assert.equal(widened['passingTestJobCount'], 2);
+
+    // The table's `universe` entry has to describe what just happened, or the
+    // cross-side agreement check above is comparing two strings about nothing.
+    // Matched on the two facts the counts demonstrate rather than on the whole
+    // sentence, so rewording the prose does not fail the suite and dropping
+    // either fact does.
+    const declared = entryFor('try').cli.universe;
+    assert.match(declared, /failed test jobs/);
+    assert.match(declared, /opt-in/);
+});
+
+/**
+ * The progress line and the header both have to name the set actually read.
+ *
+ * Not decoration. The "Reading N job profiles" wording exists because a line
+ * that misdescribed the work made working caching look broken, and under
+ * `--all-jobs` the failed-job count and the read count differ by a factor of
+ * tens — so a line naming the smaller one while reading the larger set is the
+ * same defect with a bigger number. Counts here are literals: 1 failed test
+ * job and 2 successful ones, from the list below.
+ */
+test('try states how many profiles it read, and which set they were', async () => {
+    const jobs = [
+        job('test-linux2404-64/opt-xpcshell', 'TASKFAIL', 'testfailed'),
+        job('test-linux2404-64/opt-xpcshell-2', 'TASKPASS1', 'success'),
+        job('test-windows11-64-25h2/opt-mochitest-plain', 'TASKPASS2', 'success'),
+    ];
+    const profiles = {
+        TASKFAIL: profileWithFailures([{ test: TEST_PATH, executions: 1 }]),
+        TASKPASS1: profileWithFailures([]),
+        TASKPASS2: profileWithFailures([]),
+    };
+    const runIt = async (argv: string[]): Promise<{ stdout: string; stderr: string }> => {
+        const streams = captureStreams();
+        await run({
+            argv,
+            streams,
+            source: fixtureSource(),
+            cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+            treeherder: fakeTreeherder(jobs),
+            fetchUrl: profileFetcher(profiles),
+        });
+        return { stdout: streams.stdout, stderr: streams.stderr };
+    };
+
+    const byDefault = await runIt(['try', 'abcdef123456']);
+    assert.match(byDefault.stderr, /Reading 1 job profiles \(one per failed test job\)/);
+    assert.match(
+        byDefault.stdout,
+        /Read 1 failed test job profiles\. The 2 test jobs that passed were not read/,
+        'the default has to say what it did not look at, or it reads as the whole push'
+    );
+
+    const widened = await runIt(['try', 'abcdef123456', '--all-jobs']);
+    assert.match(
+        widened.stderr,
+        /Reading 3 job profiles \(one per completed test job, passing ones included\)/,
+        'the count must be the set actually read, not the failed-job count'
+    );
+    assert.match(widened.stdout, /Read 3 test job profiles, including the 2 that passed/);
+});
+
+/**
+ * The behaviour the flag exists for, end to end.
+ *
+ * A test that failed and then passed when the harness reran it inside a job
+ * that Treeherder marks **green**. Nothing in the default universe references
+ * that job, so the failure is not merely ranked lower — it is absent. This is
+ * the case the page's tooltip names, and the reason `--all-jobs` had to stop
+ * meaning something else.
+ */
+test('a test that failed and passed on retry appears only under --all-jobs', async () => {
+    const RETRIED = 'dom/base/test/test_intermittent.html';
+    const jobs = [
+        job('test-linux2404-64/opt-xpcshell', 'TASKFAIL', 'testfailed'),
+        job('test-linux2404-64/opt-mochitest-plain', 'TASKGREEN', 'success'),
+    ];
+    const profiles = {
+        TASKFAIL: profileWithFailures([{ test: TEST_PATH, executions: 1 }]),
+        // The green job: one FAIL, then a PASS inside the harness's `retry`
+        // range. Treeherder still calls the job a success.
+        TASKGREEN: profileWithRetryPass(RETRIED),
+    };
+
+    const byDefault = await invokeTry(['try', 'abcdef123456', '--json'], jobs, profiles);
+    assert.deepEqual(
+        rowPaths(byDefault),
+        [TEST_PATH],
+        'the green job is not read, so its failure cannot be reported'
+    );
+
+    const widened = await invokeTry(['try', 'abcdef123456', '--json', '--all-jobs'], jobs, profiles);
+    assert.deepEqual(
+        rowPaths(widened).sort(),
+        [TEST_PATH, RETRIED].sort(),
+        'with the successful jobs read, the retried failure surfaces'
+    );
+
+    // And it surfaces as an intermittent rather than a perma-fail: the
+    // harness's rerun turned it green, which is the whole signal.
+    const perma = (widened['permaFails'] as { path: string }[]).map((row) => row.path);
+    assert.deepEqual(perma, [TEST_PATH], 'the retried test is not a perma-fail');
+    const retried = [
+        ...(widened['knownIntermittents'] as { path: string; passedOnRerun: boolean }[]),
+        ...(widened['newIntermittents'] as { path: string; passedOnRerun: boolean }[]),
+    ].find((row) => row.path === RETRIED);
+    assert.ok(retried !== undefined, 'the retried test must land in an intermittent section');
+    assert.equal(retried.passedOnRerun, true);
+});
+
+/** Every failure row the command emitted, across its three sections. */
+function rowPaths(result: Record<string, unknown>): string[] {
+    return [
+        ...(result['permaFails'] as { path: string }[]),
+        ...(result['knownIntermittents'] as { path: string }[]),
+        ...(result['newIntermittents'] as { path: string }[]),
+    ].map((row) => row.path);
+}
+
+/**
+ * A profile in which `path` fails once, then passes inside the rerun range.
+ *
+ * The `retry` Text marker is what both parsers key the rerun phase on — see
+ * `test/parity-harness.ts`'s `synthProfile`, which builds the same shape from
+ * the pinned push. Written out here rather than reused from there because this
+ * needs one specific pathology and that helper takes a whole push's timings.
+ */
+function profileWithRetryPass(path: string): string {
+    const markers: { name: number; data: Record<string, unknown>; start: number; end: number }[] = [
+        { name: 0, data: { type: 'Test', test: path, status: 'FAIL', message: 'boom' }, start: 1, end: 2 },
+        // The rerun phase spans the second execution and nothing else.
+        { name: 1, data: { type: 'Text', text: 'retry' }, start: 2.5, end: 6 },
+        { name: 0, data: { type: 'Test', test: path, status: 'PASS' }, start: 3, end: 4 },
+    ];
+    return JSON.stringify({
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: ['test', 'retry'],
+                markers: {
+                    length: markers.length,
+                    name: markers.map((marker) => marker.name),
+                    data: markers.map((marker) => marker.data),
+                    startTime: markers.map((marker) => marker.start),
+                    endTime: markers.map((marker) => marker.end),
+                },
+            },
+        ],
+    });
+}

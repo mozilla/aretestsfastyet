@@ -136,6 +136,9 @@ interface CliTry {
     pushId: number;
     jobCount: number;
     failedJobCount: number;
+    profilesRead: number;
+    readPassingJobs: boolean;
+    passingTestJobCount: number;
     unblamedJobCount: number;
     permaFails: CliFailure[];
     knownIntermittents: CliFailure[];
@@ -630,6 +633,62 @@ test('the CLI splits intermittents by central history where the page does not', 
     // `newIntermittents`. Stated so the empty `knownIntermittents` reads as a
     // property of the fixture rather than of the split.
     assert.equal(result.knownIntermittents.length, 0);
+});
+
+/**
+ * Both sides read the same jobs, and `--all-jobs` widens by the same set.
+ *
+ * The one parity dimension that is about **which data is read** rather than
+ * what is done with it, and the one the framing table could not express until
+ * `universe` was added to it. It is checked here as a count on each side
+ * because a count is the thing a display filter cannot change.
+ *
+ * The expectations are literals read off this fixture's job list — 46 failed
+ * test jobs and 1,538 successful ones, the same two numbers
+ * `test/try-view.test.ts` pins for the page — and the two sides are computed
+ * by different code: the page's from `site/try-view.ts`'s `isTestJob` over the
+ * fixture, the CLI's from `profilesRead` on a real invocation. Neither derives
+ * its expectation from the other.
+ */
+test('the page and the CLI put the same jobs in the universe', async () => {
+    assert.equal(FAILED_TEST_JOBS.length, 46, 'the pinned push has 46 failed test jobs');
+    assert.equal(SUCCESSFUL_TEST_JOBS.length, 1538, 'and 1,538 that passed');
+
+    const byDefault = json<CliTry>(
+        await invoke(['try', '7d16bff81bb1', '--json'], {
+            treeherder: fakeTreeherder(PUSH.jobs),
+            fetchUrl: pushProfileFetcher(PUSH),
+            source: fixtureSource(),
+        })
+    );
+    assert.equal(byDefault.profilesRead, 46, 'the default reads the failed test jobs, as the page does');
+    assert.equal(byDefault.readPassingJobs, false);
+    assert.equal(byDefault.passingTestJobCount, 1538);
+
+    const widened = json<CliTry>(
+        await invoke(['try', '7d16bff81bb1', '--json', '--all-jobs'], {
+            treeherder: fakeTreeherder(PUSH.jobs),
+            fetchUrl: pushProfileFetcher(PUSH),
+            source: fixtureSource(),
+        })
+    );
+    // 46 + 1538. Written as the sum rather than as 1584 so a change to either
+    // side of it names which one moved.
+    assert.equal(widened.profilesRead, 46 + 1538, '--all-jobs adds exactly the successful test jobs');
+    assert.equal(widened.readPassingJobs, true);
+
+    // The row set does not change on THIS push, and the reason is a property
+    // of the fixture rather than of the flag: its `timings` were captured from
+    // the 46 failed jobs only, so the 1,538 added reads answer `null` and
+    // contribute nothing. `test/try-view.test.ts` records the same limitation
+    // for the page side. The behaviour the flag exists for is asserted in
+    // `test/framing.test.ts` against a profile built to contain it, and was
+    // measured against the live push: 90 further tests, all `passedOnRerun`.
+    assert.deepEqual(
+        cliRows(widened).map((row) => row.path).sort(),
+        cliRows(byDefault).map((row) => row.path).sort(),
+        'no fixture profile exists for a passing job, so no new row can appear here'
+    );
 });
 
 // =========================================================================

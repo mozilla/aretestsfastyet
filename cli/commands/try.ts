@@ -84,7 +84,19 @@ export const TRY_OPTIONS: OptionSpecs = {
     },
     'all-jobs': {
         type: 'boolean',
-        describe: 'Also list failures of non-test jobs (builds, lint).',
+        // Says what it fetches, what that buys, and what it costs. The page's
+        // tooltip is the model ("Also fetch profiles of test jobs that
+        // ultimately succeeded, so tests that failed initially but passed on
+        // retry surface too"); the cost clause is added because a terminal
+        // gives no other warning before a run that reads tens of times more
+        // artifacts. Kept to one line because the help printer does not wrap.
+        describe:
+            'Also read profiles of test jobs that SUCCEEDED, so a test that failed then ' +
+            'passed on retry surfaces. Reads every test job: much slower.',
+    },
+    'other-jobs': {
+        type: 'boolean',
+        describe: 'List the non-test job failures (builds, lint) the header already counts.',
     },
     'task-ids': { type: 'boolean', describe: 'Print the task IDs behind each failure.' },
     profiles: { type: 'boolean', describe: 'Print raw profile artifact URLs.' },
@@ -229,6 +241,26 @@ export interface TryJson {
     treeherderUrl: string;
     jobCount: number;
     failedJobCount: number;
+    /**
+     * How many job profiles were read, and whether the passing ones were among
+     * them.
+     *
+     * In the output because it is the one thing a reader cannot infer from the
+     * rows: an empty `newIntermittents` means "none found" under `--all-jobs`
+     * and "none looked for" without it, and nothing else here distinguishes
+     * the two.
+     */
+    profilesRead: number;
+    /** Whether `--all-jobs` put the successful test jobs in the universe. */
+    readPassingJobs: boolean;
+    /**
+     * Completed test jobs that passed — the ones `--all-jobs` adds.
+     *
+     * Reported whether or not the flag was given, because it is the size of
+     * what the default did not look at, and it is what makes the "run with
+     * --all-jobs" hint honest about the cost.
+     */
+    passingTestJobCount: number;
     /** Failed test jobs whose profile yielded no test-level failure. */
     unblamedJobCount: number;
     /** Jobs that failed but are not test jobs — builds, lint. */
@@ -271,12 +303,30 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         (job) =>
             job.state === 'completed' && job.result === 'testfailed' && isTestJob(job.jobName)
     );
+    const successfulTestJobs = jobs.filter(
+        (job) => job.state === 'completed' && job.result === 'success' && isTestJob(job.jobName)
+    );
     const otherFailedJobs = jobs.filter(
         (job) =>
             job.state === 'completed' &&
             FAILED_JOB_RESULTS.has(job.result) &&
             !isTestJob(job.jobName)
     );
+
+    // `--all-jobs` changes the UNIVERSE, not the rows: it adds the successful
+    // test jobs' profiles, which is the only way a test that failed and then
+    // passed on retry can surface at all — the job is green on Treeherder, so
+    // nothing about it is reachable from the failed jobs. Same set the page's
+    // "All jobs" checkbox adds (`site/try.ts:944`), same default of off, and
+    // for the same reason it is off there: measured on try push 7d16bff81bb1,
+    // 46 failed test jobs against 1538 successful ones, so the flag reads 34x
+    // the artifacts. It is worth it when flakiness is the question — that same
+    // run reports 116 failing tests against the default's 26, and all 90 of
+    // the added ones passed on the harness's rerun.
+    const readPassingJobs = boolOption(args, 'all-jobs');
+    const jobsToProcess = readPassingJobs
+        ? failedTestJobs.concat(successfulTestJobs)
+        : failedTestJobs;
 
     // Every completed run of each config, so "3/3 runs" has a real denominator
     // rather than counting only the runs that failed.
@@ -288,20 +338,26 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
     }
 
     let timings: TestTiming[] = [];
-    if (failedTestJobs.length > 0) {
+    if (jobsToProcess.length > 0) {
         // "Reading", not "Fetching": the profiles are cached on disk after the
         // first run, so a warm run reads all 46 and downloads none. Printing
         // "Fetching 46 job profiles" there is what made the caching look
         // broken when it was working — it is the line the bug was reported
         // against. The command cannot say which it will be before it starts,
         // so it says the thing that is true either way.
+        //
+        // The count is `jobsToProcess`, not `failedTestJobs`: under
+        // `--all-jobs` the two differ by a factor of tens, and a line naming
+        // the smaller one while reading the larger set is the same defect the
+        // "Fetching" wording was. The parenthetical states which set it is.
         progress(
             context,
-            `Reading ${failedTestJobs.length} job profiles (one per failed test job)…`
+            `Reading ${jobsToProcess.length} job profiles (one per ` +
+                `${readPassingJobs ? 'completed test job, passing ones included' : 'failed test job'})…`
         );
         timings = await collectTimings(
             context,
-            failedTestJobs,
+            jobsToProcess,
             fetchUrl,
             Number(args.options.get('concurrency') ?? DEFAULT_CONCURRENCY)
         );
@@ -337,6 +393,9 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         treeherderUrl: treeherderPushUrl(project, push.revision),
         jobCount: jobs.length,
         failedJobCount: failedTestJobs.length + otherFailedJobs.length,
+        profilesRead: jobsToProcess.length,
+        readPassingJobs,
+        passingTestJobCount: successfulTestJobs.length,
         unblamedJobCount,
         otherFailedJobs: otherFailedJobs.map((job) => ({
             jobName: job.jobName,
@@ -360,8 +419,8 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
     emit(
         context,
         context.globals.format === 'markdown'
-            ? renderMarkdown(result, limit, boolOption(args, 'perma-only'), boolOption(args, 'all-jobs'))
-            : renderText(result, limit, boolOption(args, 'perma-only'), boolOption(args, 'all-jobs'))
+            ? renderMarkdown(result, limit, boolOption(args, 'perma-only'), boolOption(args, 'other-jobs'))
+            : renderText(result, limit, boolOption(args, 'perma-only'), boolOption(args, 'other-jobs'))
     );
     // Exit 0 regardless of what was found: `CLI.md` is explicit that the
     // failures are the answer, not an error, and that scripts should branch on
@@ -1337,12 +1396,42 @@ function preExistingCell(failure: TryFailure): string {
     return onPermaConfigs > 0 ? `yes (${onPermaConfigs})` : 'no';
 }
 
+/**
+ * The one line that says which jobs were read, and what that leaves out.
+ *
+ * Present in both directions, because both are things the reader cannot see
+ * from the rows. Without `--all-jobs` the sections are silent about every test
+ * that failed and then passed on retry — the job is green, so nothing about it
+ * reaches this output — and a report that does not say so reads as a complete
+ * picture of the push. With the flag it says what the wider universe cost, so
+ * a slow run is explained rather than suspicious.
+ *
+ * `null` when there is nothing to say: no passing test job means the two
+ * universes are the same one.
+ */
+function universeLine(result: TryJson): string | null {
+    if (result.passingTestJobCount === 0) {
+        return null;
+    }
+    if (result.readPassingJobs) {
+        return (
+            `Read ${result.profilesRead} test job profiles, including the ` +
+            `${result.passingTestJobCount} that passed (--all-jobs).`
+        );
+    }
+    return (
+        `Read ${result.profilesRead} failed test job profiles. The ` +
+        `${result.passingTestJobCount} test jobs that passed were not read, so a test that ` +
+        `failed and then passed on retry is not here; --all-jobs reads them too.`
+    );
+}
+
 /** Plain text, as `CLI.md` lays it out. */
 function renderText(
     result: TryJson,
     limit: number,
     permaOnly: boolean,
-    allJobs: boolean
+    otherJobs: boolean
 ): string {
     const lines: (string | null)[] = [];
     lines.push(
@@ -1350,6 +1439,7 @@ function renderText(
             `${result.jobCount} jobs, ${result.failedJobCount} failed`
     );
     lines.push('Compared against 21 days of mozilla-central history.');
+    lines.push(universeLine(result));
     lines.push(result.treeherderUrl);
 
     if (
@@ -1368,7 +1458,7 @@ function renderText(
         if (result.otherFailedJobs.length > 0) {
             lines.push(
                 `${result.otherFailedJobs.length} non-test jobs failed ` +
-                    `(--all-jobs to list them).`
+                    `(--other-jobs to list them).`
             );
         }
         return joinLines(lines);
@@ -1414,7 +1504,7 @@ function renderText(
         lines.push('  Treeherder; this command cannot say what failed in them.');
     }
 
-    if (allJobs && result.otherFailedJobs.length > 0) {
+    if (otherJobs && result.otherFailedJobs.length > 0) {
         lines.push('');
         lines.push(`OTHER FAILED JOBS (${result.otherFailedJobs.length})`);
         const shown = applyLimit(result.otherFailedJobs, limit);
@@ -1425,7 +1515,7 @@ function renderText(
     } else if (result.otherFailedJobs.length > 0) {
         lines.push('');
         lines.push(
-            `${result.otherFailedJobs.length} non-test jobs also failed (--all-jobs to list).`
+            `${result.otherFailedJobs.length} non-test jobs also failed (--other-jobs to list).`
         );
     }
 
@@ -1590,7 +1680,7 @@ function renderMarkdown(
     result: TryJson,
     limit: number,
     permaOnly: boolean,
-    allJobs: boolean
+    otherJobs: boolean
 ): string {
     const lines: (string | null)[] = [];
     lines.push(md.heading(`Try push ${result.revision.slice(0, 12)} (${result.project})`, 1));
@@ -1599,6 +1689,11 @@ function renderMarkdown(
         `${result.jobCount} jobs, ${result.failedJobCount} failed. ` +
             `Compared against 21 days of mozilla-central history.`
     );
+    const universe = universeLine(result);
+    if (universe !== null) {
+        lines.push('');
+        lines.push(`_${universe}_`);
+    }
     lines.push('');
     lines.push(`[View on Treeherder](${result.treeherderUrl})`);
 
@@ -1655,7 +1750,7 @@ function renderMarkdown(
         lines.push(md.moreLine(failures.length, shown.length));
     }
 
-    if (allJobs && result.otherFailedJobs.length > 0) {
+    if (otherJobs && result.otherFailedJobs.length > 0) {
         lines.push('');
         lines.push(md.heading(`Other failed jobs (${result.otherFailedJobs.length})`));
         lines.push('');

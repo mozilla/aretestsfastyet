@@ -404,6 +404,10 @@ $ fx-tests try 4f2c1a9e8b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a
 
 Try push 4f2c1a9e (try) — 1284 jobs, 37 failed
 Compared against 21 days of mozilla-central history.
+Read 31 failed test job profiles. The 1103 test jobs that passed were not read,
+so a test that failed and then passed on retry is not here; --all-jobs reads
+them too.
+https://treeherder.mozilla.org/jobs?repo=try&revision=4f2c1a9e…
 
 PERMA-FAILS (3) — failed in every run of at least one configuration here.
                   Each row says what central shows on that same configuration.
@@ -482,8 +486,35 @@ crash signature taking out every test in the affected jobs.
 
 Options: `--project <try|autoland|…>` (default `try`), `--perma-only` (just
 the first section — the highest-signal output for an agent), `--all-jobs`
-(include non-test job failures), `--task-ids`, `--profiles`,
-`--config <list>`.
+(read the passing test jobs too — see below), `--other-jobs` (list the non-test
+job failures), `--task-ids`, `--profiles`, `--config <list>`,
+`--concurrency <n>` (default 8).
+
+**`--all-jobs` changes which jobs are read, not which rows are printed.** By
+default the command reads one profile per **failed** test job, which is what
+`try.html` does with its "All jobs" box unchecked. That misses a whole class of
+failure: a test that failed and then **passed when the harness reran it** leaves
+the job green on Treeherder, so nothing in the default universe references it at
+all. Such a failure is not ranked low — it is absent. `--all-jobs` adds the
+profiles of the test jobs that succeeded, which is the only way those surface,
+and is exactly what checking the page's box does (`site/try.ts:944`).
+
+Measured on try push `7d16bff81bb1`: 26 failing tests by default, 116 with the
+flag. All 90 of the added ones passed on the harness's rerun, and none of the
+26 was lost.
+
+It is opt-in on both sides because of what it costs. That same push reads 46
+profiles by default and 1,584 with the flag — every completed test job, at tens
+of megabytes each. Raise `--concurrency` for it; the header line states which
+set was read either way, so a report cannot be mistaken for the other one.
+
+`--other-jobs` is the unrelated flag it is easy to confuse with this: builds and
+lint that failed are counted in the header and summarised in one line by
+default, and `--other-jobs` prints the list. That is a display filter over data
+already fetched, and it changes no fetch. `--json` always carries them as
+`otherFailedJobs[]`, along with `profilesRead`, `readPassingJobs` and
+`passingTestJobCount` — the last three so a script can tell "no intermittents
+found" from "none looked for".
 
 The perma-fail/intermittent split above rests on the harness-rerun distinction:
 a test that failed and then **passed when the harness reran it** in the same job
@@ -542,7 +573,8 @@ because they are two different things to go and do about: one sends you to the
 job's duration, the other to a broken download. Neither is a data-generation
 bug.
 
-`--json` shape: `{ revision, pushId, jobCount, failedJobCount,
+`--json` shape: `{ revision, pushId, jobCount, failedJobCount, profilesRead,
+readPassingJobs, passingTestJobCount, unblamedJobCount, otherFailedJobs[],
 permaFails[], knownIntermittents[], newIntermittents[] }`. Each failure carries
 `failureCount` — the failing executions the sections are ordered by —
 `permaFailingConfigs[]` — the configurations it failed every run of — and

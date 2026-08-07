@@ -3270,6 +3270,12 @@ var WORKFLOWS = [
       "    on each: without it the row is probably yours, with it central already fails",
       "    the same way on that same config and it probably is not.",
       "",
+      "fx-tests try <revision> --all-jobs",
+      "    Reads the passing test jobs too. A test that failed and then passed when the",
+      "    harness reran it leaves the job GREEN, so the default run never sees it \u2014 it",
+      "    is missing, not ranked low. Costs one profile per test job on the push rather",
+      "    than one per failed job, so reach for it when burning down flakiness.",
+      "",
       "fx-tests test <path>",
       "    Whether it already fails on central, and how. Two things change the reading:",
       "    that it passed when the harness reran it in the same job, and that it fails",
@@ -7089,7 +7095,17 @@ var TRY_OPTIONS = {
   },
   "all-jobs": {
     type: "boolean",
-    describe: "Also list failures of non-test jobs (builds, lint)."
+    // Says what it fetches, what that buys, and what it costs. The page's
+    // tooltip is the model ("Also fetch profiles of test jobs that
+    // ultimately succeeded, so tests that failed initially but passed on
+    // retry surface too"); the cost clause is added because a terminal
+    // gives no other warning before a run that reads tens of times more
+    // artifacts. Kept to one line because the help printer does not wrap.
+    describe: "Also read profiles of test jobs that SUCCEEDED, so a test that failed then passed on retry surfaces. Reads every test job: much slower."
+  },
+  "other-jobs": {
+    type: "boolean",
+    describe: "List the non-test job failures (builds, lint) the header already counts."
   },
   "task-ids": { type: "boolean", describe: "Print the task IDs behind each failure." },
   profiles: { type: "boolean", describe: "Print raw profile artifact URLs." },
@@ -7130,9 +7146,14 @@ async function runTry(context, args) {
   const failedTestJobs = jobs.filter(
     (job) => job.state === "completed" && job.result === "testfailed" && isTestJob(job.jobName)
   );
+  const successfulTestJobs = jobs.filter(
+    (job) => job.state === "completed" && job.result === "success" && isTestJob(job.jobName)
+  );
   const otherFailedJobs = jobs.filter(
     (job) => job.state === "completed" && FAILED_JOB_RESULTS.has(job.result) && !isTestJob(job.jobName)
   );
+  const readPassingJobs = boolOption(args, "all-jobs");
+  const jobsToProcess = readPassingJobs ? failedTestJobs.concat(successfulTestJobs) : failedTestJobs;
   const runsPerJobName = /* @__PURE__ */ new Map();
   for (const job of jobs) {
     if (job.state === "completed" && isTestJob(job.jobName)) {
@@ -7140,14 +7161,14 @@ async function runTry(context, args) {
     }
   }
   let timings = [];
-  if (failedTestJobs.length > 0) {
+  if (jobsToProcess.length > 0) {
     progress(
       context,
-      `Reading ${failedTestJobs.length} job profiles (one per failed test job)\u2026`
+      `Reading ${jobsToProcess.length} job profiles (one per ${readPassingJobs ? "completed test job, passing ones included" : "failed test job"})\u2026`
     );
     timings = await collectTimings(
       context,
-      failedTestJobs,
+      jobsToProcess,
       fetchUrl,
       Number(args.options.get("concurrency") ?? DEFAULT_CONCURRENCY)
     );
@@ -7175,6 +7196,9 @@ async function runTry(context, args) {
     treeherderUrl: treeherderPushUrl(project, push.revision),
     jobCount: jobs.length,
     failedJobCount: failedTestJobs.length + otherFailedJobs.length,
+    profilesRead: jobsToProcess.length,
+    readPassingJobs,
+    passingTestJobCount: successfulTestJobs.length,
     unblamedJobCount,
     otherFailedJobs: otherFailedJobs.map((job) => ({
       jobName: job.jobName,
@@ -7196,7 +7220,7 @@ async function runTry(context, args) {
   const limit = context.globals.limit ?? DEFAULT_LIMIT5;
   emit(
     context,
-    context.globals.format === "markdown" ? renderMarkdown8(result, limit, boolOption(args, "perma-only"), boolOption(args, "all-jobs")) : renderText8(result, limit, boolOption(args, "perma-only"), boolOption(args, "all-jobs"))
+    context.globals.format === "markdown" ? renderMarkdown8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs")) : renderText8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs"))
   );
 }
 function isPermaFail(failure) {
@@ -7692,12 +7716,22 @@ function preExistingCell(failure) {
   }
   return onPermaConfigs > 0 ? `yes (${onPermaConfigs})` : "no";
 }
-function renderText8(result, limit, permaOnly, allJobs) {
+function universeLine(result) {
+  if (result.passingTestJobCount === 0) {
+    return null;
+  }
+  if (result.readPassingJobs) {
+    return `Read ${result.profilesRead} test job profiles, including the ${result.passingTestJobCount} that passed (--all-jobs).`;
+  }
+  return `Read ${result.profilesRead} failed test job profiles. The ${result.passingTestJobCount} test jobs that passed were not read, so a test that failed and then passed on retry is not here; --all-jobs reads them too.`;
+}
+function renderText8(result, limit, permaOnly, otherJobs) {
   const lines = [];
   lines.push(
     `Try push ${result.revision.slice(0, 12)} (${result.project}) \u2014 ${result.jobCount} jobs, ${result.failedJobCount} failed`
   );
   lines.push("Compared against 21 days of mozilla-central history.");
+  lines.push(universeLine(result));
   lines.push(result.treeherderUrl);
   if (result.permaFails.length === 0 && result.knownIntermittents.length === 0 && result.newIntermittents.length === 0) {
     lines.push("");
@@ -7709,7 +7743,7 @@ function renderText8(result, limit, permaOnly, allJobs) {
     }
     if (result.otherFailedJobs.length > 0) {
       lines.push(
-        `${result.otherFailedJobs.length} non-test jobs failed (--all-jobs to list them).`
+        `${result.otherFailedJobs.length} non-test jobs failed (--other-jobs to list them).`
       );
     }
     return joinLines(lines);
@@ -7751,7 +7785,7 @@ function renderText8(result, limit, permaOnly, allJobs) {
     );
     lines.push("  Treeherder; this command cannot say what failed in them.");
   }
-  if (allJobs && result.otherFailedJobs.length > 0) {
+  if (otherJobs && result.otherFailedJobs.length > 0) {
     lines.push("");
     lines.push(`OTHER FAILED JOBS (${result.otherFailedJobs.length})`);
     const shown = applyLimit(result.otherFailedJobs, limit);
@@ -7762,7 +7796,7 @@ function renderText8(result, limit, permaOnly, allJobs) {
   } else if (result.otherFailedJobs.length > 0) {
     lines.push("");
     lines.push(
-      `${result.otherFailedJobs.length} non-test jobs also failed (--all-jobs to list).`
+      `${result.otherFailedJobs.length} non-test jobs also failed (--other-jobs to list).`
     );
   }
   return joinLines(lines);
@@ -7877,13 +7911,18 @@ function compactSection(title, failures, description, limit) {
 function basename(path) {
   return path.slice(path.lastIndexOf("/") + 1);
 }
-function renderMarkdown8(result, limit, permaOnly, allJobs) {
+function renderMarkdown8(result, limit, permaOnly, otherJobs) {
   const lines = [];
   lines.push(heading(`Try push ${result.revision.slice(0, 12)} (${result.project})`, 1));
   lines.push("");
   lines.push(
     `${result.jobCount} jobs, ${result.failedJobCount} failed. Compared against 21 days of mozilla-central history.`
   );
+  const universe = universeLine(result);
+  if (universe !== null) {
+    lines.push("");
+    lines.push(`_${universe}_`);
+  }
   lines.push("");
   lines.push(`[View on Treeherder](${result.treeherderUrl})`);
   const sections = permaOnly ? [["Perma-fails", result.permaFails, PERMA_FAIL_DESCRIPTION]] : [
@@ -7935,7 +7974,7 @@ function renderMarkdown8(result, limit, permaOnly, allJobs) {
     );
     lines.push(moreLine(failures.length, shown.length));
   }
-  if (allJobs && result.otherFailedJobs.length > 0) {
+  if (otherJobs && result.otherFailedJobs.length > 0) {
     lines.push("");
     lines.push(heading(`Other failed jobs (${result.otherFailedJobs.length})`));
     lines.push("");
