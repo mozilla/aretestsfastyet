@@ -152,6 +152,27 @@
  *     `sendAllRunRequests` does (`old/try.html:3367` iterates `getFilteredTests()`)
  *     because there are no runs to scope.
  *
+ *  8. **`normalizeMessage` folds CRLF for both call sites, not one.** The only
+ *     entry on this list that changes an output *value* rather than the DOM
+ *     around it, and the only one where upstream is not reproduced because
+ *     upstream is wrong.
+ *
+ *     Upstream applies `.replace(/\r\n/g, '\n')` inline at the `Test` marker
+ *     (`old/try.html:973`) and not at the `TestStatus` marker (`:948`) — and
+ *     `TestStatus` is the one that overrides the message for FAIL, TIMEOUT and
+ *     ERROR, so the compensated path is the rare one. The `Rejection date`
+ *     pattern is anchored on `\n`, so on CRLF input a `\r` survives:
+ *     `'…\r\nRejection date: X\r\nb'` normalizes to `'…\r\nb'` where the LF
+ *     spelling of the same message gives `'…\nb'`. One failure, two groups,
+ *     rendered identically because the difference is a control character — and
+ *     the same split defeats the same-message comparison against central.
+ *
+ *     The pass now happens inside `normalizeMessage`, once, which is where
+ *     `cli/commands/try.ts` always had it. `lib/model/failure-message.ts` owns
+ *     the rule and the measurement; the worker keeps a copy because a Blob
+ *     worker cannot import, and `test/try-parity.test.ts` pins the copy against
+ *     the shared function so they cannot drift.
+ *
  * Everything else — the row unit, the three tables and their split rule, the
  * sort keys and their directions, the `UNEXPECTED-PASS` failure status, the
  * `totalJobs` denominator, the headline-rate argmax, the search box's `!`
@@ -339,9 +360,20 @@ function requireInput(id: string): HTMLInputElement {
 const WORKER_CODE = String.raw`
 'use strict';
 
+// The CRLF pass is the one line of this worker that is NOT upstream's, and it
+// is a declared divergence (see the module comment's numbered list). Upstream
+// normalized line endings at one of the two call sites -- the Test marker,
+// old/try.html:973 -- and not at the TestStatus marker at :948, which overrides
+// it for FAIL, TIMEOUT and ERROR and is therefore the common path. Left as
+// upstream had it, the same failure on Windows and on Linux is two message
+// groups that render identically, because the only difference is a carriage
+// return. lib/model/failure-message.ts owns the rule and records the
+// measurement; this copy exists because a Web Worker built from a Blob cannot
+// import, and test/try-parity.test.ts pins the two against each other.
 function normalizeMessage(message) {
     return message
-        ?.replace(/task_\d+/g, 'task_id')
+        ?.replace(/\r\n/g, '\n')
+        .replace(/task_\d+/g, 'task_id')
         .replace(/\nRejection date: [^\n]+/g, '')
         .replace(/Test ran for \d+s/g, 'Test ran for Xs');
 }
@@ -447,7 +479,10 @@ function extractTestTimings(profile) {
             fullTestId = data.test || data.name;
             testPath = fullTestId;
             status = data.status || 'UNKNOWN';
-            message = normalizeMessage(data.message ? data.message.replace(/\r\n/g, '\n') : null);
+            // The inline CRLF replace upstream had here (old/try.html:973) is
+            // gone: normalizeMessage does it for both call sites now, which is
+            // the point of moving it there.
+            message = normalizeMessage(data.message);
 
             if (status === 'FAIL' && data.color === 'green') {
                 status = 'EXPECTED-FAIL';

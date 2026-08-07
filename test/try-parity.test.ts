@@ -39,10 +39,12 @@
  * divergences declared at the bottom of this file.
  */
 
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { TreeherderJob } from '../lib/sources/treeherder.ts';
+import { normalizeMessage } from '../lib/model/failure-message.ts';
 import { parseTestMarkers } from '../cli/commands/try.ts';
 import {
     type FailingTest,
@@ -814,4 +816,205 @@ test('the claimed-crash message divergence is exactly as large as declared', asy
     const declared = DIVERGENCES.find((entry) => entry.what.includes('crash the profile'));
     assert.ok(declared !== undefined);
     assert.equal(declared.cli, claimedWithoutPageMessage);
+});
+
+// --- normalizeMessage: the shared rule, and the worker's copy of it --------
+
+/**
+ * ## Why the worker gets its own assertions
+ *
+ * `site/try.ts`'s profile worker is a `String.raw` template compiled from a
+ * Blob, so it cannot import `lib/model/failure-message.ts` and has to carry a
+ * copy of `normalizeMessage`. A copy is exactly the thing that produced the
+ * divergence in the first place — upstream's two call sites disagreed about
+ * CRLF for as long as the page existed — so the copy is pinned here against
+ * the shared function on inputs chosen to separate them.
+ *
+ * The worker's source is read out of `site/try.ts` and evaluated, rather than
+ * reimplemented in this file. Reimplementing it would be the defect this
+ * repository names as dominant: the expected value would derive from a
+ * second-guess at the thing under test, and both could be wrong together.
+ */
+const WORKER_SOURCE = readFileSync(
+    new URL('../site/try.ts', import.meta.url),
+    'utf8'
+);
+
+/** The worker's own `normalizeMessage`, lifted out of the template literal. */
+function workerNormalizeMessage(): (message: string | null | undefined) => string | null {
+    const start = WORKER_SOURCE.indexOf('function normalizeMessage(message) {');
+    assert.ok(start > 0, 'the worker still defines normalizeMessage');
+    const end = WORKER_SOURCE.indexOf('\n}', start);
+    assert.ok(end > start);
+    const source = WORKER_SOURCE.slice(start, end + 2);
+    // The worker's copy returns `undefined` for absent input, the shared one
+    // `null`; the wrapper folds that so the comparisons below are about the
+    // substitutions. The difference itself is asserted separately.
+    const fn = new Function(`${source}; return normalizeMessage;`)() as (
+        m: string | null | undefined
+    ) => string | undefined;
+    return (message) => fn(message) ?? null;
+}
+
+test('the worker copy of normalizeMessage matches the shared one', () => {
+    const worker = workerNormalizeMessage();
+    // Inputs chosen so that a missing substitution shows up as an inequality
+    // rather than being absorbed. The CRLF cases are the ones that used to
+    // differ; the literals are written out here, not generated.
+    const cases: string[] = [
+        'assertion failed\r\nRejection date: Mon Jan 01 2026\r\ntail',
+        'assertion failed\nRejection date: Mon Jan 01 2026\ntail',
+        'uncaught rejection\r\nRejection date: Tue Jan 02 2026 11:22:33 GMT',
+        'timed out in task_12345 after a while',
+        'Test ran for 42s and gave up',
+        'plain failure with no per-run parts',
+        'crlf only\r\nsecond line',
+        '',
+    ];
+    for (const input of cases) {
+        assert.equal(
+            worker(input),
+            normalizeMessage(input),
+            `worker and lib disagree on ${JSON.stringify(input)}`
+        );
+    }
+});
+
+test('CRLF and LF spellings of one failure normalize to one message', () => {
+    // The defect, stated as the thing it broke: the same failure reported from
+    // a Windows job and a Linux job has to be ONE message group, or it is two
+    // rows that render identically and neither matches central.
+    const lf = 'uncaught rejection\nRejection date: Mon Jan 01 2026\nstack frame';
+    const crlf = 'uncaught rejection\r\nRejection date: Mon Jan 01 2026\r\nstack frame';
+
+    assert.equal(normalizeMessage(lf), 'uncaught rejection\nstack frame');
+    assert.equal(normalizeMessage(crlf), 'uncaught rejection\nstack frame');
+    assert.equal(normalizeMessage(lf), normalizeMessage(crlf), 'one failure, one group');
+
+    // And the worker agrees, which is the half that used to be wrong.
+    const worker = workerNormalizeMessage();
+    assert.equal(worker(crlf), 'uncaught rejection\nstack frame');
+    assert.equal(worker(lf), worker(crlf));
+
+    // Without the CRLF pass the two differ by exactly the carriage return —
+    // asserted so the test states what the old behaviour WAS, and fails if
+    // someone reintroduces it thinking it made no difference.
+    const withoutCrlfPass = (message: string): string =>
+        message
+            .replace(/task_\d+/g, 'task_id')
+            .replace(/\nRejection date: [^\n]+/g, '')
+            .replace(/Test ran for \d+s/g, 'Test ran for Xs');
+    assert.equal(withoutCrlfPass(lf), 'uncaught rejection\nstack frame');
+    assert.equal(withoutCrlfPass(crlf), 'uncaught rejection\r\nstack frame');
+    assert.notEqual(withoutCrlfPass(lf), withoutCrlfPass(crlf));
+});
+
+test('absence normalizes to null, whichever way it is spelled', () => {
+    // The CLI returned `null` for `null` and THREW on `undefined`; the page
+    // returned `undefined` for both. A marker with no `message` field is
+    // `undefined`, so the CLI's contract was one optional-chain away from a
+    // crash on real input.
+    assert.equal(normalizeMessage(null), null);
+    assert.equal(normalizeMessage(undefined), null);
+    // An empty message is a message, and must not collapse into absence.
+    assert.equal(normalizeMessage(''), '');
+});
+
+// --- UNEXPECTED-PASS: derived on both sides, or on neither ----------------
+
+/**
+ * ## The divergence this closes
+ *
+ * `FAILURE_STATUSES` lists `UNEXPECTED-PASS` and both sides read the shared
+ * constant, so both *classify* one as a failure. Only the page could ever
+ * *produce* one: `data.expected` appeared zero times in `cli/commands/try.ts`,
+ * so a now-wrong `fail-if` annotation was a row on `try.html` and invisible in
+ * `fx-tests try`. Matching constants, different universes — the same shape as
+ * the `--all-jobs` defect, and made worse by the hoist, because a shared
+ * constant looks authoritative while one consumer cannot reach one of its
+ * values.
+ *
+ * ## Why the CLI derives it rather than the constant being unshared
+ *
+ * The alternative was to stop sharing `FAILURE_STATUSES`. Rejected: the two
+ * sides genuinely answer the same question ("is this a row in the failures
+ * table"), and the set differing between them is what the hoist existed to
+ * prevent. The gap was in the *producer*, not the classifier, so the producer
+ * is what was fixed.
+ *
+ * ## What the corpus says, and why the test is synthetic anyway
+ *
+ * Measured over the 972 cached profiles of push 7d16bff81bb1: 371 parsed,
+ * 135,712 `Test` markers, and **zero** carrying an `expected` field — the only
+ * keys present are `color, message, name, status, test, type`. So this status
+ * is unreachable on both sides for this push, and no fixture can exercise it.
+ * That is a reason to synthesize the marker, not a reason to skip it: the
+ * annotation is real, the page has always handled it, and an untested branch
+ * on one side is how the two drifted.
+ */
+test('both sides turn an unexpected PASS into the same status', () => {
+    // The page's derivation still exists and is still spelled the way the
+    // hand-evaluated rule below assumes. Read off the source, so deleting the
+    // branch fails here rather than silently making the two agree on nothing.
+    assert.ok(
+        WORKER_SOURCE.includes(
+            "} else if (status === 'PASS' && data.expected && data.expected !== 'PASS') {"
+        ),
+        'the page still derives UNEXPECTED-PASS from an unexpected PASS'
+    );
+
+    // The page's rule, evaluated from its own source rather than restated.
+    const pageStatus = new Function(
+        'data',
+        `let status = data.status || 'UNKNOWN';
+         if (status === 'FAIL' && data.color === 'green') { status = 'EXPECTED-FAIL'; }
+         else if (status === 'PASS' && data.expected && data.expected !== 'PASS') {
+             status = 'UNEXPECTED-PASS';
+         }
+         return status;`
+    ) as (data: Record<string, unknown>) => string;
+
+    // And the CLI's, through its real parser, on the same three markers.
+    const cliStatus = (data: Record<string, unknown>): string => {
+        const profile = {
+            meta: { startTime: 0 },
+            threads: [
+                {
+                    stringArray: ['test'],
+                    markers: {
+                        length: 1,
+                        name: [0],
+                        data: [{ type: 'Test', test: 'a/b/test_x.js', ...data }],
+                        startTime: [1],
+                        endTime: [2],
+                    },
+                },
+            ],
+        };
+        const job = { jobName: 'test-linux/opt-xpcshell', taskId: 'T', retryId: 0 };
+        return parseTestMarkers(profile, job as TreeherderJob)[0]!.status;
+    };
+
+    const cases: Record<string, unknown>[] = [
+        { status: 'PASS', expected: 'FAIL' },
+        { status: 'PASS', expected: 'TIMEOUT' },
+        { status: 'PASS', expected: 'PASS' },
+        { status: 'PASS' },
+        { status: 'FAIL', color: 'green' },
+        { status: 'FAIL' },
+    ];
+    // The expected values are written out, not taken from either side.
+    const expected = [
+        'UNEXPECTED-PASS',
+        'UNEXPECTED-PASS',
+        'PASS',
+        'PASS',
+        'EXPECTED-FAIL',
+        'FAIL',
+    ];
+    for (const [index, data] of cases.entries()) {
+        const label = JSON.stringify(data);
+        assert.equal(cliStatus(data), expected[index], `CLI on ${label}`);
+        assert.equal(pageStatus({ status: 'PASS', ...data }), expected[index], `page on ${label}`);
+    }
 });

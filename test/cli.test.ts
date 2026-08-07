@@ -3676,8 +3676,112 @@ test('try derives the parallel suffix from the parallel range', async () => {
         ...(result['permaFails'] as { statuses: string[]; parallelOnly: boolean }[]),
         ...(result['knownIntermittents'] as { statuses: string[]; parallelOnly: boolean }[]),
     ];
-    assert.deepEqual(all[0]!.statuses, ['FAIL-PARALLEL']);
+    // The VERDICT, with the phase suffix stripped — `site/try-view.ts:498` has
+    // always stripped here and the CLI did not, so a test that failed in both
+    // phases read `["FAIL-PARALLEL","FAIL-SEQUENTIAL"]` on one side and
+    // `["FAIL"]` on the other. Nothing is lost: the phase is what
+    // `parallelOnly` reports, and it is asserted on the next line off the same
+    // profile.
+    assert.deepEqual(all[0]!.statuses, ['FAIL']);
     assert.equal(all[0]!.parallelOnly, true);
+});
+
+/**
+ * The CRLF fold, end to end through the command.
+ *
+ * `lib/model/failure-message.ts` owns the rule and `test/try-parity.test.ts`
+ * pins the page's worker copy against it. This asserts the third thing neither
+ * covers: that the CLI's reported `messages` have been through it, so a
+ * Windows job's message and a Linux job's message of the same failure are one
+ * entry rather than two that print identically.
+ */
+test('try folds CRLF so one failure reported from two platforms is one message', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-windows/opt-xpcshell', 'TASKW', 'testfailed'),
+            job('test-linux/opt-xpcshell', 'TASKL', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            // The same failure, CRLF-terminated, with a per-run rejection date.
+            TASKW: profileWith([
+                {
+                    type: 'Test',
+                    test: TEST_PATH,
+                    status: 'FAIL',
+                    message: 'uncaught rejection\r\nRejection date: Mon Jan 01 2026\r\nstack frame',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+            // And LF-terminated, with a different date.
+            TASKL: profileWith([
+                {
+                    type: 'Test',
+                    test: TEST_PATH,
+                    status: 'FAIL',
+                    message: 'uncaught rejection\nRejection date: Tue Jan 02 2026\nstack frame',
+                    start: 1,
+                    end: 2,
+                },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { messages: string[] }[]),
+        ...(result['knownIntermittents'] as { messages: string[] }[]),
+        ...(result['newIntermittents'] as { messages: string[] }[]),
+    ];
+    assert.equal(all.length, 1);
+    // One message, not two. The date is gone and the line ending is LF.
+    assert.deepEqual(all[0]!.messages, ['uncaught rejection\nstack frame']);
+});
+
+/**
+ * The divergence stated as one push: a test that failed in BOTH phases.
+ *
+ * The CLI reported `["FAIL-PARALLEL","FAIL-SEQUENTIAL"]` and the page
+ * `["FAIL"]` off the same input. Two runs of one config, one execution in the
+ * parallel range and one outside it.
+ */
+test('a test failing in both phases reports one verdict, not two', async () => {
+    const streams = captureStreams();
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell', 'TASK1', 'testfailed'),
+            job('test-linux/opt-xpcshell', 'TASK2', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            // Inside the parallel range.
+            TASK1: profileWith([
+                { type: 'Text', text: 'parallel', start: 0, end: 100 },
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'x', start: 10, end: 20 },
+            ]),
+            // A parallel range exists but this execution falls outside it.
+            TASK2: profileWith([
+                { type: 'Text', text: 'parallel', start: 0, end: 5 },
+                { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'x', start: 10, end: 20 },
+            ]),
+        }),
+    });
+    const result = json(streams.stdout);
+    const all = [
+        ...(result['permaFails'] as { statuses: string[]; parallelOnly: boolean }[]),
+        ...(result['knownIntermittents'] as { statuses: string[]; parallelOnly: boolean }[]),
+        ...(result['newIntermittents'] as { statuses: string[]; parallelOnly: boolean }[]),
+    ];
+    assert.equal(all.length, 1);
+    assert.deepEqual(all[0]!.statuses, ['FAIL'], 'one verdict, whatever the phase');
+    assert.equal(all[0]!.parallelOnly, false, 'it also failed outside the parallel range');
 });
 
 test('try counts non-test job failures separately from test ones', async () => {

@@ -48,8 +48,10 @@ import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } f
 import { computeConfigStats } from '../../lib/query/config-stats.ts';
 import { computeTestStats } from '../../lib/query/test-stats.ts';
 import { stripChunkSuffix } from '../../lib/model/job-name.ts';
+import { normalizeMessage } from '../../lib/model/failure-message.ts';
 import {
     type RunOutcomes,
+    baseStatus,
     isFailureStatus,
     runKeyOf,
     runOutcomes,
@@ -204,6 +206,13 @@ export interface TryFailure {
      * message.
      */
     messageComparable: boolean;
+    /**
+     * The distinct **base** statuses seen, sorted — `FAIL`, not `FAIL-PARALLEL`.
+     *
+     * The phase suffix is stripped, as `site/try-view.ts` has always done: it
+     * is one verdict in two phases, and this field answers which verdict. The
+     * phase is reported by `parallelOnly`, which reads its own set.
+     */
     statuses: string[];
     /** Only failed under parallel execution. */
     parallelOnly: boolean;
@@ -609,6 +618,11 @@ interface ProfileThread {
             status?: string;
             message?: string;
             color?: string;
+            /**
+             * The manifest's annotated expectation, when the harness recorded
+             * one. Drives `UNEXPECTED-PASS`; see `parseTestMarkers`.
+             */
+            expected?: string;
             text?: string;
             signature?: string;
             minidump?: string;
@@ -794,6 +808,15 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         let status = data.status ?? 'UNKNOWN';
         if (status === 'FAIL' && data.color === 'green') {
             status = 'EXPECTED-FAIL';
+        } else if (status === 'PASS' && data.expected !== undefined && data.expected !== 'PASS') {
+            // A test the manifest annotated `fail-if` that passed anyway: the
+            // annotation is now wrong, and that is a thing the push changed.
+            // `FAILURE_STATUSES` has always listed `UNEXPECTED-PASS` and this
+            // command could not produce it — `data.expected` appeared nowhere
+            // in this file — so a shared constant named a value only one of
+            // its two consumers could ever emit. `site/try.ts:455` is the
+            // branch this mirrors, in the same position in the same chain.
+            status = 'UNEXPECTED-PASS';
         } else if (
             ['TIMEOUT', 'FAIL', 'CRASH', 'PASS'].includes(status) &&
             parallelRanges.length > 0
@@ -879,23 +902,11 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
 }
 
 /**
- * Normalizes a failure message so two runs of the same failure group together.
- *
- * From `old/try.html:865`. The substitutions strip the parts that differ per run —
- * a task number, a rejection timestamp, an elapsed time — which would
- * otherwise make every occurrence its own message and defeat the same-message
- * comparison against central entirely.
+ * Re-exported so this module's readers and its tests find it where it was.
+ * `lib/model/failure-message.ts` owns it and records why the CRLF pass this
+ * copy had, and `site/try.ts`'s did not, is the behaviour both now share.
  */
-export function normalizeMessage(message: string | null): string | null {
-    if (message === null) {
-        return null;
-    }
-    return message
-        .replace(/\r\n/g, '\n')
-        .replace(/task_\d+/g, 'task_id')
-        .replace(/\nRejection date: [^\n]+/g, '')
-        .replace(/Test ran for \d+s/g, 'Test ran for Xs');
-}
+export { normalizeMessage };
 
 /**
  * Groups per-run outcomes into one entry per test.
@@ -971,7 +982,14 @@ function aggregateFailures(
             entry.failedRunsByJobName.set(timing.jobName, runs);
         }
         runs.add(runKeyOf(timing));
-        entry.statuses.add(timing.status);
+        // The BASE status: `FAIL-PARALLEL` and `FAIL-SEQUENTIAL` are one
+        // verdict in two phases, and this set answers "what happened", not
+        // "in which phase". `site/try-view.ts` has always stripped here; the
+        // CLI did not, so a test that failed in both phases reported
+        // `["FAIL-PARALLEL","FAIL-SEQUENTIAL"]` where the page reported
+        // `["FAIL"]`. The phase is not lost — `entry.modes` below records it,
+        // and `parallelOnly` is derived from that, not from this.
+        entry.statuses.add(baseStatus(timing.status));
         if (timing.message !== null) {
             entry.messages.set(timing.message, (entry.messages.get(timing.message) ?? 0) + 1);
         }
@@ -1084,11 +1102,13 @@ function aggregateFailures(
             // push and not in the aggregates (`FORMATS.md`) — so for those the
             // status kind is the comparison and it is a valid one. For a plain
             // FAIL with no message there is nothing to compare at all.
+            // `has`, not a `startsWith` scan: the set holds base statuses now,
+            // so the prefix test that tolerated `TIMEOUT-PARALLEL` is no
+            // longer standing in for an exact comparison.
             messageComparable:
                 entry.messages.size > 0 ||
-                [...entry.statuses].some(
-                    (status) => status.startsWith('TIMEOUT') || status.startsWith('CRASH')
-                ),
+                entry.statuses.has('TIMEOUT') ||
+                entry.statuses.has('CRASH'),
             statuses: [...entry.statuses].sort(),
             parallelOnly: entry.modes.size === 1 && entry.modes.has('PARALLEL'),
             central: null,
@@ -1177,8 +1197,8 @@ async function attachCentralHistory(
                 // (`FORMATS.md`), so for those the status kind stands in for
                 // one — otherwise every timeout would count as a different
                 // failure from the timeout on central.
-                matchAnyTimeout: failure.statuses.some((status) => status.startsWith('TIMEOUT')),
-                matchAnyCrash: failure.statuses.some((status) => status.startsWith('CRASH')),
+                matchAnyTimeout: failure.statuses.includes('TIMEOUT'),
+                matchAnyCrash: failure.statuses.includes('CRASH'),
             });
             const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
             const sameMessageFailCount = configs.reduce(

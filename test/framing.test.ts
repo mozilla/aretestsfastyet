@@ -1734,6 +1734,72 @@ test('try counts an UNEXPECTED-PASS as a failure, as the page does', async () =>
     );
 });
 
+/**
+ * The other half: the CLI must *derive* `UNEXPECTED-PASS`, not merely classify
+ * one handed to it.
+ *
+ * The test above feeds `status: 'UNEXPECTED-PASS'` straight in, which proves
+ * the constant is read and nothing about where the value comes from. Real
+ * profiles never carry that status — the harness records `status: 'PASS'` with
+ * an `expected` field, and the page turns the pair into `UNEXPECTED-PASS`
+ * (`site/try.ts:455`). `data.expected` appeared nowhere in `cli/commands/try.ts`,
+ * so a now-wrong `fail-if` annotation was a row on the page and invisible here,
+ * while `FAILURE_STATUSES` — shared by both since the hoist — listed a value
+ * only one consumer could emit.
+ */
+test('try derives UNEXPECTED-PASS from a PASS the manifest did not expect', async () => {
+    const path = 'dom/base/test/unit/test_derived_unexpected_pass.js';
+    const marker = (data: Record<string, unknown>): string =>
+        JSON.stringify({
+            meta: { startTime: 0 },
+            threads: [
+                {
+                    stringArray: ['test'],
+                    markers: {
+                        length: 1,
+                        name: [0],
+                        data: [data],
+                        startTime: [1],
+                        endTime: [2],
+                    },
+                },
+            ],
+        });
+    const rowsFor = async (data: Record<string, unknown>): Promise<string[]> => {
+        const streams = captureStreams();
+        const code = await run({
+            argv: ['try', 'abcdef123456', '--json'],
+            streams,
+            source: fixtureSource(),
+            cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+            treeherder: fakeTreeherder([job('test-linux2404-64/opt-xpcshell', 'TASKA', 'testfailed')]),
+            fetchUrl: profileFetcher({ TASKA: marker(data) }),
+        });
+        assert.equal(code, 0, streams.stderr);
+        const result = json(streams.stdout);
+        return [
+            ...(result['permaFails'] as { path: string; statuses: string[] }[]),
+            ...(result['knownIntermittents'] as { path: string; statuses: string[] }[]),
+            ...(result['newIntermittents'] as { path: string; statuses: string[] }[]),
+        ].flatMap((entry) => entry.statuses);
+    };
+
+    // PASS where the manifest said FAIL: a row, and the status is derived.
+    assert.deepEqual(
+        await rowsFor({ type: 'Test', test: path, status: 'PASS', expected: 'FAIL' }),
+        ['UNEXPECTED-PASS']
+    );
+
+    // The two neighbours, so the branch is a decision rather than a rewrite of
+    // every PASS. A plain PASS is not a row at all...
+    assert.deepEqual(await rowsFor({ type: 'Test', test: path, status: 'PASS' }), []);
+    // ...and neither is a PASS the manifest expected.
+    assert.deepEqual(
+        await rowsFor({ type: 'Test', test: path, status: 'PASS', expected: 'PASS' }),
+        []
+    );
+});
+
 test('try groups into the three sections and covers the push, not a window', async () => {
     const result = await invokeTry(
         ['try', 'abcdef123456', '--json'],

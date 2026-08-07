@@ -6943,6 +6943,14 @@ function oneLine3(value) {
   return value.replace(/\s*\r?\n\s*/g, " \u23CE ").trim();
 }
 
+// lib/model/failure-message.ts
+function normalizeMessage(message) {
+  if (message === null || message === void 0) {
+    return null;
+  }
+  return message.replace(/\r\n/g, "\n").replace(/task_\d+/g, "task_id").replace(/\nRejection date: [^\n]+/g, "").replace(/Test ran for \d+s/g, "Test ran for Xs");
+}
+
 // lib/sources/treeherder.ts
 var TREEHERDER_ROOT2 = "https://treeherder.mozilla.org";
 var FAILED_JOB_RESULTS = /* @__PURE__ */ new Set([
@@ -7446,6 +7454,8 @@ function parseTestMarkers(profile, job) {
     let status = data.status ?? "UNKNOWN";
     if (status === "FAIL" && data.color === "green") {
       status = "EXPECTED-FAIL";
+    } else if (status === "PASS" && data.expected !== void 0 && data.expected !== "PASS") {
+      status = "UNEXPECTED-PASS";
     } else if (["TIMEOUT", "FAIL", "CRASH", "PASS"].includes(status) && parallelRanges.length > 0) {
       status += overlaps(start, end, parallelRanges) ? "-PARALLEL" : "-SEQUENTIAL";
     }
@@ -7496,12 +7506,6 @@ function parseTestMarkers(profile, job) {
   }
   return timings;
 }
-function normalizeMessage(message) {
-  if (message === null) {
-    return null;
-  }
-  return message.replace(/\r\n/g, "\n").replace(/task_\d+/g, "task_id").replace(/\nRejection date: [^\n]+/g, "").replace(/Test ran for \d+s/g, "Test ran for Xs");
-}
 function aggregateFailures(timings, runsPerJobName) {
   const passedOnRerunByRun = /* @__PURE__ */ new Map();
   for (const timing of timings) {
@@ -7541,7 +7545,7 @@ function aggregateFailures(timings, runsPerJobName) {
       entry.failedRunsByJobName.set(timing.jobName, runs);
     }
     runs.add(runKeyOf(timing));
-    entry.statuses.add(timing.status);
+    entry.statuses.add(baseStatus(timing.status));
     if (timing.message !== null) {
       entry.messages.set(timing.message, (entry.messages.get(timing.message) ?? 0) + 1);
     }
@@ -7615,9 +7619,10 @@ function aggregateFailures(timings, runsPerJobName) {
       // push and not in the aggregates (`FORMATS.md`) — so for those the
       // status kind is the comparison and it is a valid one. For a plain
       // FAIL with no message there is nothing to compare at all.
-      messageComparable: entry.messages.size > 0 || [...entry.statuses].some(
-        (status) => status.startsWith("TIMEOUT") || status.startsWith("CRASH")
-      ),
+      // `has`, not a `startsWith` scan: the set holds base statuses now,
+      // so the prefix test that tolerated `TIMEOUT-PARALLEL` is no
+      // longer standing in for an exact comparison.
+      messageComparable: entry.messages.size > 0 || entry.statuses.has("TIMEOUT") || entry.statuses.has("CRASH"),
       statuses: [...entry.statuses].sort(),
       parallelOnly: entry.modes.size === 1 && entry.modes.has("PARALLEL"),
       central: null
@@ -7667,8 +7672,8 @@ async function attachCentralHistory(context, failures) {
         // (`FORMATS.md`), so for those the status kind stands in for
         // one — otherwise every timeout would count as a different
         // failure from the timeout on central.
-        matchAnyTimeout: failure.statuses.some((status) => status.startsWith("TIMEOUT")),
-        matchAnyCrash: failure.statuses.some((status) => status.startsWith("CRASH"))
+        matchAnyTimeout: failure.statuses.includes("TIMEOUT"),
+        matchAnyCrash: failure.statuses.includes("CRASH")
       });
       const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
       const sameMessageFailCount = configs.reduce(
