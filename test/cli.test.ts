@@ -3221,10 +3221,15 @@ test('try reports how each run of a failing config ended, not just the fraction'
     ];
     assert.equal(all.length, 1);
     const failure = all[0]!;
-    // The fraction: the one run of the one config failed. Unchanged.
-    assert.equal(failure['failedRuns'], 1);
-    assert.equal(failure['totalRuns'], 1);
-    // And what `1/1` does not say.
+    // One failing execution out of TWO executions — the FAIL and the passing
+    // rerun — in one job run of one configuration. Counted out by hand from the
+    // two `Test` markers in the profile above: the ratio the command prints is
+    // `1/2`, and the older `1/1` was the job run counted twice over.
+    assert.equal(failure['failureCount'], 1, 'one failing execution');
+    assert.equal(failure['totalRuns'], 2, 'the FAIL and the passing rerun');
+    assert.equal(failure['totalJobs'], 1, 'both happened in one job run');
+    assert.equal(failure['failedRuns'], 1, 'which is the one job run that failed');
+    // And what the ratio still does not say.
     assert.deepEqual(failure['outcomes'], {
         failedTwice: 0,
         passedOnRetry: 1,
@@ -3299,11 +3304,17 @@ test('try separates a rerun that failed again from runs it never read', async ()
         // passes either — they were not looked at.
         notAnalyzed: 2,
     });
-    // Two failing executions in one job run: the fraction's numerator is runs,
-    // so it stays 1, while the ranking count is 2.
-    assert.equal(failure['failureCount'], 2);
-    assert.equal(failure['failedRuns'], 1);
-    assert.equal(failure['totalRuns'], 3, 'all three runs of the config it failed on');
+    // The three quantities, counted by hand off the profile and the job list.
+    // Two `Test` markers in the one run whose profile was read, and two more
+    // runs of that configuration nobody read: 2 + 2 = 4 executions.
+    assert.equal(failure['failureCount'], 2, 'both executions failed');
+    assert.equal(failure['totalRuns'], 4, '2 parsed executions + 2 unread runs');
+    assert.equal(failure['totalJobs'], 3, 'three job runs of the configuration');
+    assert.equal(failure['failedRuns'], 1, 'one of which contained a failure');
+    // This row is the one that makes the unseen term of `totalRuns` load-bearing
+    // (`old/try.html:1579`): drop it and the denominator becomes 2, which would
+    // claim the test ran twice on a configuration that ran three times.
+    assert.notEqual(failure['totalRuns'], 2);
 });
 
 /**
@@ -3537,8 +3548,14 @@ test('try omits the every-run line when it would name every config', async () =>
         }),
     });
     assert.match(streams.stdout, /PERMA-FAILS \(1\)/, 'the fixture must produce a perma-fail');
-    // The config is named once, on the "N failures on …" line.
-    assert.match(streams.stdout, /1 failure on test-linux\/opt-xpcshell \(1\/1 runs\)/);
+    // The config is named once, on the "N failures in …" line. One `Test`
+    // marker in one run of a configuration that ran once: 1 failure, 1
+    // execution, 1 job run — the case where all three quantities coincide, and
+    // the line still labels each rather than pairing them into a ratio.
+    assert.match(
+        streams.stdout,
+        /1 failure in 1 run, across 1 job run on test-linux\/opt-xpcshell/
+    );
     assert.doesNotMatch(
         streams.stdout,
         /Failed every run on/,

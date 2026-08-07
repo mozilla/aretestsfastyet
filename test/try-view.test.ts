@@ -658,6 +658,13 @@ test('a rerun that failed again is failedTwice, and the two branches are disting
     });
     assert.equal(row.instances.length, 2, 'both executions failed');
     assert.equal(row.totalJobs, 3);
+    // The three units, kept apart. `totalRuns` counts EXECUTIONS: the two
+    // parsed ones, plus one for each of the two runs of this config whose
+    // profile was never parsed (`old/try.html:1579`). Without that unseen term
+    // it would be 2, which would say the test ran twice on a config that ran
+    // three times.
+    assert.equal(row.totalRuns, 4, '2 parsed executions + 2 unread runs');
+    assert.match(runCountTooltip(row), /^Ran 4 times and failed 2 times, in 3 jobs across 1 /);
     assert.match(runCountTooltip(row), /• 1 job: failed, then failed again when retried/);
     assert.match(runCountTooltip(row), /• 2 jobs: not analyzed/);
 });

@@ -124,7 +124,10 @@ interface CliFailure {
     jobNames: string[];
     failureCount: number;
     failedRuns: number;
+    /** Executions — the page's `totalRuns`. */
     totalRuns: number;
+    /** Task runs of the failed configs — the page's `totalJobs`. */
+    totalJobs: number;
     everyRunFailed: boolean;
     statuses: string[];
     messages: string[];
@@ -355,6 +358,109 @@ test('the two sides produce the same row set, bar the manifest pseudo-tests', as
     assert.equal(cliPaths.size, 26);
 });
 
+/**
+ * The two run units, pinned as literals on named tests.
+ *
+ * `test/framing.test.ts` could not express this axis: its page column is prose
+ * read off `try.html`, and a prose field cannot disagree with itself — which is
+ * how `--all-jobs` survived a table that claimed to compare the two sides. The
+ * fix is to pin *quantities*, so the numbers below are computed here from
+ * `PUSH.timings` and `PUSH.jobs` by arithmetic written out in this file, and
+ * then asserted as literals against both implementations.
+ *
+ * The literals matter more than usual here because the defect was two wrong
+ * quantities that agreed with each other. `19 !== 13` is the whole finding: the
+ * page reported 19 executions, the CLI reported 13 job runs under the same
+ * field name, and the old version of the field-by-field test above compared
+ * `cli.totalRuns` to `page.totalJobs` and passed.
+ *
+ * 24 of the 28 rows in the pinned push have `totalRuns !== totalJobs`, so this
+ * is the common case and not a corner.
+ */
+test('both sides report the same executions and the same job runs, pinned', async () => {
+    // The two rules, written out here rather than imported, so this file does
+    // not ask the code under test what a failure or a run is.
+    const rawIsFailure = (status: string): boolean =>
+        ['FAIL', 'TIMEOUT', 'CRASH', 'ERROR', 'UNEXPECTED-PASS'].includes(
+            status.replace(/-(PARALLEL|SEQUENTIAL)$/, '')
+        );
+    const rawJobRuns = (jobName: string): number =>
+        PUSH.jobs.filter(
+            (job) =>
+                job.state === 'completed' &&
+                job.jobName === jobName &&
+                ['mochitest', 'xpcshell'].some((harness) => job.jobName.includes(harness))
+        ).length;
+
+    // Ground truth, computed WITHOUT either implementation: for each config the
+    // test failed on, every parsed execution in it, plus one per run of that
+    // config with no parsed run at all (old/try.html:1565-1580).
+    const groundTruth = (path: string): { totalRuns: number; totalJobs: number } => {
+        const failedConfigs = new Set(
+            PUSH.timings
+                .filter((timing) => timing.path === path && rawIsFailure(timing.status))
+                .map((timing) => timing.jobName)
+        );
+        let totalRuns = 0;
+        let totalJobs = 0;
+        for (const config of failedConfigs) {
+            const jobRuns = rawJobRuns(config);
+            totalJobs += jobRuns;
+            const inConfig = PUSH.timings.filter(
+                (timing) => timing.path === path && timing.jobName === config
+            );
+            const parsedRuns = new Set(inConfig.map((timing) => runKey(timing)));
+            totalRuns += inConfig.length + Math.max(0, jobRuns - parsedRuns.size);
+        }
+        return { totalRuns, totalJobs };
+    };
+
+    // Read off the fixture once and written down, so a change to the fixture
+    // fails here rather than quietly moving every expectation.
+    const PINNED: Record<string, { totalRuns: number; totalJobs: number }> = {
+        'browser/extensions/formautofill/test/browser/browser_ml_heuristics.js': {
+            totalRuns: 19,
+            totalJobs: 13,
+        },
+        'accessible/tests/browser/events/browser_test_panel.js': {
+            totalRuns: 18,
+            totalJobs: 12,
+        },
+        'browser/extensions/formautofill/test/browser/browser_autocomplete_footer.js': {
+            totalRuns: 20,
+            totalJobs: 13,
+        },
+    };
+
+    const result = await cli();
+    const cliByPath = new Map(cliRows(result).map((row) => [row.path, row]));
+    const pageByPath = new Map(PAGE.tests.map((row) => [row.path, row]));
+
+    for (const [path, expected] of Object.entries(PINNED)) {
+        // The literals are what the fixture says, checked by this file's own
+        // arithmetic before either side is consulted.
+        assert.deepEqual(groundTruth(path), expected, `${path}: the fixture no longer says this`);
+
+        const page = pageByPath.get(path);
+        const command = cliByPath.get(path);
+        assert.ok(page !== undefined, `${path} is missing from the page`);
+        assert.ok(command !== undefined, `${path} is missing from the CLI`);
+
+        assert.equal(page.totalRuns, expected.totalRuns, `${path}: page executions`);
+        assert.equal(command.totalRuns, expected.totalRuns, `${path}: CLI executions`);
+        assert.equal(page.totalJobs, expected.totalJobs, `${path}: page job runs`);
+        assert.equal(command.totalJobs, expected.totalJobs, `${path}: CLI job runs`);
+
+        // And the two units are genuinely different on these rows, so an
+        // implementation that conflated them could not satisfy both lines.
+        assert.notEqual(
+            expected.totalRuns,
+            expected.totalJobs,
+            `${path} no longer distinguishes the two units; pin a row that does`
+        );
+    }
+});
+
 test('every shared row agrees field by field', async () => {
     // The value-parity check `PARITY.md` §5 asks for: "asserted field by
     // field", over all 26 shared rows rather than a spot check.
@@ -383,10 +489,23 @@ test('every shared row agrees field by field', async () => {
                 `instances.length (old/try.html:1749) and the CLI's failureCount must be the same ` +
                 'quantity'
         );
+        // Two fields, two units, compared to their own counterparts. This
+        // assertion used to read `other.totalRuns === row.totalJobs`, which
+        // passed only because the CLI's `totalRuns` WAS job runs — the parity
+        // test encoded the defect it should have caught. `old/try.html:1557-1558`
+        // names the two apart and `1e8b867` made the displayed ratio the
+        // executions one, so comparing them crosswise is what let `18/18`
+        // survive a field-by-field check.
         assert.equal(
             other.totalRuns,
+            row.totalRuns,
+            `${row.path}: the EXECUTION count differs. Both count every parsed execution in ` +
+                'each run of the failed configs, plus one per unparsed run (old/try.html:1565-1580)'
+        );
+        assert.equal(
+            other.totalJobs,
             row.totalJobs,
-            `${row.path}: the run denominator differs. Both count only the configs the test ` +
+            `${row.path}: the JOB RUN count differs. Both count only the configs the test ` +
                 'FAILED on (old/try.html:1563), so a difference means one side folded in a clean config'
         );
         assert.deepEqual(

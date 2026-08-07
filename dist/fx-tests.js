@@ -7581,10 +7581,19 @@ function aggregateFailures(timings, runsPerJobName) {
   const failures = [];
   for (const entry of byTest.values()) {
     const jobNames = [...entry.failedRunsByJobName.keys()];
-    const totalRuns2 = jobNames.reduce(
+    const totalJobs = jobNames.reduce(
       (sum, jobName) => sum + (runsPerJobName.get(jobName) ?? 0),
       0
     );
+    const execsByJobName = execsByTest.get(entry.path);
+    let totalRuns2 = 0;
+    for (const jobName of jobNames) {
+      const runs = execsByJobName?.get(jobName);
+      for (const execs of runs?.values() ?? []) {
+        totalRuns2 += execs.length;
+      }
+      totalRuns2 += Math.max(0, (runsPerJobName.get(jobName) ?? 0) - (runs?.size ?? 0));
+    }
     const failedRuns = new Set(
       [...entry.failedRunsByJobName.values()].flatMap((runs) => [...runs])
     ).size;
@@ -7598,7 +7607,7 @@ function aggregateFailures(timings, runsPerJobName) {
     });
     const passedOnRerunConfigs = [...entry.passedOnRerunConfigs].sort();
     const outcomes = runOutcomes(
-      execsByTest.get(entry.path) ?? /* @__PURE__ */ new Map(),
+      execsByJobName ?? /* @__PURE__ */ new Map(),
       jobNames,
       runsPerJobName,
       (timing) => timing.isRerun
@@ -7609,6 +7618,7 @@ function aggregateFailures(timings, runsPerJobName) {
       failureCount: entry.failureCount,
       failedRuns,
       totalRuns: totalRuns2,
+      totalJobs,
       outcomes,
       everyRunFailed: permaFailingConfigs.length > 0,
       permaFailingConfigs: permaFailingConfigs.sort(),
@@ -7920,8 +7930,10 @@ function section(title, failures, description, limit) {
   for (const failure of shown) {
     lines.push("");
     lines.push(`  ${failure.path}`);
+    const runWord = failure.totalRuns === 1 ? "run" : "runs";
+    const jobWord = failure.totalJobs === 1 ? "job run" : "job runs";
     lines.push(
-      `    ${failure.failureCount} ${failure.failureCount === 1 ? "failure" : "failures"} on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`} (${failure.failedRuns}/${failure.totalRuns} runs)`
+      `    ${failure.failureCount} ${failure.failureCount === 1 ? "failure" : "failures"} in ${failure.totalRuns} ${runWord}, across ${failure.totalJobs} ${jobWord} on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`}`
     );
     const outcomes = outcomesLine(failure);
     if (outcomes !== null) {
@@ -8003,7 +8015,11 @@ function compactSection(title, failures, description, limit) {
     shown.map((failure) => [
       String(failure.failureCount),
       failure.path,
-      `${failure.failedRuns}/${failure.totalRuns}`,
+      // The page's ratio: failing EXECUTIONS over total executions
+      // (`old/try.html:1798`, `site/try.ts:1409`). The numerator was
+      // distinct job runs and the denominator job runs — two wrong
+      // quantities that agreed with each other.
+      `${failure.failureCount}/${failure.totalRuns}`,
       failure.central === null ? "n/a" : percent(failure.central.failRate),
       sameMessageCell(failure)
     ])
@@ -8077,7 +8093,7 @@ function renderMarkdown8(result, limit, permaOnly, otherJobs) {
           String(failure.failureCount),
           failure.path,
           String(failure.jobNames.length),
-          `${failure.failedRuns}/${failure.totalRuns}`,
+          `${failure.failureCount}/${failure.totalRuns}`,
           failure.central === null ? "n/a" : percent(failure.central.failRate),
           sameMessageCell(failure),
           preExistingCell(failure),

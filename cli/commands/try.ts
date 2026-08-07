@@ -151,17 +151,45 @@ export interface TryFailure {
      * and reordered the whole section.
      */
     failureCount: number;
-    /** Failing runs, and how many runs of those jobs there were. */
+    /**
+     * Distinct **job runs** in which it failed.
+     *
+     * Not the denominator's unit. Kept because the perma-fail rule is on this
+     * axis — "every run of this configuration failed" is a question about job
+     * runs, and `permaFailingConfigs` compares this against `runsPerJobName`.
+     */
     failedRuns: number;
+    /**
+     * **Executions** of the test across the configurations it failed on — the
+     * denominator of the ratio, and the page's `totalRuns`.
+     *
+     * Executions, not job runs, and the distinction is the whole point:
+     * `old/try.html:1557-1558` names the two fields apart, and `1e8b867` changed
+     * the displayed ratio to this one precisely to stop rows reading `21 out of
+     * 21`. The harness reruns a test that fails, so a FAIL followed by a PASS in
+     * the rerun phase is **two** executions inside one job run, and a row where
+     * every job run failed still reads `21/40` rather than `21/21`.
+     *
+     * Includes one execution for each run of those configurations whose profile
+     * was not parsed (`old/try.html:1579`). That term is live rather than
+     * theoretical: on push 7d16bff81bb1, 99 of the completed test jobs are
+     * `exception` or `retry`, so they count as runs and yield no timings.
+     */
     totalRuns: number;
     /**
-     * How each of those `totalRuns` runs ended. Sums to `totalRuns`.
+     * Task runs of the configurations it failed on — the page's `totalJobs`.
      *
-     * The fraction on its own is not readable, and on this push it was actively
-     * misleading: `browser_878452_drag_to_panel.js` failed in all 18 runs of
-     * the 12 configurations it failed on, so it printed `18/18` — and the
-     * harness's in-job rerun turned all 18 of those runs green.
-     * `passedOnRetry === 18` is the fact `18/18` hides.
+     * The quantity the CLI used to print as `totalRuns`. Carried as its own
+     * field rather than dropped, because it is what the outcome buckets sum to
+     * and what "failed on 3 of 4 runs of this config" is asked against.
+     */
+    totalJobs: number;
+    /**
+     * How each of those `totalJobs` **job runs** ended. Sums to `totalJobs`.
+     *
+     * A different unit from `totalRuns` above, which is why both are reported.
+     * `old/try.html:1546` says it: "These buckets count job runs, so they sum to
+     * totalJobs, not to the failure count."
      */
     outcomes: RunOutcomes;
     /**
@@ -1031,10 +1059,25 @@ function aggregateFailures(
     const failures: TryFailure[] = [];
     for (const entry of byTest.values()) {
         const jobNames = [...entry.failedRunsByJobName.keys()];
-        const totalRuns = jobNames.reduce(
+        // Task runs of those configurations — the page's `totalJobs`, and what
+        // this command used to print as `totalRuns`.
+        const totalJobs = jobNames.reduce(
             (sum, jobName) => sum + (runsPerJobName.get(jobName) ?? 0),
             0
         );
+        // EXECUTIONS of the test — the page's `totalRuns` and the denominator
+        // of the displayed ratio. `old/try.html:1565-1580`: every parsed
+        // execution in each run of those configurations, plus one for each run
+        // whose profile was never parsed.
+        const execsByJobName = execsByTest.get(entry.path);
+        let totalRuns = 0;
+        for (const jobName of jobNames) {
+            const runs = execsByJobName?.get(jobName);
+            for (const execs of runs?.values() ?? []) {
+                totalRuns += execs.length;
+            }
+            totalRuns += Math.max(0, (runsPerJobName.get(jobName) ?? 0) - (runs?.size ?? 0));
+        }
         const failedRuns = new Set(
             [...entry.failedRunsByJobName.values()].flatMap((runs) => [...runs])
         ).size;
@@ -1074,11 +1117,11 @@ function aggregateFailures(
 
         const passedOnRerunConfigs = [...entry.passedOnRerunConfigs].sort();
 
-        // How each of those `totalRuns` runs actually ended. `failedRuns` alone
-        // cannot say: a run the harness reran to green is counted in it, so
-        // `18/18` is reachable by a test that passed on every single rerun.
+        // How each of those `totalJobs` JOB RUNS ended — a different unit from
+        // `totalRuns` above, and the reason both are reported. The buckets are
+        // what turn "every job run failed" into a readable statement.
         const outcomes = runOutcomes<TestTiming>(
-            execsByTest.get(entry.path) ?? new Map(),
+            execsByJobName ?? new Map(),
             jobNames,
             runsPerJobName,
             (timing) => timing.isRerun
@@ -1090,6 +1133,7 @@ function aggregateFailures(
             failureCount: entry.failureCount,
             failedRuns,
             totalRuns,
+            totalJobs,
             outcomes,
             everyRunFailed: permaFailingConfigs.length > 0,
             permaFailingConfigs: permaFailingConfigs.sort(),
@@ -1378,16 +1422,15 @@ function preExistingLine(failure: TryFailure): string | null {
  * Returns `null` when the rerun never passed anywhere.
  */
 /**
- * How the runs behind the `n/m` fraction ended, when that is not one thing.
+ * How each JOB RUN of a failing test ended, when that is not one thing.
  *
- * The fraction counts a run the harness reran to green as a failed run, so
- * `18/18` is reachable by a test that passed on every rerun — it is what
- * `browser_878452_drag_to_panel.js` printed on push 7d16bff81bb1. The buckets
- * sum to `m` and are what makes the fraction readable.
+ * These sum to `totalJobs`, not to `totalRuns` and not to `failureCount` —
+ * three different units, which is why the line above names all three rather
+ * than pairing two of them into a ratio. `old/try.html:1546` states the same
+ * constraint for the page's tooltip.
  *
- * Suppressed when a single bucket holds every run: "18/18 runs" followed by
- * "18 failed, not retried" says the same thing twice, and the line is worth
- * printing only where the fraction is ambiguous.
+ * Suppressed when a single bucket holds every job run, where it would only
+ * restate the line above it.
  */
 function outcomesLine(failure: TryFailure): string | null {
     const { failedTwice, passedOnRetry, failedOnce, passed, notAnalyzed } = failure.outcomes;
@@ -1608,10 +1651,16 @@ function section(
     for (const failure of shown) {
         lines.push('');
         lines.push(`  ${failure.path}`);
+        // Three quantities, each labelled, which is what `1e8b867` did to the
+        // page's tooltip for the same reason: failing executions, total
+        // executions, and the job runs those happened in. Printing any two of
+        // them as one `n/m` is what made `18/18` read as "never passed".
+        const runWord = failure.totalRuns === 1 ? 'run' : 'runs';
+        const jobWord = failure.totalJobs === 1 ? 'job run' : 'job runs';
         lines.push(
             `    ${failure.failureCount} ${failure.failureCount === 1 ? 'failure' : 'failures'}` +
-                ` on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`}` +
-                ` (${failure.failedRuns}/${failure.totalRuns} runs)`
+                ` in ${failure.totalRuns} ${runWord}, across ${failure.totalJobs} ${jobWord}` +
+                ` on ${failure.jobNames.length === 1 ? failure.jobNames[0] : `${failure.jobNames.length} configs`}`
         );
         const outcomes = outcomesLine(failure);
         if (outcomes !== null) {
@@ -1720,7 +1769,11 @@ function compactSection(
         shown.map((failure) => [
             String(failure.failureCount),
             failure.path,
-            `${failure.failedRuns}/${failure.totalRuns}`,
+            // The page's ratio: failing EXECUTIONS over total executions
+            // (`old/try.html:1798`, `site/try.ts:1409`). The numerator was
+            // distinct job runs and the denominator job runs — two wrong
+            // quantities that agreed with each other.
+            `${failure.failureCount}/${failure.totalRuns}`,
             failure.central === null ? 'n/a' : percent(failure.central.failRate),
             sameMessageCell(failure),
         ])
@@ -1813,7 +1866,7 @@ function renderMarkdown(
                     String(failure.failureCount),
                     failure.path,
                     String(failure.jobNames.length),
-                    `${failure.failedRuns}/${failure.totalRuns}`,
+                    `${failure.failureCount}/${failure.totalRuns}`,
                     failure.central === null ? 'n/a' : percent(failure.central.failRate),
                     sameMessageCell(failure),
                     preExistingCell(failure),
