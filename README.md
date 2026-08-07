@@ -12,7 +12,7 @@ data generator are pushed to Try.
 ## Install the `fx-tests` CLI
 
 ```sh
-npm install -g github:fqueze/aretestsfastyet
+npm install -g github:mozilla/aretestsfastyet
 fx-tests guide          # start here: what the data can and cannot tell you
 ```
 
