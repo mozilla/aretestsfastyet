@@ -26,6 +26,7 @@ import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
 import { CRASH_OPTIONS, runCrash } from './commands/crash.ts';
 import { runDates } from './commands/dates.ts';
 import { ERRORS_OPTIONS, runErrors } from './commands/errors.ts';
+import { FLAKY_OPTIONS, runFlaky } from './commands/flaky.ts';
 import { GUIDE_OPTIONS, runGuide } from './commands/guide.ts';
 import {
     CRASHES_OPTIONS,
@@ -101,6 +102,13 @@ const COMMANDS: CommandSpec[] = [
         usage: 'fx-tests skips [options]',
         options: SKIPS_OPTIONS,
         run: runSkips,
+    },
+    {
+        name: 'flaky',
+        summary: 'Which folder to book a flakiness burndown on, ranked.',
+        usage: 'fx-tests flaky [options]',
+        options: FLAKY_OPTIONS,
+        run: runFlaky,
     },
     {
         name: 'errors',

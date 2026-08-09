@@ -147,6 +147,12 @@ export const COMMAND_FACTS: readonly CommandFact[] = [
         defaultLimit: 20,
     },
     {
+        name: 'flaky',
+        reads: '{harness}-issues.json',
+        answers: 'Which folder should I book a flakiness-burndown session on?',
+        defaultLimit: 20,
+    },
+    {
         name: 'errors',
         reads: '{harness}-{date}-errors.json',
         answers: 'What is loudest in the logs? Is this message ambient or specific to one test?',

@@ -908,6 +908,96 @@ run totals and want opposite responses. That is the same convention
 `issues --group-by component` uses, and the M likewise counts the group's whole
 population rather than only the rows shown.
 
+### `fx-tests flaky` — which folder to book a burndown session on
+
+`flaky.html` leads with two charts, because "is the tree getting better?" is a
+shape and a page can draw one. This command leads with the other question a
+terminal actually gets asked — *where do I spend the afternoon* — and answers it
+with a ranked list of directories carrying enough on each row to weigh the work
+against the payoff.
+
+```
+$ fx-tests flaky
+
+xpcshell flaky tests by folder — 21 days (2026-07-15 (Wed) … 2026-08-04 (Tue)), 4,838 tests in the file
+  Flaky means a test failed, timed out or crashed at least once; skipped means it was disabled
+  somewhere, run-if excluded.
+  Counts are the MEAN PER DAY over the last 7 days (2026-07-29 … 2026-08-04), each day
+  classified on its own runs — so 187.0 means "on a typical day, 187 of this folder's tests were
+  flaky". A whole number of weeks, because weekend push volume is 2.6x lower and one day's
+  ranking is partly the calendar. --day <date> ranks one day, --all-days the whole 21.
+  The flaky and skip columns OVERLAP — a test failing on Linux and disabled on Windows is both —
+  so they do not sum to tests, and share is flaky/tests, not flaky/(flaky+skip).
+  Noise filter: a test failing 1 time or fewer across the 21 days is read as passing — 186 tests
+  neutralised (--noise 0 disables).
+
+  Folder                                       flaky ▼  share  skip  tests  in tree
+  toolkit/components/extensions/test/xpcshell      187  48.1%   131    389    192.6
+  netwerk/test/unit                              126.7  21.8%    77    582
+  dom/indexedDB/test/unit                         38.4  29.3%    91    131
+  toolkit/mozapps/extensions/test/xpcshell        32.1  21.0%    20    153     37.7
+  toolkit/components/telemetry/tests/unit         26.7  62.1%    20     43
+  … 245 more (--limit 0 for all)
+
+  Next, for the folder you pick:
+    fx-tests issues --path toolkit/components/extensions/test/xpcshell     # which tests, and what they fail with
+    fx-tests skips --path toolkit/components/extensions/test/xpcshell      # what is already disabled there
+```
+
+Options: `--path <prefix>`, `--group-by <list|folder|days>` (default `list`),
+`--sort <flaky|share|skips|tests|name>` (default `flaky`), `--noise <n>`
+(default 1), `--average-days <n>` (default 7), `--all-days`, `--day <date>`,
+`--limit` (default 20).
+
+**Flaky means fail *or* timeout *or* crash.** All three, because timeouts are the
+largest of the three in this data — counting only `FAIL` would miss more than
+half of it and produce a table that still looks plausible.
+
+**The columns are chosen for the decision, not for completeness.** `flaky` is the
+work (how many test files are flaky *directly in this folder*), `share` is what
+separates a rotten folder from two bad files in a healthy one, `skip` is ground
+already given up — often the same underlying problem and the cheapest win — and
+`tests` gives `share` a visible denominator. `in tree` appears only on rows whose
+subtree holds more than the folder itself, which is 4 rows in 250 on real data;
+it is what stops the roll-up needing to be a second table.
+
+#### The window is a 7-day average, and neither obvious choice would do
+
+This is the one decision in the command worth reading before trusting a number,
+because both of the readings the page offers are wrong for a *ranking*, in
+opposite directions.
+
+**Not the whole 21 days.** Over the window, 84% of xpcshell tests have failed at
+least once — a test runs on dozens of configurations dozens of times a day, so
+that is a fact about the denominator rather than about Firefox. Ranked that way
+the top folders read 75%, 92%, 99% and nothing discriminates.
+
+**Not one day either.** Weekend push volume is 2.6× lower, so a single day's
+counts are partly a fact about the weekday: measured on the same window,
+`netwerk/test/unit` reads 137 flaky on a Tuesday and **76 on a Sunday**, and
+`dom/indexedDB/test/unit` moves from 4th to 3rd at more than double the count
+between Sunday and Monday. Run on a Monday, a one-day ranking is ranking
+Sunday's fraction of the runs.
+
+So the default averages **per-day verdicts over 7 days** — a whole number of
+weeks, so the weekday mix cancels, and still a per-day denominator rather than
+the window's inflated one. It is the same 7 days `flaky.html`'s headline tiles
+average, so the tiles and this ranking agree by construction. The counts are
+therefore means and are printed with a decimal where they are fractional
+(`126.7`), because "on a typical day, 127 of this folder's tests were flaky" is
+what the number means and a bare integer would overstate it.
+
+`--day <date>` and `--all-days` reach the two other readings explicitly, and the
+header always names which of the three produced the table. That last part is not
+decoration: the same folder reads 48%, 53% and 75% under the three, and
+`flaky.html` shipped exactly this bug — tiles showing one day directly above a
+table showing 21, with nothing saying so.
+
+`--group-by folder` is the subtree roll-up (the page's tree, flattened — a
+terminal cannot be drilled) and `--group-by days` is the trend as a table of
+numbers, one row per day with a centred 7-day mean. There is no ASCII chart: see
+Non-goals.
+
 ### `fx-tests guide` — orientation for an agent
 
 Prints the whole tool's model of the data in one go: what each command answers,
@@ -1009,5 +1099,6 @@ code.
 | `errors` | `{harness}-{date}-errors.json` | What is loudest in the logs? Is this message ambient or specific? |
 | `summary` | `-stats.json` | The 7-day topline. |
 | `skips` | `-issues.json` | What is disabled, and where? |
+| `flaky` | `-issues.json` | Which folder should I book a flakiness-burndown session on? |
 | `guide` | — | How do I use this, and what can the data not tell me? |
 | `dates` / `cache` | `index.json` / local | Is the data fresh? What is cached? |

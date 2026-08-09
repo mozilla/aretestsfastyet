@@ -355,6 +355,88 @@ const FRAMING: FramingEntry[] = [
         ],
     },
     {
+        command: 'flaky',
+        pageFile: 'flaky.html',
+        pageCitations: {
+            rowUnit:
+                'site/flaky-view.ts:folderRows — the tree\'s rows are folders, with test files ' +
+                'as child rows when one is expanded',
+            grouping:
+                'site/flaky-view.ts:DEFAULT_TABLE_MODE = \'tree\'; the flat list is the other ' +
+                'mode (site/flaky.ts:1211, "Every folder ranked by its own flaky tests — ' +
+                'burndown candidates")',
+            sortKey: 'site/flaky-view.ts:INITIAL_SORT = { field: \'flaky\', ascending: false }',
+            window:
+                'site/flaky.ts:1375 (tableAllDays = series.days.length > 1) — the table ' +
+                'classifies over the whole window; site/flaky-view.ts:AVERAGE_WINDOW = 7 is what ' +
+                'the headline tiles average',
+            filters:
+                'site/flaky.ts:146 (minWindowFailures = DEFAULT_MIN_WINDOW_FAILURES); ' +
+                'lib/query/flakiness.ts documents run-if exclusion and fail/timeout/crash',
+        },
+        page: {
+            rowUnit: 'directory',
+            grouping: 'tree — subtree roll-up, drillable',
+            sortKey: 'flaky',
+            sortDirection: 'desc',
+            window: '21-day aggregate, classified over the whole window',
+            filters:
+                'fail, timeout or crash counts as flaky; run-if skips excluded; noise filter at 1',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
+            harness: 'xpcshell',
+        },
+        cli: {
+            rowUnit: 'directory',
+            grouping: 'flat list — the folder’s own tests, excluding subfolders',
+            sortKey: 'selfFlaky',
+            sortDirection: 'desc',
+            window: '7-day average of per-day classifications',
+            filters:
+                'fail, timeout or crash counts as flaky; run-if skips excluded; noise filter at 1',
+            universe: 'one `xpcshell-issues.json`; no control fetches a second file',
+            harness: 'xpcshell',
+        },
+        divergences: [
+            {
+                field: 'grouping',
+                reason:
+                    'The page opens on the tree because a tree is drillable in a browser and a ' +
+                    'terminal cannot be drilled. The command exists to answer "which folder do I ' +
+                    'book a session on", and the roll-up cannot: `toolkit` tops the tree by ' +
+                    'virtue of containing everything. So the CLI leads with the page\'s other ' +
+                    'mode — the flat list, which site/flaky.ts:1211 itself labels "burndown ' +
+                    'candidates" — and `--group-by folder` is the roll-up. Both views exist on ' +
+                    'both sides; they differ only in which is the default.',
+            },
+            {
+                field: 'sortKey',
+                reason:
+                    'Same direction and the same idea of "worst", over a different population, ' +
+                    'and the difference follows the grouping divergence rather than being a ' +
+                    'separate choice: the tree ranks on the subtree total (`flaky`) and the flat ' +
+                    'list on the folder\'s own tests (`selfFlaky`), which is what ' +
+                    'site/flaky-view.ts:listRows does for the same view. Measured on the pinned ' +
+                    'window, `toolkit` has 1,420 flaky in its subtree and none of its own.',
+            },
+            {
+                field: 'window',
+                reason:
+                    'Both of the page\'s two readings are wrong for a ranking, in opposite ' +
+                    'directions, so the CLI takes a third that the page also uses. The page\'s ' +
+                    'TABLE classifies over all 21 days, where "failed at least once" is ~84% of ' +
+                    'tests tree-wide and the top folders read 75-99% — a fact about the ' +
+                    'denominator that ranks nothing (lib/query/flakiness.ts, and the page says ' +
+                    'so itself). One day, the obvious fix, is partly a fact about the weekday: ' +
+                    'weekend push volume is 2.6x lower, and on the pinned window ' +
+                    '`netwerk/test/unit` reads 137 flaky on a Tuesday and 76 on a Sunday. So the ' +
+                    'CLI averages per-day verdicts over 7 days — a whole number of weeks, and ' +
+                    'the same 7 the page\'s headline tiles average ' +
+                    '(site/flaky-view.ts:AVERAGE_WINDOW), so the tiles and this ranking agree. ' +
+                    '`--all-days` and `--day` reach the page\'s two readings explicitly.',
+            },
+        ],
+    },
+    {
         command: 'errors',
         pageFile: 'errors.html',
         pageCitations: {
@@ -1227,6 +1309,188 @@ test('skips says which run-if population it reported, rather than "excluded 0"',
     assert.equal(json(stdout)['runIfIsUpstreamFiltered'], true);
     const text = await invoke(['skips', '--limit', '1']);
     assert.match(text.stdout, /generator already dropped run-if skips/);
+});
+
+// =========================================================================
+// fx-tests flaky
+// =========================================================================
+
+test('flaky leads with the burndown list, not the page’s tree', async () => {
+    // The declared `grouping` divergence, asserted on real output. Both halves
+    // matter: the label, and that the rows really are single folders rather than
+    // subtree roll-ups — a container with no tests of its own must not be one.
+    const { code, stdout } = await invoke(['flaky', '--json', '--limit', '0']);
+    assert.equal(code, 0);
+    const result = json(stdout);
+    assertFraming('flaky', 'grouping', result['groupBy'], 'list');
+
+    const rows = result['rows'] as { path: string; flaky: number; testCount: number }[];
+    assert.ok(rows.length > 0, 'the fixture must produce folder rows');
+    for (const row of rows) {
+        assert.ok(
+            row.testCount > 0,
+            `${row.path} has no test files of its own, so it is not a burndown candidate — the ` +
+                'flat list must exclude pure containers (lib/query/flakiness.ts:folderList)'
+        );
+    }
+
+    // The page side, read off the migrated source rather than restated: the page
+    // has to actually default to the tree, or this divergence is imaginary.
+    const { DEFAULT_TABLE_MODE } = await import('../site/flaky-view.ts');
+    assert.equal(
+        DEFAULT_TABLE_MODE,
+        'tree',
+        'flaky.html opens on the tree; if it ever opens on the list, the grouping divergence has ' +
+            'converged and its FRAMING entry must go'
+    );
+});
+
+test('flaky ranks on the folder’s own flaky count, descending', async () => {
+    const { stdout } = await invoke(['flaky', '--json', '--limit', '0']);
+    const rows = json(stdout)['rows'] as { path: string; flaky: number; subtreeFlaky: number }[];
+    assert.ok(rows.length > 1, 'need at least two rows to observe an order');
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(
+            rows[i - 1]!.flaky >= rows[i]!.flaky,
+            `flaky must rank on the folder's own count descending: row ${i - 1} has ` +
+                `${rows[i - 1]!.flaky} and row ${i} has ${rows[i]!.flaky}`
+        );
+    }
+    // And the ranked column is `selfFlaky`, not the roll-up — which is the
+    // declared `sortKey` divergence. The 10-test fixture is flat, so every one of
+    // its folders is its own subtree and the two counters coincide there; the
+    // distinction is instead asserted where it is visible, against the roll-up
+    // view of the same data. `toolkit` has flaky tests in its subtree and none of
+    // its own, so it ranks in one view and is absent from the other.
+    const roll = json((await invoke(['flaky', '--json', '--limit', '0', '--group-by', 'folder'])).stdout);
+    const rollRows = roll['rows'] as { path: string; flaky: number }[];
+    const container = rollRows.find((row) => row.path === 'toolkit');
+    assert.ok(
+        container !== undefined && container.flaky > 0,
+        '--group-by folder must rank a container by its subtree'
+    );
+    assert.ok(
+        !rows.some((row) => row.path === 'toolkit'),
+        'the default list must NOT rank that container, because it has no tests of its own — ' +
+            'that difference is the whole reason the two views exist'
+    );
+});
+
+test('flaky averages 7 days rather than taking the page’s window or one day', async () => {
+    // The `window` divergence, and the one most likely to be "simplified" back
+    // into a bug. Three things are checked because all three are load-bearing.
+    const { stdout } = await invoke(['flaky', '--json', '--limit', '1']);
+    const header = json(stdout)['header'] as {
+        scope: string;
+        averageDays: number;
+        scopeDates: string[];
+        dayCount: number;
+    };
+    assertFraming('flaky', 'window', header.scope, 'average');
+    assert.equal(header.averageDays, 7, 'a whole number of weeks, so the weekday mix cancels');
+    assert.equal(header.scopeDates.length, 7);
+    assert.equal(header.dayCount, 21, 'the file is still the 21-day aggregate');
+
+    // The page's own tiles average the same 7 days, which is what makes the two
+    // sides agree despite the table differing. Read off the page, not restated.
+    const { AVERAGE_WINDOW } = await import('../site/flaky-view.ts');
+    assert.equal(
+        AVERAGE_WINDOW,
+        7,
+        "the CLI's ranking window is the page's headline-tile window; if the page changes it, " +
+            'the two stop agreeing and the FRAMING reason needs re-reading'
+    );
+
+    // ...and the page's TABLE really does classify over the whole window, which
+    // is the other half of the divergence.
+    const source = await readFile(new URL('../site/flaky.ts', import.meta.url), 'utf8');
+    assert.match(
+        source,
+        /tableAllDays = series\.days\.length > 1/,
+        'the page table classifies over the whole window — the reading the CLI deliberately does ' +
+            'not use as its default, because ~84% of tests have failed at least once in 21 days'
+    );
+});
+
+test('flaky counts fail, timeout and crash — not just fail', async () => {
+    // Timeouts are the largest of the three in this data, so a command counting
+    // only FAIL would miss more than half and still look plausible. Asserted
+    // through behaviour: a fixture test whose only failures are TIMEOUTs must
+    // still be counted somewhere in the totals.
+    // `--noise 0` so this measures the classification alone: the default filter
+    // reads a test that failed once in 21 days as passing, and on this fixture
+    // that is exactly one test — so a comparison against the filtered total
+    // would be off by one for a reason that has nothing to do with the statuses.
+    const { stdout } = await invoke(['flaky', '--json', '--limit', '0', '--all-days', '--noise', '0']);
+    const result = json(stdout);
+    const totals = result['totals'] as { flaky: number };
+
+    const raw = JSON.parse(
+        await readFile(new URL('./fixtures/xpcshell-issues.json', import.meta.url), 'utf8')
+    ) as {
+        tables: { statuses: string[] };
+        testRuns: (Record<string, unknown> | null)[];
+    };
+    // Counted from the raw fixture, independently: how many tests have at least
+    // one non-EXPECTED-FAIL failing status group of any of the three kinds.
+    const failing = new Set<number>();
+    const timeoutOnly = new Set<number>();
+    for (let testId = 0; testId < raw.testRuns.length; testId++) {
+        const perTest = raw.testRuns[testId];
+        if (perTest === null || perTest === undefined) {
+            continue;
+        }
+        let sawTimeoutOrCrash = false;
+        let sawPlainFail = false;
+        for (const [statusId, group] of Object.entries(perTest)) {
+            if (group === null || group === undefined) {
+                continue;
+            }
+            const status = raw.tables.statuses[Number(statusId)]!;
+            if (status.startsWith('EXPECTED-FAIL')) {
+                continue;
+            }
+            if (/^(TIMEOUT|CRASH)/.test(status)) {
+                sawTimeoutOrCrash = true;
+            } else if (status.startsWith('FAIL')) {
+                sawPlainFail = true;
+            }
+        }
+        if (sawTimeoutOrCrash || sawPlainFail) {
+            failing.add(testId);
+        }
+        if (sawTimeoutOrCrash && !sawPlainFail) {
+            timeoutOnly.add(testId);
+        }
+    }
+    assert.ok(
+        timeoutOnly.size > 0,
+        'the fixture must contain a test whose only failures are timeouts or crashes, or this ' +
+            'cannot distinguish "counts all three" from "counts fail only"'
+    );
+    // The whole-window flaky total is the count of tests that failed on any day,
+    // which is exactly the set counted above.
+    assert.equal(
+        totals.flaky,
+        failing.size,
+        'the --all-days flaky total must be every test with a fail, timeout or crash — counting ' +
+            `only FAIL would give ${failing.size - timeoutOnly.size}`
+    );
+});
+
+test('flaky says which of the three windows it used, in text', async () => {
+    // The page shipped tiles showing one day above a table showing 21 with
+    // nothing saying so. Every scope has to name itself, or the numbers are
+    // unreadable — 48%, 53% and 75% of the same folder.
+    const average = await invoke(['flaky', '--limit', '2']);
+    assert.match(average.stdout, /MEAN PER DAY over the last 7 days/);
+
+    const all = await invoke(['flaky', '--limit', '2', '--all-days']);
+    assert.match(all.stdout, /--all-days/);
+    assert.match(all.stdout, /84%/);
+
+    const one = await invoke(['flaky', '--limit', '2', '--day', '2026-08-03']);
+    assert.match(one.stdout, /--day: classified on 2026-08-03/);
 });
 
 // =========================================================================

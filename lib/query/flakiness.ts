@@ -801,6 +801,218 @@ function sortTree(node: FolderNode): void {
 }
 
 /**
+ * The days a folder view should average over by default.
+ *
+ * Seven, and it has to be a whole number of weeks. Push volume drops several-fold
+ * at weekends — `FORMATS.md` measures 2.6× on both harnesses, which is why
+ * `dateWithWeekday` exists and why `lib/query/summary.ts` compares 7 days against
+ * the prior 7 — so a folder ranking taken from *one* day reports the calendar as
+ * flakiness. Measured on the pinned xpcshell window, the same folders across four
+ * consecutive days:
+ *
+ * | folder | Sat 08-01 | Sun 08-02 | Mon 08-03 | Tue 08-04 |
+ * | --- | --- | --- | --- | --- |
+ * | `netwerk/test/unit` | 127 | **76** | 121 | **137** |
+ * | `dom/indexedDB/test/unit` | 24 | 24 | **53** | 35 |
+ *
+ * `netwerk/test/unit` swings 1.8× between Sunday and Tuesday without anything
+ * having changed in the tree, and `dom/indexedDB` is 4th on Sunday and 3rd on
+ * Monday at more than double the count. A reader who ran the ranking on a Monday
+ * would be looking at Sunday's fraction of the runs.
+ *
+ * Averaging the *per-day classifications* rather than widening the window to 7
+ * days is the other half of the choice, and the distinction is the one at the top
+ * of this file: "failed at least once in 7 days" inflates toward the same 84% the
+ * 21-day reading gives, while the mean of seven daily verdicts stays a daily
+ * verdict. `flaky.html`'s headline tiles average the same 7 days for the same
+ * reason (`site/flaky-view.ts`'s `AVERAGE_WINDOW`), so the two agree by
+ * construction rather than by coincidence.
+ */
+export const DEFAULT_AVERAGE_DAYS = 7;
+
+/**
+ * The folder tree, averaged over the last `days` days of per-day classifications.
+ *
+ * The weekday-robust version of `flakinessByFolder`, and the one a ranking wants:
+ * see `DEFAULT_AVERAGE_DAYS` for the measurement that makes a single day the wrong
+ * default. Every count on every node is a **mean per day**, so it is fractional —
+ * `187.0` flaky tests is "on a typical day in this window, 187 of this folder's
+ * tests were flaky", which is exactly what a burndown estimate wants and is not a
+ * number of test files. Callers that need integers round at the edge, once.
+ *
+ * Built on one `walk` and one tree, accumulating **integer test-days** and dividing
+ * the finished tree by the window once — so the file is decoded once however wide
+ * the window, and the subtree sums that make the tree drillable still hold.
+ *
+ * The division order is not a detail. Adding `1 / windowDays` per day instead loses
+ * exactness — seven additions of 1/7 do not make 1 — and the error is not
+ * cosmetic: a folder whose 131 tests are skipped every day read
+ * `130.99999999999997`, and every `subtreeFlaky === selfFlaky` test came out false
+ * by ~3.6e-14, which turned a column that should appear on 4 rows of 250 into one
+ * that appeared on all of them.
+ *
+ * `windowDays` reports how many days were actually averaged, which is fewer than
+ * asked for on a short file. A caller must print that rather than the request, for
+ * the same reason `FlakinessSeries.minWindowFailures` reports the applied
+ * threshold: a view claiming a 7-day average of a 3-day file is a wrong label on
+ * right numbers.
+ */
+export interface AveragedFolders {
+    root: FolderNode;
+    /** How many days were averaged. */
+    windowDays: number;
+    /** The dates averaged, oldest first. */
+    dates: string[];
+}
+
+export function flakinessByFolderAveraged(
+    file: DecodedTimingFile,
+    options: FlakinessOptions & { averageDays?: number | undefined } = {}
+): AveragedFolders {
+    const ids = selectTests(file, options.pathPrefix);
+    const { rows, neutralised, days, startDate } = walk(file, options, ids);
+    const wanted = options.averageDays ?? DEFAULT_AVERAGE_DAYS;
+    // Clamped rather than refused: asking for a 7-day average of a 3-day file is
+    // a reasonable thing to type, and the answer is the 3 days that exist with
+    // the label saying so.
+    const windowDays = Math.max(1, Math.min(wanted, days));
+    const from = days - windowDays;
+
+    const root: FolderNode = {
+        path: '',
+        name: '',
+        flaky: 0,
+        stable: 0,
+        skipped: 0,
+        flakyAndSkipped: 0,
+        total: 0,
+        testCount: 0,
+        children: [],
+        tests: [],
+    };
+    const byPath = new Map<string, FolderNode>([['', root]]);
+
+    for (let index = 0; index < ids.length; index++) {
+        const row = rows[index]!;
+        const noise = neutralised[index]!;
+        const identity = file.testAt(ids[index]!);
+
+        // Integer test-days, credited as integers and divided at the end. See
+        // the note on division order above.
+        const counts: FlakyCounts = { flaky: 0, stable: 0, skipped: 0 };
+        let skippedShare = 0;
+        let bothShare = 0;
+        let ranAtAll = false;
+        for (let day = from; day < days; day++) {
+            const state = stateOn(row, day, noise);
+            if (state === null) {
+                continue;
+            }
+            ranAtAll = true;
+            counts[state]++;
+            // The overlapping reading, per day, exactly as the single-day view
+            // takes it: "was it skipped somewhere that day", independently of
+            // whether it also failed. See `OverlappingCounts`.
+            if (wasSkipped(row, days, day)) {
+                skippedShare++;
+                if (state === 'flaky') {
+                    bothShare++;
+                }
+            }
+        }
+        if (!ranAtAll) {
+            continue;
+        }
+
+        const { directory } = identity;
+        const segments = directory === '' ? [] : directory.split('/');
+        let path = '';
+        let node = root;
+        const credit = (target: FolderNode): void => {
+            target.flaky += counts.flaky;
+            target.stable += counts.stable;
+            target.total += counts.flaky + counts.stable + counts.skipped;
+            // `skipped` is the overlapping column, so it is the per-day "skipped
+            // somewhere" count and not `counts.skipped`, which is the exclusive
+            // verdict's bucket. The two differ by exactly the overlap.
+            target.skipped += skippedShare;
+            target.flakyAndSkipped += bothShare;
+            // A whole file, once, however many days it ran — the one counter that
+            // is **not** divided below, and the number a reader checks against
+            // Searchfox.
+            target.testCount++;
+        };
+        credit(node);
+        for (const segment of segments) {
+            path = path === '' ? segment : `${path}/${segment}`;
+            let child = byPath.get(path);
+            if (child === undefined) {
+                child = {
+                    path,
+                    name: segment,
+                    flaky: 0,
+                    stable: 0,
+                    skipped: 0,
+                    flakyAndSkipped: 0,
+                    total: 0,
+                    testCount: 0,
+                    children: [],
+                    tests: [],
+                };
+                byPath.set(path, child);
+                node.children.push(child);
+            }
+            credit(child);
+            node = child;
+        }
+
+        node.tests.push({
+            fullPath: identity.fullPath,
+            name: identity.fullPath.slice(identity.fullPath.lastIndexOf('/') + 1),
+            flaky: counts.flaky,
+            stable: counts.stable,
+            skipped: skippedShare,
+            flakyAndSkipped: bothShare,
+            total: counts.flaky + counts.stable + counts.skipped,
+            windowFailures: row.windowFailures,
+            neutralised: noise,
+        });
+    }
+
+    // One division per counter, on the finished tree. `testCount` is deliberately
+    // untouched: it is a number of test files and does not become fractional
+    // because the states above it did.
+    const average = (node: FolderNode): void => {
+        node.flaky /= windowDays;
+        node.stable /= windowDays;
+        node.skipped /= windowDays;
+        node.flakyAndSkipped /= windowDays;
+        node.total /= windowDays;
+        for (const leaf of node.tests) {
+            leaf.flaky /= windowDays;
+            leaf.stable /= windowDays;
+            leaf.skipped /= windowDays;
+            leaf.flakyAndSkipped /= windowDays;
+            leaf.total /= windowDays;
+        }
+        for (const child of node.children) {
+            average(child);
+        }
+    };
+    average(root);
+
+    // After the division, so the ranking is on the same numbers a caller reads.
+    // The order is unaffected by dividing every value by the same constant, but
+    // sorting first would leave the tree sorted on a quantity it no longer holds.
+    sortTree(root);
+    const dates: string[] = [];
+    for (let day = from; day < days; day++) {
+        dates.push(dateOfDay(startDate, day));
+    }
+    return { root, windowDays, dates };
+}
+
+/**
  * The per-day flaky/stable/skipped counts for one subtree.
  *
  * What the inline chart under an expanded folder draws, and the reason the page
@@ -882,6 +1094,23 @@ export interface FolderListRow extends FlakyCounts {
     selfFlaky: number;
     /** Classified tests directly in this folder. */
     selfTotal: number;
+    /**
+     * Tests **directly** in this folder that were skipped somewhere.
+     *
+     * The `self` counterpart of `skipped`, and the two are not interchangeable
+     * even though they usually agree: `skipped` is the subtree's, so on a folder
+     * with children it counts tests that are not in the `selfFlaky` numerator.
+     * Measured on the pinned xpcshell window, 4 of 250 folders have subfolders
+     * at all — but a view whose flaky column is `selfFlaky` and whose skip column
+     * is the subtree's is wrong on those 4 and gives a reader no way to tell,
+     * which is the kind of "usually right" column this file exists to avoid.
+     *
+     * Overlaps `selfFlaky` for the same reason `skipped` overlaps `flaky` — see
+     * `OverlappingCounts` — with `selfFlakyAndSkipped` naming the overlap.
+     */
+    selfSkipped: number;
+    /** Tests directly in this folder that were flaky **and** skipped. */
+    selfFlakyAndSkipped: number;
     /** Test files directly in this folder. */
     selfTestCount: number;
     /** Depth in the tree, 0 for a top-level directory. */
@@ -900,9 +1129,13 @@ export function folderList(root: FolderNode): FolderListRow[] {
         if (node.path !== '' && node.tests.length > 0) {
             let selfFlaky = 0;
             let selfTotal = 0;
+            let selfSkipped = 0;
+            let selfFlakyAndSkipped = 0;
             for (const leaf of node.tests) {
                 selfFlaky += leaf.flaky;
                 selfTotal += leaf.total;
+                selfSkipped += leaf.skipped;
+                selfFlakyAndSkipped += leaf.flakyAndSkipped;
             }
             rows.push({
                 path: node.path,
@@ -914,6 +1147,8 @@ export function folderList(root: FolderNode): FolderListRow[] {
                 testCount: node.testCount,
                 selfFlaky,
                 selfTotal,
+                selfSkipped,
+                selfFlakyAndSkipped,
                 selfTestCount: node.tests.length,
                 depth,
             });

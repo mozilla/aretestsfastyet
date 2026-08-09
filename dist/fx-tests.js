@@ -3072,6 +3072,1034 @@ function renderMarkdown4(result) {
   return joinLines(lines);
 }
 
+// lib/model/status.ts
+function splitExecutionMode(status) {
+  if (status.endsWith("-PARALLEL")) {
+    return { base: status.slice(0, -"-PARALLEL".length), mode: "parallel" };
+  }
+  if (status.endsWith("-SEQUENTIAL")) {
+    return { base: status.slice(0, -"-SEQUENTIAL".length), mode: "sequential" };
+  }
+  return { base: status, mode: null };
+}
+function classifyStatus(status) {
+  const { base, mode } = splitExecutionMode(status);
+  return { kind: classifyBase(base), mode, raw: status };
+}
+function classifyBase(base) {
+  switch (base) {
+    case "PASS":
+    // The harness's own name for a passing xpcshell test. Not observed in
+    // the published files, but `common-test-data.js:155` treats it as a
+    // pass and the cost of agreeing is a line.
+    case "OK":
+      return "pass";
+    case "FAIL":
+      return "fail";
+    case "TIMEOUT":
+      return "timeout";
+    case "CRASH":
+      return "crash";
+    case "SKIP":
+      return "skip";
+    case "EXPECTED-FAIL":
+      return "expected-fail";
+    case "UNKNOWN":
+      return "unknown";
+    default:
+      return "unknown";
+  }
+}
+
+// lib/model/skips.ts
+function skipReason(message) {
+  if (message === null || message === void 0) {
+    return "unrecorded";
+  }
+  if (message.startsWith("run-if")) {
+    return "run-if";
+  }
+  if (message.startsWith("skip-if")) {
+    return "skip-if";
+  }
+  return "other";
+}
+function displaySkipMessage(message) {
+  return message.replace(/^skip-if:\s*/, "");
+}
+
+// lib/query/flakiness.ts
+var DEFAULT_MIN_WINDOW_FAILURES = 1;
+var MIN_FILTERABLE_DAYS = 2;
+function testDays(file, testId, days) {
+  const row = {
+    fail: new Int32Array(days),
+    pass: new Int32Array(days),
+    skip: new Int32Array(days),
+    windowFailures: 0
+  };
+  for (const entry of file.runsOfTest(testId)) {
+    const day = entry.day ?? 0;
+    if (day < 0 || day >= days) {
+      continue;
+    }
+    switch (classifyStatus(entry.status).kind) {
+      case "pass":
+      case "expected-fail":
+        row.pass[day] = row.pass[day] + entry.count;
+        break;
+      case "fail":
+      case "timeout":
+      case "crash":
+        row.fail[day] = row.fail[day] + entry.count;
+        row.windowFailures += entry.count;
+        break;
+      case "skip":
+        if (skipReason(entry.message) !== "run-if") {
+          row.skip[day] = row.skip[day] + entry.count;
+        }
+        break;
+      case "unknown":
+        break;
+    }
+  }
+  return row;
+}
+function isNoise(row, minWindowFailures) {
+  return row.windowFailures > 0 && row.windowFailures <= minWindowFailures;
+}
+function stateOn(row, day, neutralised) {
+  const failed = neutralised ? 0 : row.fail[day];
+  const passed = row.pass[day] + (neutralised ? row.fail[day] : 0);
+  const skipped = row.skip[day];
+  if (failed > 0) {
+    return "flaky";
+  }
+  if (skipped > 0) {
+    return "skipped";
+  }
+  return passed > 0 ? "stable" : null;
+}
+function wasSkipped(row, days, day) {
+  if (day !== null) {
+    return (row.skip[day] ?? 0) > 0;
+  }
+  for (let index = 0; index < days; index++) {
+    if (row.skip[index] > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+function windowState(row, days, neutralised) {
+  let sawSkip = false;
+  let sawPass = false;
+  for (let day = 0; day < days; day++) {
+    switch (stateOn(row, day, neutralised)) {
+      case "flaky":
+        return "flaky";
+      case "skipped":
+        sawSkip = true;
+        break;
+      case "stable":
+        sawPass = true;
+        break;
+      case null:
+        break;
+    }
+  }
+  if (sawSkip) {
+    return "skipped";
+  }
+  return sawPass ? "stable" : null;
+}
+function dateOfDay(startDate, day) {
+  const start = Date.parse(`${startDate}T00:00:00Z`);
+  if (Number.isNaN(start)) {
+    return startDate;
+  }
+  return new Date(start + day * 864e5).toISOString().slice(0, 10);
+}
+function startDateOf(file) {
+  const days = file.days ?? 1;
+  const end = Date.parse(`${file.endDate}T00:00:00Z`);
+  if (Number.isNaN(end)) {
+    return file.endDate;
+  }
+  return new Date(end - (days - 1) * 864e5).toISOString().slice(0, 10);
+}
+function walk(file, options, testIds) {
+  const days = file.days ?? 1;
+  const minWindowFailures = days < MIN_FILTERABLE_DAYS ? 0 : options.minWindowFailures ?? DEFAULT_MIN_WINDOW_FAILURES;
+  const rows2 = [];
+  const neutralised = [];
+  let neutralisedCount = 0;
+  const ids = testIds ?? Array.from({ length: file.testCount }, (_unused, index) => index);
+  for (const testId of ids) {
+    const row = testDays(file, testId, days);
+    const noise = isNoise(row, minWindowFailures);
+    rows2.push(row);
+    neutralised.push(noise);
+    if (noise) {
+      neutralisedCount++;
+    }
+  }
+  return {
+    rows: rows2,
+    neutralised,
+    neutralisedCount,
+    days,
+    startDate: startDateOf(file),
+    minWindowFailures
+  };
+}
+function selectTests(file, pathPrefix) {
+  const ids = [];
+  for (let testId = 0; testId < file.testCount; testId++) {
+    if (pathPrefix !== void 0 && !file.testAt(testId).fullPath.startsWith(pathPrefix)) {
+      continue;
+    }
+    ids.push(testId);
+  }
+  return ids;
+}
+function flakinessOverTime(file, options = {}) {
+  const ids = selectTests(file, options.pathPrefix);
+  const { rows: rows2, neutralised, neutralisedCount, days, startDate, minWindowFailures } = walk(
+    file,
+    options,
+    ids
+  );
+  const series = [];
+  for (let day = 0; day < days; day++) {
+    const counts = { flaky: 0, stable: 0, skipped: 0 };
+    for (let index = 0; index < rows2.length; index++) {
+      const state = stateOn(rows2[index], day, neutralised[index]);
+      if (state !== null) {
+        counts[state]++;
+      }
+    }
+    series.push({
+      day,
+      date: dateOfDay(startDate, day),
+      ...counts,
+      total: counts.flaky + counts.stable + counts.skipped
+    });
+  }
+  return { days: series, neutralisedTests: neutralisedCount, minWindowFailures };
+}
+var THIN_DAY_SHARE = 0.1;
+function thinDays(days) {
+  const populations = days.map((day) => day.total).filter((total) => total > 0);
+  if (populations.length === 0) {
+    return days.map(() => false);
+  }
+  populations.sort((a, b) => a - b);
+  const median = populations[Math.floor(populations.length / 2)];
+  const floor = median * THIN_DAY_SHARE;
+  return days.map((day) => day.total > 0 && day.total < floor);
+}
+function runningAverage(days, window = 7) {
+  const half = Math.floor(window / 2);
+  const thin = thinDays(days);
+  return days.map((_unused, index) => {
+    if (thin[index] === true) {
+      return null;
+    }
+    let flaky = 0;
+    let total = 0;
+    for (let offset = -half; offset <= half; offset++) {
+      const day = days[index + offset];
+      if (day === void 0 || day.total === 0 || thin[index + offset] === true) {
+        continue;
+      }
+      flaky += day.flaky;
+      total += day.total;
+    }
+    return total === 0 ? null : flaky / total * 100;
+  });
+}
+function flakinessByFolder(file, options = {}) {
+  const ids = selectTests(file, options.pathPrefix);
+  const { rows: rows2, neutralised, days } = walk(file, options, ids);
+  const lastDay = days - 1;
+  const day = options.day ?? lastDay;
+  const root = {
+    path: "",
+    name: "",
+    flaky: 0,
+    stable: 0,
+    skipped: 0,
+    flakyAndSkipped: 0,
+    total: 0,
+    testCount: 0,
+    children: [],
+    tests: []
+  };
+  const byPath = /* @__PURE__ */ new Map([["", root]]);
+  for (let index = 0; index < ids.length; index++) {
+    const row = rows2[index];
+    const noise = neutralised[index];
+    const state = options.allDays === true ? windowState(row, days, noise) : stateOn(row, day, noise);
+    if (state === null) {
+      continue;
+    }
+    const skipped = wasSkipped(row, days, options.allDays === true ? null : day);
+    const both = state === "flaky" && skipped;
+    const identity = file.testAt(ids[index]);
+    const { directory } = identity;
+    const segments = directory === "" ? [] : directory.split("/");
+    let path = "";
+    let node = root;
+    const credit = (target) => {
+      target[state]++;
+      target.total++;
+      if (both) {
+        target.skipped++;
+        target.flakyAndSkipped++;
+      }
+      target.testCount++;
+    };
+    credit(node);
+    for (const segment of segments) {
+      path = path === "" ? segment : `${path}/${segment}`;
+      let child = byPath.get(path);
+      if (child === void 0) {
+        child = {
+          path,
+          name: segment,
+          flaky: 0,
+          stable: 0,
+          skipped: 0,
+          flakyAndSkipped: 0,
+          total: 0,
+          testCount: 0,
+          children: [],
+          tests: []
+        };
+        byPath.set(path, child);
+        node.children.push(child);
+      }
+      credit(child);
+      node = child;
+    }
+    const leaf = {
+      fullPath: identity.fullPath,
+      name: identity.fullPath.slice(identity.fullPath.lastIndexOf("/") + 1),
+      flaky: 0,
+      stable: 0,
+      skipped: 0,
+      flakyAndSkipped: both ? 1 : 0,
+      // One test, so `total` is 1 — the exclusive verdict's bucket.
+      total: 1,
+      windowFailures: row.windowFailures,
+      neutralised: noise
+    };
+    leaf[state]++;
+    if (both) {
+      leaf.skipped++;
+    }
+    node.tests.push(leaf);
+  }
+  sortTree(root);
+  return root;
+}
+function sortTree(node) {
+  node.children.sort((a, b) => b.flaky - a.flaky || a.path.localeCompare(b.path));
+  node.tests.sort((a, b) => b.flaky - a.flaky || a.fullPath.localeCompare(b.fullPath));
+  for (const child of node.children) {
+    sortTree(child);
+  }
+}
+var DEFAULT_AVERAGE_DAYS = 7;
+function flakinessByFolderAveraged(file, options = {}) {
+  const ids = selectTests(file, options.pathPrefix);
+  const { rows: rows2, neutralised, days, startDate } = walk(file, options, ids);
+  const wanted = options.averageDays ?? DEFAULT_AVERAGE_DAYS;
+  const windowDays = Math.max(1, Math.min(wanted, days));
+  const from = days - windowDays;
+  const root = {
+    path: "",
+    name: "",
+    flaky: 0,
+    stable: 0,
+    skipped: 0,
+    flakyAndSkipped: 0,
+    total: 0,
+    testCount: 0,
+    children: [],
+    tests: []
+  };
+  const byPath = /* @__PURE__ */ new Map([["", root]]);
+  for (let index = 0; index < ids.length; index++) {
+    const row = rows2[index];
+    const noise = neutralised[index];
+    const identity = file.testAt(ids[index]);
+    const counts = { flaky: 0, stable: 0, skipped: 0 };
+    let skippedShare = 0;
+    let bothShare = 0;
+    let ranAtAll = false;
+    for (let day = from; day < days; day++) {
+      const state = stateOn(row, day, noise);
+      if (state === null) {
+        continue;
+      }
+      ranAtAll = true;
+      counts[state]++;
+      if (wasSkipped(row, days, day)) {
+        skippedShare++;
+        if (state === "flaky") {
+          bothShare++;
+        }
+      }
+    }
+    if (!ranAtAll) {
+      continue;
+    }
+    const { directory } = identity;
+    const segments = directory === "" ? [] : directory.split("/");
+    let path = "";
+    let node = root;
+    const credit = (target) => {
+      target.flaky += counts.flaky;
+      target.stable += counts.stable;
+      target.total += counts.flaky + counts.stable + counts.skipped;
+      target.skipped += skippedShare;
+      target.flakyAndSkipped += bothShare;
+      target.testCount++;
+    };
+    credit(node);
+    for (const segment of segments) {
+      path = path === "" ? segment : `${path}/${segment}`;
+      let child = byPath.get(path);
+      if (child === void 0) {
+        child = {
+          path,
+          name: segment,
+          flaky: 0,
+          stable: 0,
+          skipped: 0,
+          flakyAndSkipped: 0,
+          total: 0,
+          testCount: 0,
+          children: [],
+          tests: []
+        };
+        byPath.set(path, child);
+        node.children.push(child);
+      }
+      credit(child);
+      node = child;
+    }
+    node.tests.push({
+      fullPath: identity.fullPath,
+      name: identity.fullPath.slice(identity.fullPath.lastIndexOf("/") + 1),
+      flaky: counts.flaky,
+      stable: counts.stable,
+      skipped: skippedShare,
+      flakyAndSkipped: bothShare,
+      total: counts.flaky + counts.stable + counts.skipped,
+      windowFailures: row.windowFailures,
+      neutralised: noise
+    });
+  }
+  const average = (node) => {
+    node.flaky /= windowDays;
+    node.stable /= windowDays;
+    node.skipped /= windowDays;
+    node.flakyAndSkipped /= windowDays;
+    node.total /= windowDays;
+    for (const leaf of node.tests) {
+      leaf.flaky /= windowDays;
+      leaf.stable /= windowDays;
+      leaf.skipped /= windowDays;
+      leaf.flakyAndSkipped /= windowDays;
+      leaf.total /= windowDays;
+    }
+    for (const child of node.children) {
+      average(child);
+    }
+  };
+  average(root);
+  sortTree(root);
+  const dates = [];
+  for (let day = from; day < days; day++) {
+    dates.push(dateOfDay(startDate, day));
+  }
+  return { root, windowDays, dates };
+}
+function folderList(root) {
+  const rows2 = [];
+  const visit = (node, depth) => {
+    if (node.path !== "" && node.tests.length > 0) {
+      let selfFlaky = 0;
+      let selfTotal = 0;
+      let selfSkipped = 0;
+      let selfFlakyAndSkipped = 0;
+      for (const leaf of node.tests) {
+        selfFlaky += leaf.flaky;
+        selfTotal += leaf.total;
+        selfSkipped += leaf.skipped;
+        selfFlakyAndSkipped += leaf.flakyAndSkipped;
+      }
+      rows2.push({
+        path: node.path,
+        name: node.name,
+        flaky: node.flaky,
+        stable: node.stable,
+        skipped: node.skipped,
+        total: node.total,
+        testCount: node.testCount,
+        selfFlaky,
+        selfTotal,
+        selfSkipped,
+        selfFlakyAndSkipped,
+        selfTestCount: node.tests.length,
+        depth
+      });
+    }
+    for (const child of node.children) {
+      visit(child, depth + 1);
+    }
+  };
+  visit(root, -1);
+  rows2.sort((a, b) => b.selfFlaky - a.selfFlaky || a.path.localeCompare(b.path));
+  return rows2;
+}
+
+// cli/commands/flaky.ts
+var FLAKY_OPTIONS = {
+  path: {
+    type: "string",
+    placeholder: "<prefix>",
+    describe: "Only tests under this directory prefix."
+  },
+  "group-by": {
+    type: "string",
+    placeholder: "<list|folder|days>",
+    describe: "How to group. Default list \u2014 folders ranked by their own flaky tests, the burndown view. `folder` rolls subtrees up; `days` is the trend."
+  },
+  sort: {
+    type: "string",
+    placeholder: "<flaky|share|skips|tests|name>",
+    describe: "How to rank. Default flaky."
+  },
+  noise: {
+    type: "number",
+    placeholder: "<n>",
+    describe: "Read a test failing this often or less over the window as passing. Default 1; 0 disables. Ignored on a single-day file."
+  },
+  "average-days": {
+    type: "number",
+    placeholder: "<n>",
+    describe: "Average the per-day counts over this many days. Default 7; a multiple of 7 is strongly preferred, since weekend push volume is 2.6x lower."
+  },
+  "all-days": {
+    type: "boolean",
+    describe: "Classify over the whole window instead: flaky if flaky on ANY day. A much looser bar \u2014 tree-wide that is ~84% of tests. See the header it prints."
+  }
+};
+var DEFAULT_LIMIT2 = 20;
+var TREND_WINDOW = 7;
+async function loadFlakyQuery(context, args) {
+  const harness = context.globals.harness ?? "xpcshell";
+  progress(context, `Reading ${harness}-issues.json\u2026`);
+  const { file } = await loadIssues(context, harness);
+  if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
+    throw usageError(
+      `--config cannot be applied to ${harness}-issues.json: the file records no job names, so every configuration filter over it matches nothing`,
+      "Flakiness here is a per-test verdict over all configurations. `fx-tests test <path> --config` reads a bucket file and can break one test down by configuration."
+    );
+  }
+  const days = file.days ?? 1;
+  const allDays = boolOption(args, "all-days");
+  const requested = numberOption(args, "noise") ?? DEFAULT_MIN_WINDOW_FAILURES;
+  const averageDays = numberOption(args, "average-days") ?? DEFAULT_AVERAGE_DAYS;
+  if (averageDays < 1) {
+    throw usageError(`--average-days expects at least 1, got ${averageDays}`);
+  }
+  if (allDays && args.options.has("average-days")) {
+    throw usageError(
+      "--all-days and --average-days are mutually exclusive",
+      "--all-days is a single verdict over the whole window; --average-days averages per-day verdicts. Pick one."
+    );
+  }
+  let day;
+  if (context.globals.day !== void 0) {
+    if (allDays) {
+      throw usageError(
+        "--day and --all-days are mutually exclusive",
+        "--day classifies on one day; --all-days classifies over the whole window. They are the two ends of the choice, not a range."
+      );
+    }
+    if (args.options.has("average-days")) {
+      throw usageError(
+        "--day and --average-days are mutually exclusive",
+        "--day is one day; --average-days averages several. Drop --day to average."
+      );
+    }
+    const wanted = resolveDayKeyword(context.globals.day, file.endDate);
+    const index = dayIndexOfDate(file.endDate, days, wanted);
+    if (index === null) {
+      throw usageError(
+        `no data for ${wanted}: ${harness}-issues.json covers ${dateOfIndex(file.endDate, days, 0)} \u2026 ${file.endDate} (${days} days)`,
+        "Run `fx-tests dates` to see what is published."
+      );
+    }
+    day = index;
+  }
+  const series = flakinessOverTime(file, {
+    minWindowFailures: requested,
+    ...args.options.has("path") ? { pathPrefix: stringOption(args, "path") } : {}
+  });
+  const scope = allDays ? "all-days" : day !== void 0 ? "day" : "average";
+  const effectiveAverage = Math.max(1, Math.min(averageDays, days));
+  const scopeDates = scope === "day" ? [dateOfIndex(file.endDate, days, day)] : scope === "all-days" ? [dateOfIndex(file.endDate, days, 0), file.endDate] : Array.from(
+    { length: effectiveAverage },
+    (_unused, offset) => dateOfIndex(file.endDate, days, days - effectiveAverage + offset)
+  );
+  return {
+    harness,
+    file,
+    pathPrefix: stringOption(args, "path"),
+    day,
+    allDays,
+    averageDays,
+    minWindowFailures: series.minWindowFailures,
+    header: {
+      harness,
+      family: file.family,
+      startDate: dateOfIndex(file.endDate, days, 0),
+      endDate: file.endDate,
+      dayCount: days,
+      testCount: file.testCount,
+      dataSource: context.source.name,
+      scope,
+      scopeDates,
+      averageDays: scope === "average" ? effectiveAverage : null,
+      minWindowFailures: series.minWindowFailures,
+      requestedMinWindowFailures: requested,
+      neutralisedTests: series.neutralisedTests,
+      // The distinction `MIN_FILTERABLE_DAYS` documents: a caller who
+      // asked for a filter on a one-day file gets the unfiltered
+      // classification, and is told so rather than left to assume the
+      // 366 tests it would have neutralised were quietly handled.
+      noiseFilterSkipped: requested > 0 && series.minWindowFailures === 0
+    }
+  };
+}
+function dateOfIndex(endDate, days, index) {
+  const end = Date.parse(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(end)) {
+    return endDate;
+  }
+  return new Date(end - (days - 1 - index) * 864e5).toISOString().slice(0, 10);
+}
+async function runFlaky(context, args) {
+  if (args.positionals.length > 0) {
+    throw usageError(
+      `flaky takes no positional arguments, got "${args.positionals[0]}"`,
+      `Did you mean --path ${args.positionals[0]}?`
+    );
+  }
+  const groupBy = readGroupBy(args);
+  const sort = readSort2(args);
+  if (groupBy === "days" && args.options.has("sort")) {
+    throw usageError(
+      "--sort does not apply to --group-by days, which is ordered by date",
+      "Drop --sort, or use --group-by list to rank folders."
+    );
+  }
+  const query = await loadFlakyQuery(context, args);
+  const limit = context.globals.limit ?? DEFAULT_LIMIT2;
+  if (groupBy === "days") {
+    emitResult(context, trendResult(query, context, limit), (result2) => renderTrend(result2));
+    return;
+  }
+  const noise = {
+    minWindowFailures: query.header.requestedMinWindowFailures,
+    ...query.pathPrefix === void 0 ? {} : { pathPrefix: query.pathPrefix }
+  };
+  const root = query.header.scope === "average" ? flakinessByFolderAveraged(query.file, {
+    ...noise,
+    averageDays: query.averageDays
+  }).root : flakinessByFolder(query.file, {
+    ...noise,
+    ...query.allDays ? { allDays: true } : {},
+    ...query.day === void 0 ? {} : { day: query.day }
+  });
+  const rows2 = groupBy === "list" ? listRows(root) : treeRows(root);
+  const sorted = sortRows(rows2, sort);
+  const shown = applyLimit(sorted, limit);
+  const result = {
+    header: query.header,
+    groupBy,
+    sort,
+    pathPrefix: query.pathPrefix ?? null,
+    allDays: query.allDays,
+    totals: {
+      flaky: root.flaky,
+      stable: root.stable,
+      skipped: root.skipped,
+      flakyAndSkipped: root.flakyAndSkipped,
+      total: root.total,
+      testCount: root.testCount
+    },
+    rowCount: sorted.length,
+    rows: shown
+  };
+  emitResult(context, result, renderFolders);
+}
+function listRows(root) {
+  return folderList(root).map((row) => ({
+    path: row.path,
+    flaky: row.selfFlaky,
+    total: row.selfTotal,
+    skipped: row.selfSkipped,
+    flakyAndSkipped: row.selfFlakyAndSkipped,
+    testCount: row.selfTestCount,
+    subtreeFlaky: row.flaky,
+    flakyPercent: ratio(row.selfFlaky, row.selfTotal),
+    skippedPercent: ratio(row.selfSkipped, row.selfTotal)
+  }));
+}
+function treeRows(root) {
+  const rows2 = [];
+  const visit = (node) => {
+    if (node.path !== "") {
+      rows2.push({
+        path: node.path,
+        flaky: node.flaky,
+        total: node.total,
+        skipped: node.skipped,
+        flakyAndSkipped: node.flakyAndSkipped,
+        testCount: node.testCount,
+        subtreeFlaky: node.flaky,
+        flakyPercent: ratio(node.flaky, node.total),
+        skippedPercent: ratio(node.skipped, node.total)
+      });
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  visit(root);
+  return rows2;
+}
+function ratio(part, whole) {
+  return whole > 0 ? part / whole * 100 : 0;
+}
+function differs(a, b) {
+  return Math.abs(a - b) > 1e-6;
+}
+function mean(value) {
+  const whole = Math.abs(value - Math.round(value)) <= 1e-6;
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: whole ? 0 : 1,
+    maximumFractionDigits: whole ? 0 : 1
+  });
+}
+function sortRows(rows2, sort) {
+  const sorted = [...rows2];
+  const byPath = (a, b) => a.path.localeCompare(b.path);
+  switch (sort) {
+    case "flaky":
+      sorted.sort((a, b) => b.flaky - a.flaky || byPath(a, b));
+      break;
+    case "share":
+      sorted.sort((a, b) => b.flakyPercent - a.flakyPercent || byPath(a, b));
+      break;
+    case "skips":
+      sorted.sort((a, b) => b.skipped - a.skipped || byPath(a, b));
+      break;
+    case "tests":
+      sorted.sort((a, b) => b.testCount - a.testCount || byPath(a, b));
+      break;
+    case "name":
+      sorted.sort(byPath);
+      break;
+  }
+  return sorted;
+}
+function renderFolders(result) {
+  const sortColumn = {
+    flaky: "flaky",
+    share: "share",
+    skips: "skip",
+    tests: "tests",
+    name: "Folder"
+  };
+  const column = (header, rest = {}) => ({
+    header,
+    ...rest,
+    ...header === sortColumn[result.sort] ? { sort: result.sort === "name" ? "asc" : "desc" } : {}
+  });
+  const anySubtree = result.rows.some((row) => differs(row.subtreeFlaky, row.flaky));
+  const num = result.header.scope === "average" ? mean : count;
+  const columns = [
+    column("Folder", { path: true }),
+    column("flaky", { align: "right" }),
+    column("share", { align: "right" }),
+    column("skip", { align: "right" }),
+    column("tests", { align: "right" }),
+    ...anySubtree ? [{ header: "in tree", align: "right" }] : []
+  ];
+  return {
+    preamble: headerLines2(result),
+    table: {
+      columns,
+      rows: result.rows.map((row) => [
+        row.path,
+        num(row.flaky),
+        percent(row.flakyPercent),
+        num(row.skipped),
+        // Always an integer: `testCount` is test files, which does not
+        // become fractional just because the states above it did.
+        count(row.testCount),
+        ...anySubtree ? [differs(row.subtreeFlaky, row.flaky) ? num(row.subtreeFlaky) : ""] : []
+      ])
+    },
+    total: result.rowCount,
+    shown: result.rows.length,
+    epilogue: epilogueFor(result),
+    empty: emptyMessage(result)
+  };
+}
+function epilogueFor(result) {
+  const top = result.rows[0];
+  if (top === void 0) {
+    return [];
+  }
+  return [
+    `  Next, for the folder you pick:`,
+    `    fx-tests issues --path ${top.path}     # which tests, and what they fail with`,
+    `    fx-tests skips --path ${top.path}      # what is already disabled there`
+  ];
+}
+function trendResult(query, context, limit) {
+  const series = flakinessOverTime(query.file, {
+    minWindowFailures: query.header.requestedMinWindowFailures,
+    ...query.pathPrefix === void 0 ? {} : { pathPrefix: query.pathPrefix }
+  });
+  const average = runningAverage(series.days, TREND_WINDOW);
+  let rows2 = series.days.map((day, index) => ({
+    date: day.date,
+    day: day.day,
+    flaky: day.flaky,
+    stable: day.stable,
+    skipped: day.skipped,
+    total: day.total,
+    flakyPercent: ratio(day.flaky, day.total),
+    average: average[index] ?? null
+  }));
+  if (context.globals.since !== void 0) {
+    rows2 = rows2.slice(Math.max(0, rows2.length - context.globals.since));
+  }
+  const shown = limit === 0 ? rows2 : rows2.slice(Math.max(0, rows2.length - limit));
+  return {
+    header: query.header,
+    groupBy: "days",
+    pathPrefix: query.pathPrefix ?? null,
+    averageWindow: TREND_WINDOW,
+    rowCount: rows2.length,
+    rows: shown
+  };
+}
+function renderTrend(result) {
+  const lines = headerLines2(result);
+  return {
+    preamble: lines,
+    table: {
+      columns: [
+        { header: "Date", sort: "asc" },
+        { header: "flaky", align: "right" },
+        { header: "stable", align: "right" },
+        { header: "skipped", align: "right" },
+        { header: "total", align: "right" },
+        { header: "flaky%", align: "right" },
+        { header: `${result.averageWindow}d avg`, align: "right" }
+      ],
+      rows: result.rows.map((row) => [
+        dateWithWeekday(row.date),
+        count(row.flaky),
+        count(row.stable),
+        count(row.skipped),
+        count(row.total),
+        percent(row.flakyPercent),
+        percent(row.average)
+      ])
+    },
+    total: result.rowCount,
+    shown: result.rows.length,
+    epilogue: [
+      "  --group-by list ranks the folders behind these numbers."
+    ],
+    empty: `No day had any test run. Searched ${count(result.header.testCount)} tests in ${result.header.harness}-issues.json over ${result.header.startDate} \u2026 ${result.header.endDate}. Check --path (a directory prefix) for typos.`
+  };
+}
+function headerLines2(result) {
+  const { header } = result;
+  const lines = [];
+  const subject = result.groupBy === "days" ? "flakiness by day" : result.groupBy === "list" ? "flaky tests by folder" : "flaky tests by folder subtree";
+  lines.push(
+    `${header.harness} ${subject} \u2014 ${header.dayCount} days (${dateWithWeekday(header.startDate)} \u2026 ${dateWithWeekday(header.endDate)}), ${count(header.testCount)} tests in the file`
+  );
+  if (result.pathPrefix !== null) {
+    lines.push(`Under ${result.pathPrefix} only.`);
+  }
+  lines.push(
+    "Flaky means a test failed, timed out or crashed at least once; skipped means it was disabled somewhere, run-if excluded."
+  );
+  if (result.groupBy === "days") {
+    lines.push(
+      "Each test is classified on the runs it had that day, in exactly one of the three states, so flaky + stable + skipped = total."
+    );
+  } else if (header.scope === "all-days") {
+    lines.push(
+      `--all-days: a test counts as flaky if it failed on ANY of the ${header.dayCount} days, which is a much looser bar \u2014 tree-wide that is ~84% of tests, because a test runs on dozens of configs dozens of times a day. Drop --all-days for the 7-day average, which discriminates.`
+    );
+  } else if (header.scope === "day") {
+    lines.push(
+      `--day: classified on ${dateWithWeekday(header.scopeDates[0] ?? header.endDate)} alone. One day is partly a fact about the weekday \u2014 weekend push volume is 2.6x lower, and on the pinned window netwerk/test/unit reads 137 flaky on a Tuesday and 76 on a Sunday. Drop --day for the 7-day average.`
+    );
+  } else {
+    const first = header.scopeDates[0] ?? header.startDate;
+    const last = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
+    lines.push(
+      `Counts are the MEAN PER DAY over the last ${header.averageDays ?? 0} days (${first} \u2026 ${last}), each day classified on its own runs \u2014 so 187.0 means "on a typical day, 187 of this folder's tests were flaky". A whole number of weeks, because weekend push volume is 2.6x lower and one day's ranking is partly the calendar. --day <date> ranks one day, --all-days the whole ${header.dayCount}.`
+    );
+  }
+  if (result.groupBy !== "days") {
+    lines.push(
+      "The flaky and skip columns OVERLAP \u2014 a test failing on Linux and disabled on Windows is both \u2014 so they do not sum to tests, and share is flaky/tests, not flaky/(flaky+skip)."
+    );
+  }
+  if (header.noiseFilterSkipped) {
+    lines.push(
+      `--noise ${header.requestedMinWindowFailures} was NOT applied: this file covers fewer than ${MIN_FILTERABLE_DAYS} days, and "did this fail more than once in the window" cannot be judged from one day. The counts below are unfiltered.`
+    );
+  } else if (header.minWindowFailures > 0) {
+    lines.push(
+      `Noise filter: a test failing ${header.minWindowFailures} time${header.minWindowFailures === 1 ? "" : "s"} or fewer across the ${header.dayCount} days is read as passing \u2014 ${count(header.neutralisedTests)} tests neutralised (--noise 0 disables).`
+    );
+  } else {
+    lines.push(
+      "Noise filter off (--noise 1 is the default; it reads a single failure as a pass)."
+    );
+  }
+  return lines;
+}
+var WRAP_WIDTH = 96;
+function wrapCaveat(text, indent = "  ") {
+  const words = text.split(" ");
+  const out = [];
+  let line = "";
+  for (const word of words) {
+    const candidate = line === "" ? word : `${line} ${word}`;
+    if (`${indent}${candidate}`.length > WRAP_WIDTH && line !== "") {
+      out.push(`${indent}${line}`);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line !== "") {
+    out.push(`${indent}${line}`);
+  }
+  return out;
+}
+function emptyMessage(result) {
+  const { header } = result;
+  const over = header.scope === "day" ? `on ${header.scopeDates[0] ?? header.endDate}` : header.scope === "all-days" ? `over all ${header.dayCount} days` : `over the last ${header.averageDays ?? 0} days`;
+  return `No folder matched. Searched ${count(header.testCount)} tests in ${header.harness}-issues.json, classified ${over}. Check --path (a directory prefix) for typos \u2014 and note that a folder whose tests did not run at all in that window has no row, since it has no rate.`;
+}
+function readGroupBy(args) {
+  const value = stringOption(args, "group-by") ?? "list";
+  if (value !== "list" && value !== "folder" && value !== "days") {
+    throw usageError(
+      `--group-by expects one of list, folder, days, got "${value}"`,
+      "list ranks folders by their own flaky tests (the burndown view); folder rolls subtrees up; days is the trend."
+    );
+  }
+  return value;
+}
+function readSort2(args) {
+  const value = stringOption(args, "sort") ?? "flaky";
+  const allowed = ["flaky", "share", "skips", "tests", "name"];
+  if (!allowed.includes(value)) {
+    throw usageError(`--sort expects one of ${allowed.join(", ")}, got "${value}"`);
+  }
+  return value;
+}
+var JSON_DECIMALS = 4;
+function roundForJson(value) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value : Number(value.toFixed(JSON_DECIMALS));
+  }
+  if (Array.isArray(value)) {
+    return value.map(roundForJson);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        roundForJson(entry)
+      ])
+    );
+  }
+  return value;
+}
+function emitResult(context, result, build) {
+  if (context.globals.format === "json") {
+    emit(context, toJson(roundForJson(result)));
+    return;
+  }
+  const content = build(result);
+  emit(
+    context,
+    context.globals.format === "markdown" ? renderMarkdownFrom(content) : renderTextFrom(content)
+  );
+}
+function renderTextFrom(content) {
+  const [heading2, ...caveats] = content.preamble;
+  const lines = [
+    heading2 ?? "",
+    ...caveats.flatMap((caveat) => wrapCaveat(caveat)),
+    ""
+  ];
+  if (content.table === null || content.table.rows.length === 0) {
+    lines.push(content.empty);
+  } else {
+    lines.push(...tableSection(content.table.columns, content.table.rows, content));
+  }
+  lines.push("");
+  lines.push(...content.epilogue);
+  return joinLines(lines);
+}
+function renderMarkdownFrom(content) {
+  const lines = [];
+  const [heading2, ...caveats] = content.preamble;
+  lines.push(heading(heading2 ?? "Flakiness", 1));
+  lines.push("");
+  for (const caveat of caveats) {
+    lines.push(caveat.trim());
+    lines.push("");
+  }
+  if (content.table === null || content.table.rows.length === 0) {
+    lines.push(content.empty);
+  } else {
+    lines.push(...table(content.table.columns, content.table.rows));
+    lines.push(moreLine(content.total, content.shown));
+  }
+  if (content.epilogue.length > 0) {
+    lines.push("");
+    for (const line of content.epilogue) {
+      lines.push(line.trim());
+    }
+  }
+  return joinLines(lines);
+}
+
 // cli/commands/guide.ts
 var GUIDE_OPTIONS = {};
 var COMMAND_FACTS = [
@@ -3108,6 +4136,12 @@ var COMMAND_FACTS = [
     name: "skips",
     reads: "{harness}-issues.json",
     answers: "What is disabled, where, and why?",
+    defaultLimit: 20
+  },
+  {
+    name: "flaky",
+    reads: "{harness}-issues.json",
+    answers: "Which folder should I book a flakiness-burndown session on?",
     defaultLimit: 20
   },
   {
@@ -3516,45 +4550,6 @@ function firstSegment(name) {
   return dash === -1 ? null : name.slice(0, dash);
 }
 
-// lib/model/status.ts
-function splitExecutionMode(status) {
-  if (status.endsWith("-PARALLEL")) {
-    return { base: status.slice(0, -"-PARALLEL".length), mode: "parallel" };
-  }
-  if (status.endsWith("-SEQUENTIAL")) {
-    return { base: status.slice(0, -"-SEQUENTIAL".length), mode: "sequential" };
-  }
-  return { base: status, mode: null };
-}
-function classifyStatus(status) {
-  const { base, mode } = splitExecutionMode(status);
-  return { kind: classifyBase(base), mode, raw: status };
-}
-function classifyBase(base) {
-  switch (base) {
-    case "PASS":
-    // The harness's own name for a passing xpcshell test. Not observed in
-    // the published files, but `common-test-data.js:155` treats it as a
-    // pass and the cost of agreeing is a line.
-    case "OK":
-      return "pass";
-    case "FAIL":
-      return "fail";
-    case "TIMEOUT":
-      return "timeout";
-    case "CRASH":
-      return "crash";
-    case "SKIP":
-      return "skip";
-    case "EXPECTED-FAIL":
-      return "expected-fail";
-    case "UNKNOWN":
-      return "unknown";
-    default:
-      return "unknown";
-  }
-}
-
 // lib/query/config-stats.ts
 var DEFAULT_MIN_RECENT_RUNS = 20;
 function computeConfigStats(file, testId, options = {}) {
@@ -3686,23 +4681,6 @@ function summarize(byJob, minRecentRuns, forcedRecentDays) {
 }
 function canAttributeConfigs(file) {
   return file.family !== "issues";
-}
-
-// lib/model/skips.ts
-function skipReason(message) {
-  if (message === null || message === void 0) {
-    return "unrecorded";
-  }
-  if (message.startsWith("run-if")) {
-    return "run-if";
-  }
-  if (message.startsWith("skip-if")) {
-    return "skip-if";
-  }
-  return "other";
-}
-function displaySkipMessage(message) {
-  return message.replace(/^skip-if:\s*/, "");
 }
 
 // lib/query/test-stats.ts
@@ -4232,7 +5210,7 @@ var SKIPS_OPTIONS = {
     describe: "How to group. Default test."
   }
 };
-var DEFAULT_LIMIT2 = 20;
+var DEFAULT_LIMIT3 = 20;
 async function loadTreeQuery(context, args, commandName) {
   const harness = context.globals.harness ?? "xpcshell";
   progress(context, `Reading ${harness}-issues.json\u2026`);
@@ -4275,7 +5253,7 @@ function sharedOptions(query) {
     ...query.window.range === null ? {} : { dayRange: query.window.range }
   };
 }
-function headerLines2(header, subject, types) {
+function headerLines3(header, subject, types) {
   const lines = [];
   lines.push(
     `${header.harness} ${subject} \u2014 ` + (header.singleDay ? dateWithWeekday(header.endDate) : `${header.dayCount} days (${dateWithWeekday(header.startDate)} \u2026 ${dateWithWeekday(header.endDate)})`) + `, ${count(header.testCount)} tests in the file`
@@ -4297,9 +5275,9 @@ async function runIssues(context, args) {
   const query = await loadTreeQuery(context, args, "issues");
   const types = readTypes(args);
   const minRate = readPercent(stringOption(args, "min-rate"), "--min-rate");
-  const sort = readSort2(args, ["issues", "rate", "count", "name"], "issues");
-  const groupBy = readGroupBy(args, ["component", "test", "directory", "message"], "component");
-  const limit = context.globals.limit ?? DEFAULT_LIMIT2;
+  const sort = readSort3(args, ["issues", "rate", "count", "name"], "issues");
+  const groupBy = readGroupBy2(args, ["component", "test", "directory", "message"], "component");
+  const limit = context.globals.limit ?? DEFAULT_LIMIT3;
   if (groupBy === "message") {
     const groups = groupFailuresByMessage(query.file, sharedOptions(query));
     const shown2 = applyLimit(groups, limit);
@@ -4311,7 +5289,7 @@ async function runIssues(context, args) {
       rowCount: groups.length,
       rows: shown2.map(failureGroupJson)
     };
-    emitResult(context, result2, () => renderFailures(result2, "Issues by message"));
+    emitResult2(context, result2, () => renderFailures(result2, "Issues by message"));
     return;
   }
   const grouped = groupBy === "component" || groupBy === "directory";
@@ -4332,7 +5310,7 @@ async function runIssues(context, args) {
       rowCount: groups.length,
       rows: shown2
     };
-    emitResult(context, result2, () => renderIssueGroups(result2));
+    emitResult2(context, result2, () => renderIssueGroups(result2));
     return;
   }
   const sorted = sortIssueRows(rows2, sort);
@@ -4345,7 +5323,7 @@ async function runIssues(context, args) {
     rowCount: sorted.length,
     rows: shown.map(issueRowJson)
   };
-  emitResult(context, result, () => renderIssueRows(result));
+  emitResult2(context, result, () => renderIssueRows(result));
 }
 function issueRowJson(row) {
   return {
@@ -4404,7 +5382,7 @@ function renderIssueRows(result) {
     ...header === sortColumn ? { sort: result.sort === "name" ? "asc" : "desc" } : {}
   });
   return {
-    preamble: headerLines2(result.header, "issues by test", result.types),
+    preamble: headerLines3(result.header, "issues by test", result.types),
     table: {
       // The path column is declared, not truncated by hand: `path: true`
       // sizes it to the longest path present and keeps the filename if a
@@ -4433,7 +5411,7 @@ function renderIssueRows(result) {
     total: result.rowCount,
     shown: result.rows.length,
     epilogue: [],
-    empty: emptyMessage(result.header, result.types)
+    empty: emptyMessage2(result.header, result.types)
   };
 }
 function renderIssueGroups(result) {
@@ -4449,7 +5427,7 @@ function renderIssueGroups(result) {
     ...header === sortColumn ? { sort: result.sort === "name" ? "asc" : "desc" } : {}
   });
   return {
-    preamble: headerLines2(result.header, `issues by ${result.groupBy}`, result.types),
+    preamble: headerLines3(result.header, `issues by ${result.groupBy}`, result.types),
     table: {
       // The page's per-component columns: the issue total it ranks on,
       // how many tests contributed, and the breakdown that says what kind
@@ -4489,10 +5467,10 @@ function renderIssueGroups(result) {
     epilogue: result.rows.length === 0 ? [] : [
       '  Drill in with --component "<name>", or --group-by test for the tests themselves.'
     ],
-    empty: emptyMessage(result.header, result.types)
+    empty: emptyMessage2(result.header, result.types)
   };
 }
-function emptyMessage(header, types, subject = "test", extraFilters = "") {
+function emptyMessage2(header, types, subject = "test", extraFilters = "") {
   const searched = `${count(header.testCount)} tests in ${header.harness}-issues.json`;
   const typeNote = types !== void 0 && types.length < DEFAULT_TYPES.length ? ` Only ${types.join(", ")} counted as issues, so --type may be why.` : "";
   return `No ${subject} matched. Searched ${searched} over ${header.startDate} \u2026 ${header.endDate}.${typeNote} Check --path (a directory prefix)${extraFilters} and --component (a substring) for typos.`;
@@ -4500,7 +5478,7 @@ function emptyMessage(header, types, subject = "test", extraFilters = "") {
 async function runFailures(context, args) {
   rejectPositionals(args, "failures");
   const query = await loadTreeQuery(context, args, "failures");
-  const limit = context.globals.limit ?? DEFAULT_LIMIT2;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT3;
   const groups = groupFailuresByMessage(query.file, {
     ...sharedOptions(query),
     ...optional2("message", stringOption(args, "message"))
@@ -4514,7 +5492,7 @@ async function runFailures(context, args) {
     rowCount: groups.length,
     rows: shown.map(failureGroupJson)
   };
-  emitResult(context, result, () => renderFailures(result, "failures by message"));
+  emitResult2(context, result, () => renderFailures(result, "failures by message"));
 }
 function failureGroupJson(group) {
   return {
@@ -4530,7 +5508,7 @@ function failureGroupJson(group) {
 }
 function renderFailures(result, subject) {
   return {
-    preamble: headerLines2(result.header, subject),
+    preamble: headerLines3(result.header, subject),
     // `tests` is the discriminator here for the same reason it is in
     // `errors`: one message across thirty tests is one bug, and across one
     // test is another kind of bug entirely.
@@ -4551,13 +5529,13 @@ function renderFailures(result, subject) {
     total: result.rowCount,
     shown: result.rows.length,
     epilogue: [],
-    empty: emptyMessage(result.header, void 0, "failure", ", --message (a substring)")
+    empty: emptyMessage2(result.header, void 0, "failure", ", --message (a substring)")
   };
 }
 async function runCrashes(context, args) {
   rejectPositionals(args, "crashes");
   const query = await loadTreeQuery(context, args, "crashes");
-  const limit = context.globals.limit ?? DEFAULT_LIMIT2;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT3;
   const wantMinidumps = boolOption(args, "minidumps");
   if (wantMinidumps && !query.header.recordsMinidumps) {
     throw usageError(
@@ -4575,7 +5553,7 @@ async function runCrashes(context, args) {
     rowCount: groups.length,
     rows: shown.map((group) => crashGroupJson(group, wantMinidumps))
   };
-  emitResult(context, result, () => renderCrashes(result, wantMinidumps, query.header));
+  emitResult2(context, result, () => renderCrashes(result, wantMinidumps, query.header));
 }
 function crashGroupJson(group, withMinidumps) {
   const json = {
@@ -4636,7 +5614,7 @@ function renderCrashes(result, withMinidumps, header) {
     }
   }
   return {
-    preamble: headerLines2(header, "crashes by signature"),
+    preamble: headerLines3(header, "crashes by signature"),
     table: {
       columns: [
         // `groupCrashesBySignature()` orders by crash count descending.
@@ -4655,15 +5633,15 @@ function renderCrashes(result, withMinidumps, header) {
     total: result.rowCount,
     shown: result.rows.length,
     epilogue,
-    empty: emptyMessage(header, void 0, "crash", ", --signature (a substring)")
+    empty: emptyMessage2(header, void 0, "crash", ", --signature (a substring)")
   };
 }
 async function runSkips(context, args) {
   rejectPositionals(args, "skips");
   const query = await loadTreeQuery(context, args, "skips");
-  const limit = context.globals.limit ?? DEFAULT_LIMIT2;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT3;
   const includeRunIf = boolOption(args, "include-run-if");
-  const groupBy = readGroupBy(args, ["test", "component", "directory"], "test");
+  const groupBy = readGroupBy2(args, ["test", "component", "directory"], "test");
   const rows2 = findSkips(query.file, {
     ...sharedOptions(query),
     includeRunIf
@@ -4686,7 +5664,7 @@ async function runSkips(context, args) {
       skippedTestCount: rows2.length,
       rows: shown2.map(skipGroupJson)
     };
-    emitResult(context, result2, () => renderSkipGroups(result2));
+    emitResult2(context, result2, () => renderSkipGroups(result2));
     return;
   }
   const sorted = [...rows2].sort((a, b) => b.skipCount - a.skipCount);
@@ -4701,7 +5679,7 @@ async function runSkips(context, args) {
     skippedTestCount: sorted.length,
     rows: shown.map(skipRowJson)
   };
-  emitResult(context, result, () => renderSkips(result));
+  emitResult2(context, result, () => renderSkips(result));
 }
 function testsPerGroup(query, by) {
   const totals = /* @__PURE__ */ new Map();
@@ -4797,7 +5775,7 @@ function renderSkipGroups(result) {
     epilogue: result.rows.length === 0 ? [] : [
       '  Drill in with --component "<name>", or --group-by test for the tests themselves.'
     ],
-    empty: emptyMessage(result.header, void 0, "skipped test")
+    empty: emptyMessage2(result.header, void 0, "skipped test")
   };
 }
 function skipRowJson(row) {
@@ -4812,7 +5790,7 @@ function skipRowJson(row) {
   };
 }
 function skipsPreamble(result, subject) {
-  const preamble = headerLines2(result.header, subject);
+  const preamble = headerLines3(result.header, subject);
   preamble.push(
     `  ${count(result.totalSkips)} skipped runs across ${count(result.skippedTestCount)} tests.`
   );
@@ -4859,7 +5837,7 @@ function renderSkips(result) {
     total: result.rowCount,
     shown: result.rows.length,
     epilogue: [],
-    empty: emptyMessage(result.header, void 0, "skipped test")
+    empty: emptyMessage2(result.header, void 0, "skipped test")
   };
 }
 function optional2(key, value) {
@@ -4886,14 +5864,14 @@ function readTypes(args) {
   }
   return values;
 }
-function readSort2(args, allowed, fallback) {
+function readSort3(args, allowed, fallback) {
   const value = stringOption(args, "sort") ?? fallback;
   if (!allowed.includes(value)) {
     throw usageError(`--sort expects one of ${allowed.join(", ")}, got "${value}"`);
   }
   return value;
 }
-function readGroupBy(args, allowed, fallback) {
+function readGroupBy2(args, allowed, fallback) {
   const value = stringOption(args, "group-by") ?? fallback;
   if (!allowed.includes(value)) {
     throw usageError(`--group-by expects one of ${allowed.join(", ")}, got "${value}"`);
@@ -4910,7 +5888,7 @@ function readPercent(value, flag) {
   }
   return parsed;
 }
-function emitResult(context, result, build) {
+function emitResult2(context, result, build) {
   if (context.globals.format === "json") {
     emit(context, toJson(result));
     return;
@@ -4918,10 +5896,10 @@ function emitResult(context, result, build) {
   const content = build();
   emit(
     context,
-    context.globals.format === "markdown" ? renderMarkdownFrom(content) : renderTextFrom(content)
+    context.globals.format === "markdown" ? renderMarkdownFrom2(content) : renderTextFrom2(content)
   );
 }
-function renderTextFrom(content) {
+function renderTextFrom2(content) {
   const lines = [...content.preamble, ""];
   if (content.table === null || content.table.rows.length === 0) {
     lines.push(content.empty);
@@ -4931,7 +5909,7 @@ function renderTextFrom(content) {
   lines.push(...content.epilogue);
   return joinLines(lines);
 }
-function renderMarkdownFrom(content) {
+function renderMarkdownFrom2(content) {
   const lines = [];
   const [heading2, ...caveats] = content.preamble;
   lines.push(heading(heading2 ?? "Results", 1));
@@ -5211,7 +6189,7 @@ var MANIFESTS_OPTIONS = {
     describe: "Only manifests with a median above this, e.g. 30s, 5m, 500ms."
   }
 };
-var DEFAULT_LIMIT3 = 10;
+var DEFAULT_LIMIT4 = 10;
 async function runManifests(context, args) {
   if (args.positionals.length > 1) {
     throw usageError(
@@ -5225,7 +6203,7 @@ async function runManifests(context, args) {
     );
   }
   const wanted = args.positionals[0];
-  const sort = readSort3(args);
+  const sort = readSort4(args);
   const slowerThanMs = readDuration(stringOption(args, "slower-than"));
   progress(context, "Reading manifests.json\u2026");
   const raw = await fetchJson(context.source, {
@@ -5249,7 +6227,7 @@ async function runManifests(context, args) {
     );
   }
   const sorted = sortManifests(stats, sort);
-  const limit = context.globals.limit ?? DEFAULT_LIMIT3;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT4;
   const shown = wanted === void 0 ? applyLimit(sorted, limit) : sorted;
   const result = {
     manifest: wanted ?? null,
@@ -5276,7 +6254,7 @@ async function runManifests(context, args) {
     context.globals.format === "markdown" ? renderMarkdown5(result) : renderText5(result)
   );
 }
-function readSort3(args) {
+function readSort4(args) {
   const value = stringOption(args, "sort") ?? "median";
   const allowed = ["median", "p95", "max", "runs", "total", "name"];
   if (!allowed.includes(value)) {
@@ -5330,7 +6308,7 @@ function toRowJson2(row) {
 }
 function renderText5(result) {
   const lines = [];
-  lines.push(...headerLines3(result));
+  lines.push(...headerLines4(result));
   lines.push("");
   if (result.rows.length === 0) {
     lines.push("No manifest matched.");
@@ -5433,7 +6411,7 @@ function renderOneManifest(row) {
   }
   return lines.filter((line) => line !== null);
 }
-function headerLines3(result) {
+function headerLines4(result) {
   const { metadata, zeroDurations } = result;
   const lines = [];
   lines.push(
@@ -5460,7 +6438,7 @@ function renderMarkdown5(result) {
   const lines = [];
   lines.push(heading(`Manifest timings \u2014 ${dateWithWeekday(result.metadata.date)}`, 1));
   lines.push("");
-  for (const line of headerLines3(result).slice(1)) {
+  for (const line of headerLines4(result).slice(1)) {
     lines.push(line.trim());
   }
   lines.push("");
@@ -5987,7 +6965,7 @@ var TEST_OPTIONS = {
   },
   history: { type: "boolean", describe: "A per-day sparkline of pass/fail counts." }
 };
-var DEFAULT_LIMIT4 = 10;
+var DEFAULT_LIMIT5 = 10;
 async function runTest(context, args) {
   const testPath = args.positionals[0];
   if (testPath === void 0) {
@@ -6091,7 +7069,7 @@ async function runTest(context, args) {
     emit(context, toJson(result));
     return;
   }
-  const limit = context.globals.limit ?? DEFAULT_LIMIT4;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT5;
   emit(
     context,
     context.globals.format === "markdown" ? renderMarkdown7(result, limit) : renderText7(result, limit)
@@ -7201,7 +8179,7 @@ var TRY_OPTIONS = {
     describe: "How many job profiles to fetch at once. Default 8."
   }
 };
-var DEFAULT_LIMIT5 = 10;
+var DEFAULT_LIMIT6 = 10;
 var PERMA_FAIL_DESCRIPTION = "failed in every run of at least one configuration here. Each row says what central shows on that same configuration.";
 var DEFAULT_CONCURRENCY = 8;
 async function runTry(context, args) {
@@ -7288,7 +8266,7 @@ async function runTry(context, args) {
     emit(context, toJson(result));
     return;
   }
-  const limit = context.globals.limit ?? DEFAULT_LIMIT5;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT6;
   emit(
     context,
     context.globals.format === "markdown" ? renderMarkdown8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs")) : renderText8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs"))
@@ -8164,6 +9142,13 @@ var COMMANDS = [
     usage: "fx-tests skips [options]",
     options: SKIPS_OPTIONS,
     run: runSkips
+  },
+  {
+    name: "flaky",
+    summary: "Which folder to book a flakiness burndown on, ranked.",
+    usage: "fx-tests flaky [options]",
+    options: FLAKY_OPTIONS,
+    run: runFlaky
   },
   {
     name: "errors",
