@@ -455,7 +455,22 @@ test('the text output states the scope, the overlap and the noise filter', async
     assert.match(stdout, /OVERLAP/);
     assert.match(stdout, /Noise filter/);
     // And the follow-up command, so a reader can act without a second lookup.
-    assert.match(stdout, /fx-tests issues --path /);
+    // It must be this command's own per-test listing and **not** `issues --path`,
+    // which ranks by issue runs and is dominated by skips: on the pinned window
+    // for toolkit/components/telemetry/tests/unit, `issues --group-by test` puts
+    // test_UserInteraction_annotations.js first with 6,879 issues of which 6,782
+    // are skips, and this classification calls that test skipped, not flaky. A
+    // footer sending a reader to a differently-defined listing of the folder they
+    // just picked is worse than no footer.
+    assert.match(stdout, /fx-tests flaky toolkit\//);
+    assert.doesNotMatch(
+        stdout,
+        /fx-tests issues/,
+        'the follow-up must not be `issues`, whose definition of a problem test differs'
+    );
+    // `skips` stays, because it answers what this command cannot: *why* something
+    // is disabled. Here the classification is a boolean; `skips` prints skip-if.
+    assert.match(stdout, /fx-tests skips --path /);
 });
 
 test('--all-days says it is the looser bar, and --day names the weekday risk', async () => {
@@ -556,10 +571,57 @@ test('--path narrows the population, and a miss says so', async () => {
     assert.match(miss.stdout, /--path/, 'the empty message must name the filter that could be wrong');
 });
 
-test('a stray positional is a usage error naming --path', async () => {
-    const { code, stderr } = await invoke(['flaky', 'netwerk/test/unit', '--quiet']);
-    assert.equal(code, ExitCode.Usage);
-    assert.match(stderr, /--path netwerk\/test\/unit/);
+test('a positional path selects the per-test listing, not a usage error', async () => {
+    // This used to be rejected with "did you mean --path?". It is now the
+    // shorthand for the drill-down, which is how `fx-tests test <path>` and
+    // `fx-tests manifests [name]` already read a path.
+    const { code, stdout } = await invoke([
+        'flaky',
+        'toolkit/components/extensions/test/xpcshell',
+        '--json',
+        '--quiet',
+        '--limit',
+        '0',
+    ]);
+    assert.equal(code, ExitCode.Success);
+    const result = json(stdout);
+    assert.equal(result['groupBy'], 'tests', 'a positional path means the per-test listing');
+    assert.equal(result['pathPrefix'], 'toolkit/components/extensions/test/xpcshell');
+    // Identical to the long form, so the two spellings cannot drift.
+    const long = await invoke([
+        'flaky',
+        '--path',
+        'toolkit/components/extensions/test/xpcshell',
+        '--group-by',
+        'tests',
+        '--json',
+        '--quiet',
+        '--limit',
+        '0',
+    ]);
+    assert.equal(long.stdout, stdout, 'flaky <path> must be exactly --path <path> --group-by tests');
+});
+
+test('the two spellings of the path cannot contradict each other', async () => {
+    // Refused rather than merged: `flaky dom --path netwerk` has no reading that
+    // is not a guess about which one the caller meant.
+    const both = await invoke(['flaky', 'dom', '--path', 'netwerk', '--quiet']);
+    assert.equal(both.code, ExitCode.Usage);
+    assert.match(both.stderr, /same selection/);
+
+    // A positional with any other view leaves it meaning nothing, which is the
+    // "flag did nothing" failure this CLI rejects unknown flags to avoid.
+    for (const view of ['list', 'folder', 'days']) {
+        const { code, stderr } = await invoke(['flaky', 'netwerk', '--group-by', view, '--quiet']);
+        assert.equal(code, ExitCode.Usage, `flaky <path> --group-by ${view} must be refused`);
+        assert.match(stderr, new RegExp(`--group-by ${view}`));
+        assert.match(stderr, /--path netwerk/, 'and must name the flag that does mean that');
+    }
+
+    // Two positionals is one too many, as `fx-tests test` reports it.
+    const two = await invoke(['flaky', 'a', 'b', '--quiet']);
+    assert.equal(two.code, ExitCode.Usage);
+    assert.match(two.stderr, /at most one path/);
 });
 
 test('--json means are rounded to a stable number of digits', async () => {

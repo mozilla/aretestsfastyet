@@ -105,8 +105,8 @@ const COMMANDS: CommandSpec[] = [
     },
     {
         name: 'flaky',
-        summary: 'Which folder to book a flakiness burndown on, ranked.',
-        usage: 'fx-tests flaky [options]',
+        summary: 'Which folder to book a flakiness burndown on, ranked. With a path, its tests.',
+        usage: 'fx-tests flaky [path] [options]',
         options: FLAKY_OPTIONS,
         run: runFlaky,
     },

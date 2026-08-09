@@ -1166,3 +1166,70 @@ export function folderList(root: FolderNode): FolderListRow[] {
 export function flakyPercentage(counts: FlakyCounts & { total: number }): number {
     return counts.total > 0 ? (counts.flaky / counts.total) * 100 : 0;
 }
+
+/**
+ * Every test file at or below a node, flattened.
+ *
+ * `FolderNode.tests` holds only the leaves *at* that level — a test in
+ * `dom/base/test` is a leaf of that folder and appears nowhere else, which is
+ * what makes the page's drill-down list each file once. A caller that wants "the
+ * tests in this folder tree" therefore has to walk, and this is that walk, once,
+ * rather than four copies of it.
+ *
+ * Returned unsorted, in tree order: the two rankings a caller might want
+ * (flaky-first for a listing, path order for a diff) are the caller's, and
+ * `sortTree` has already put each node's own leaves in flaky order.
+ *
+ * Additive: `flakinessByFolder` and `flakinessByFolderAveraged` are unchanged
+ * and `site/flaky-view.ts` does not use this.
+ */
+export function subtreeTests(node: FolderNode): TestLeaf[] {
+    const leaves: TestLeaf[] = [];
+    const visit = (current: FolderNode): void => {
+        leaves.push(...current.tests);
+        for (const child of current.children) {
+            visit(child);
+        }
+    };
+    visit(node);
+    return leaves;
+}
+
+/**
+ * The node at `path`, or `null` when no test in the selection lives there.
+ *
+ * A lookup rather than a `byPath` map on the tree, because the map is a build
+ * artefact of the two constructors and exposing it would make the tree's shape
+ * part of the contract. 6-deep paths, so the walk is at most 6 comparisons.
+ */
+export function folderAt(root: FolderNode, path: string): FolderNode | null {
+    if (path === '') {
+        return root;
+    }
+    let node: FolderNode = root;
+    for (const segment of path.split('/')) {
+        const child: FolderNode | undefined = node.children.find((entry) => entry.name === segment);
+        if (child === undefined) {
+            return null;
+        }
+        node = child;
+    }
+    return node;
+}
+
+/**
+ * Whether a test file has anything for a reader to act on.
+ *
+ * A test that passed everywhere on every day it ran is counted in every
+ * percentage and listed in none, which is the rule `site/flaky-view.ts` states
+ * and measures: clean leaves are **707 of 4,807** over the pinned 21-day view
+ * and **3,122 of 4,805** on a single day, so on the day view two rows in three
+ * would be padding.
+ *
+ * Duplicated as an exported predicate rather than imported from `site/`, because
+ * `lib/` may not depend on `site/` and the site module's copy is `private`. The
+ * two are asserted to agree in `test/flaky-tests-listing.test.ts`.
+ */
+export function hasSomethingToAct(leaf: TestLeaf): boolean {
+    return leaf.flaky > 0 || leaf.skipped > 0;
+}

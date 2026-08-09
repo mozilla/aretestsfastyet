@@ -914,10 +914,12 @@ population rather than only the rows shown.
 shape and a page can draw one. This command leads with the other question a
 terminal actually gets asked — *where do I spend the afternoon* — and answers it
 with a ranked list of directories carrying enough on each row to weigh the work
-against the payoff.
+against the payoff. Naming a folder drills into it:
+`fx-tests flaky <folder>` lists that folder's tests, flaky ones first, on the
+same classification and window.
 
 ```
-$ fx-tests flaky
+$ fx-tests flaky --limit 5
 
 xpcshell flaky tests by folder — 21 days (2026-07-15 (Wed) … 2026-08-04 (Tue)), 4,838 tests in the file
   Flaky means a test failed, timed out or crashed at least once; skipped means it was disabled
@@ -927,39 +929,52 @@ xpcshell flaky tests by folder — 21 days (2026-07-15 (Wed) … 2026-08-04 (Tue
   flaky". A whole number of weeks, because weekend push volume is 2.6x lower and one day's
   ranking is partly the calendar. --day <date> ranks one day, --all-days the whole 21.
   The flaky and skip columns OVERLAP — a test failing on Linux and disabled on Windows is both —
-  so they do not sum to tests, and share is flaky/tests, not flaky/(flaky+skip).
+  so they do not sum to tests. flaky% is flaky/tests, not flaky/(flaky+skip), and +subtree is
+  the flaky count including subfolders.
   Noise filter: a test failing 1 time or fewer across the 21 days is read as passing — 186 tests
   neutralised (--noise 0 disables).
 
-  Folder                                       flaky ▼  share  skip  tests  in tree
-  toolkit/components/extensions/test/xpcshell      187  48.1%   131    389    192.6
-  netwerk/test/unit                              126.7  21.8%    77    582
-  dom/indexedDB/test/unit                         38.4  29.3%    91    131
-  toolkit/mozapps/extensions/test/xpcshell        32.1  21.0%    20    153     37.7
-  toolkit/components/telemetry/tests/unit         26.7  62.1%    20     43
+  Folder                                       flaky ▼  flaky%  skip  tests  +subtree
+  toolkit/components/extensions/test/xpcshell      187   48.1%   131    389     192.6
+  netwerk/test/unit                              126.7   21.8%    77    582
+  dom/indexedDB/test/unit                         38.4   29.3%    91    131
+  toolkit/mozapps/extensions/test/xpcshell        32.1   21.0%    20    153      37.7
+  toolkit/components/telemetry/tests/unit         26.7   62.1%    20     43
   … 245 more (--limit 0 for all)
 
   Next, for the folder you pick:
-    fx-tests issues --path toolkit/components/extensions/test/xpcshell     # which tests, and what they fail with
-    fx-tests skips --path toolkit/components/extensions/test/xpcshell      # what is already disabled there
+    fx-tests flaky toolkit/components/extensions/test/xpcshell     # which tests, flaky ones first
+    fx-tests skips --path toolkit/components/extensions/test/xpcshell      # what is already disabled there, and why
 ```
 
-Options: `--path <prefix>`, `--group-by <list|folder|days>` (default `list`),
-`--sort <flaky|share|skips|tests|name>` (default `flaky`), `--noise <n>`
+Options: `--path <prefix>`, `--group-by <list|folder|days|tests>` (default
+`list`), `--sort <flaky|share|skips|tests|name>` (default `flaky`), `--noise <n>`
 (default 1), `--average-days <n>` (default 7), `--all-days`, `--day <date>`,
-`--limit` (default 20).
+`--here-only` (with `--group-by tests`), `--limit` (default 20). A positional
+path — `fx-tests flaky <folder>` — is shorthand for `--path <folder> --group-by
+tests`.
 
 **Flaky means fail *or* timeout *or* crash.** All three, because timeouts are the
 largest of the three in this data — counting only `FAIL` would miss more than
 half of it and produce a table that still looks plausible.
 
 **The columns are chosen for the decision, not for completeness.** `flaky` is the
-work (how many test files are flaky *directly in this folder*), `share` is what
+work (how many test files are flaky *directly in this folder*), `flaky%` is what
 separates a rotten folder from two bad files in a healthy one, `skip` is ground
 already given up — often the same underlying problem and the cheapest win — and
-`tests` gives `share` a visible denominator. `in tree` appears only on rows whose
-subtree holds more than the folder itself, which is 4 rows in 250 on real data;
-it is what stops the roll-up needing to be a second table.
+`tests` gives `flaky%` a visible denominator. `+subtree` appears only on rows
+whose subtree holds more than the folder itself, which is 4 rows in 250 on real
+data; it is what stops the roll-up needing to be a second table.
+
+Two of those were called `share` and `in tree` and were renamed, because the
+names did not carry their meanings and the header block was already eight lines
+long — so the fix had to be in the names rather than in a legend. `share` was
+read as a share of the *issues* on the row, `flaky/(flaky+skip)`; `flaky%` sits
+directly under `flaky` and next to `tests`, which is the ratio it actually is.
+`in tree` was read as "is this folder in the tree"; `+subtree` leads with the `+`
+that says it is an addition to the number on its left. `--sort share` is
+unchanged, because a sort key is an input a script may already have written down
+and only the header was unclear.
 
 #### The window is a 7-day average, and neither obvious choice would do
 
@@ -997,6 +1012,88 @@ table showing 21, with nothing saying so.
 terminal cannot be drilled) and `--group-by days` is the trend as a table of
 numbers, one row per day with a centred 7-day mean. There is no ASCII chart: see
 Non-goals.
+
+#### `fx-tests flaky <path>` — the flaky tests in a folder
+
+A ranking's answer is a folder, and the next question is always *which files*.
+This is that view, on the same classification and the same window as the ranking
+above it. `fx-tests flaky <path>` is the shorthand; `--group-by tests --path
+<path>` is the long form and they emit byte-identical output.
+
+```
+$ fx-tests flaky toolkit/components/telemetry/tests/unit --limit 8
+
+xpcshell flaky tests, by test file — 21 days (2026-07-15 (Wed) … 2026-08-04 (Tue)), 4,838 tests in the file
+  Test files under toolkit/components/telemetry/tests/unit and its subfolders.
+  Flaky means a test failed, timed out or crashed at least once; skipped means it was disabled
+  somewhere, run-if excluded.
+  Each test is classified separately on each of the last 7 days (2026-07-29 … 2026-08-04), and
+  the d columns count those days: flaky d 6 of ran d 7 means "flaky on 6 of the 7 days it ran".
+  A whole number of weeks, because weekend push volume is 2.6x lower. --day <date> uses one day,
+  --all-days one verdict over the whole 21.
+  The flaky d and skip d columns OVERLAP — a test failing on Linux and disabled on Windows is
+  both, and the verdict column says flaky+skipped for those. Rows are ranked flaky-first, so a
+  skipped-only test is never above a flaky one.
+  failures is failing runs over the whole 21 days, not the days above — it is a count of runs
+  across every configuration, and it is what the noise filter is compared against.
+  Noise filter: a test failing 1 time or fewer across the 21 days is read as passing — 0 tests
+  neutralised (--noise 0 disables).
+
+  Test                                                                                   verdict        flaky d ▼  flaky%  skip d  ran d  failures
+  toolkit/components/telemetry/tests/unit/test_MainPingDisablement.js                    flaky+skipped          7  100.0%       7      7        73
+  toolkit/components/telemetry/tests/unit/test_SyncPingIntegration.js                    flaky+skipped          7  100.0%       7      7        81
+  toolkit/components/telemetry/tests/unit/test_TelemetryClientID_reset.js                flaky+skipped          7  100.0%       7      7        79
+  toolkit/components/telemetry/tests/unit/test_TelemetryControllerShutdown.js            flaky+skipped          7  100.0%       7      7        78
+  toolkit/components/telemetry/tests/unit/test_TelemetryEnvironment_search.js            flaky+skipped          7  100.0%       7      7     2,145
+  toolkit/components/telemetry/tests/unit/test_TelemetryEnvironment.js                   flaky+skipped          7  100.0%       7      7     2,543
+  toolkit/components/telemetry/tests/unit/test_TelemetrySession_abortedSessionQueued.js  flaky+skipped          7  100.0%       7      7        74
+  toolkit/components/telemetry/tests/unit/test_UserInteraction_annotations.js            flaky+skipped          7  100.0%       7      7        97
+  … 27 more (--limit 0 for all)
+
+  8 of 43 tests here passed everywhere they ran and are not listed. They are still in every count above.
+
+  Next, for a test you pick:
+    fx-tests test toolkit/components/telemetry/tests/unit/test_MainPingDisablement.js     # every config it ran on, and what it failed with
+```
+
+**This is not `fx-tests issues --path <folder> --group-by test`, and the
+difference is the reason it exists.** `issues` ranks by issue *runs*, and skips
+are runs. On this same folder and window it puts
+`test_UserInteraction_annotations.js` at #1 with **6,879 issues, of which 6,782
+are skips** — a test this classification calls skipped, not flaky. Ranked that
+way a disabled file outranks everything that actually fails, which is the exact
+mistake a burndown listing must not make. `issues` is still the right command for
+"what does this test fail *with*"; it is the wrong one for "what is flaky here".
+
+**The counts are whole days, not the folder view's means.** A folder's `flaky` is
+a mean over a population — 126.7 tests on a typical day — and averaging a
+*single* test's verdicts gives a number in `{0, 1/7, … 1}`, so printed as a mean
+every worst row in the table reads `1` and every "flaky twice" reads `0.3`. So
+the three `d` columns are counts of days out of the window: `flaky d 6` of
+`ran d 7` is "flaky on six of the seven days it ran". `failures` is the odd one
+out and the header says so — it is failing *runs* across every configuration over
+the whole 21 days, which is the quantity the noise filter is compared against.
+
+**The subtree is the default**; `--here-only` restricts to the files directly in
+the path. That way round because the folder ranking hands you a directory and its
+subdirectories are the same afternoon's work — and because the ranking's
+`+subtree` column exists precisely to say "there is more below here", so the
+command it points at must be the one that shows it. On real data the two
+coincide on 246 of 250 folders; the default is chosen for the 4 where they do
+not. `--here-only` needs a path and is refused without one, since with no path
+there is nothing for it to exclude.
+
+**Tests that passed everywhere are counted and not listed**, and the footer says
+how many. This is the page's rule (`site/flaky-view.ts`'s `isWorthListing`) and
+it hides the same rows: measured tree-wide on the pinned window, 2,224 of 4,806
+under the 7-day default, 707 of 4,807 under `--all-days`, and 3,122 of 4,805
+under `--day` — two rows in three on the day view. Hiding a row never moves a
+number; the percentages and the folder row's `tests` count the whole population.
+
+`--sort`, `--noise`, `--day`, `--all-days` and `--average-days` all mean the same
+thing here as on the folder ranking, so a reader who ranks folders under one
+window and drills in sees the same window. `--json` carries the rows, the header,
+`cleanTests` and `consideredTests`.
 
 ### `fx-tests guide` — orientation for an agent
 
