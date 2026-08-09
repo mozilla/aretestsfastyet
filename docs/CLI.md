@@ -1018,16 +1018,19 @@ Non-goals.
 #### `fx-tests flaky <path>` — the flaky tests in a folder
 
 A ranking's answer is a folder, and the next question is always *which files*.
-This is that view, on the same classification as the ranking above it.
-`fx-tests flaky <path>` is the shorthand; `--group-by tests --path <path>` is the
-long form and they emit byte-identical output.
+This is that view, on the same classification **and the same window** as the
+ranking above it — so it is a refinement of the row you picked rather than a
+second question about the same folder. `fx-tests flaky <path>` is the shorthand;
+`--group-by tests --path <path>` is the long form and they emit byte-identical
+output.
 
 ```
 $ fx-tests flaky toolkit/components/telemetry/tests/unit --limit 8
 
 xpcshell flaky tests, by test file — 21 days (2026-07-15 (Wed) … 2026-08-04 (Tue)), 4,838 tests in the file
   Test files under toolkit/components/telemetry/tests/unit and its subfolders.
-  Window: 2026-08-04 (Tue) alone, one verdict per test (--all-days for the whole file).
+  Window: the ranking's 7 days 2026-07-29 … 2026-08-04, one verdict per test, flaky if flaky on
+  ANY of them — so more tests than the ranking's mean per day (--day, --all-days).
 
   Test                                                                                   flaky ▼  skipped  failures 21d
   toolkit/components/telemetry/tests/unit/test_TelemetryEnvironment.js                         1        1         2,543
@@ -1038,9 +1041,9 @@ xpcshell flaky tests, by test file — 21 days (2026-07-15 (Wed) … 2026-08-04 
   toolkit/components/telemetry/tests/unit/test_TelemetryControllerShutdown.js                  1        1            78
   toolkit/components/telemetry/tests/unit/test_TelemetrySession_abortedSessionQueued.js        1        1            74
   toolkit/components/telemetry/tests/unit/test_MainPingDisablement.js                          1        1            73
-  … 25 more (--limit 0 for all)
+  … 27 more (--limit 0 for all)
 
-  10 of 43 tests here passed everywhere they ran and are not listed. They are still in every count above.
+  8 of 43 tests here passed everywhere they ran and are not listed. They are still in every count above.
 
   Next, for a test you pick:
     fx-tests test toolkit/components/telemetry/tests/unit/test_TelemetryEnvironment.js     # every config it ran on, and what it failed with
@@ -1055,18 +1058,37 @@ way a disabled file outranks everything that actually fails, which is the exact
 mistake a burndown listing must not make. `issues` is still the right command for
 "what does this test fail *with*"; it is the wrong one for "what is flaky here".
 
-**The verdicts are 0 or 1, and the window is one day by default.** This is the
+**The verdicts are 0 or 1, over the same 7 days the ranking scores.** This is the
 derivation `flaky.html` renders its own test rows from
 (`flakinessByFolder`): one verdict per test over the window, whose leaves take
 exactly two values — measured on the pinned file, 4,807 leaves, two distinct
 values in each of `flaky`, `skipped` and `stable`, with `total` always 1. The CLI
 reads the same function so the two cannot disagree about whether a test is flaky,
-and the header names the day it used. `--all-days` widens it to the whole file and
-`--day` picks another.
+and the header names the window it used. A test is flaky here if it was flaky on
+**any** of those days. `--all-days` widens that to the whole 21-day file and
+`--day` narrows it to one named day.
 
-The 7-day averaging stays on the **folder ranking**, where "126.7 of this
-folder's tests were flaky on a typical day" is a real quantity over a real
-population. Pushing it down onto a single test was a mistake: a single test's mean
+**The window used to be one day, and that was a bug rather than a choice.** The
+listing passed no window option at all, so it inherited `flakinessByFolder`'s own
+default — the most recent day, a default written for the folder table, where a
+single day is the right unit. Drilling into a ranked row therefore crossed a
+window boundary with nothing saying so: measured on the pinned window for
+`toolkit/components/telemetry/tests/unit`, the ranking scores the folder over 7
+days and the listing showed **29** flaky tests where **32** were flaky across
+those days. Three tests the reader had just been given a count of were absent from
+the list of them. The listing now takes the ranking's window, so drilling in is a
+refinement of the row rather than a different question.
+
+**The two numbers still differ, and both are correct.** The ranking says `26.7`
+for that folder and the listing shows 32 rows, because they are different
+quantities over the same 7 days: a *mean per day* of the folder's flaky tests
+against a *count of distinct tests* flaky at least once. The listing's number is
+always the larger of the two and must not be read as a correction of the ranking's;
+the header says so on every run.
+
+The *averaging* stays on the **folder ranking**, where "126.7 of this folder's
+tests were flaky on a typical day" is a real quantity over a real population.
+Pushing it down onto a single test was a separate mistake: a single test's mean
 can only be `{0, 1/7, … 1}`, so it was multiplied back out into day counts and the
 table read `7  100.0%  7  7` to say "always fails, always skipped".
 
@@ -1098,17 +1120,18 @@ there is nothing for it to exclude.
 
 **Tests that passed everywhere are counted and not listed**, and the footer says
 how many. This is the page's rule (`site/flaky-view.ts`'s `isWorthListing`) and it
-hides the same rows: measured tree-wide on the pinned window, **3,122 of 4,805**
-under the one-day default — two rows in three — and **707 of 4,807** under
-`--all-days`, which is the looser bar and therefore hides far less. Hiding a row
-never moves a number; the folder row's `tests` counts the whole population.
+hides the same rows: measured tree-wide on the pinned window, **2,224 of 4,806**
+under the 7-day default, **3,122 of 4,805** under `--day` — two rows in three —
+and **707 of 4,807** under `--all-days`, which is the loosest bar and therefore
+hides least. Hiding a row never moves a number; the folder row's `tests` counts
+the whole population.
 
 `--sort`, `--noise`, `--day` and `--all-days` mean the same thing here as on the
-folder ranking. `--average-days` does not apply: this view does not average, so a
-reader who ranks folders on a 7-day mean and drills in gets one verdict per test,
-and the header says which day. `--json` carries the rows, the header — with
-`scope` corrected to what the listing actually classified — `cleanTests` and
-`consideredTests`.
+folder ranking. `--average-days` does not apply: this view covers the same days
+the ranking averages but does not average them, so a reader who ranks folders on
+a 7-day mean and drills in gets one verdict per test over those same 7 days.
+`--json` carries the rows, the header — with `scope` reported as `window` rather
+than `average`, since nothing here is a mean — `cleanTests` and `consideredTests`.
 
 **The suggested follow-up commands carry the flags needed to reproduce the
 context**, which they did not: under `--harness mochitest` the footer offered

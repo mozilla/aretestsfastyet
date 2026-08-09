@@ -85,6 +85,20 @@
  * window as the ranking above it, reached as `fx-tests flaky <path>` or
  * `--group-by tests`. See `testRows()`.
  *
+ * "The same window" is now true and was not. The listing passed no window option
+ * to `flakinessByFolder` at all, so it inherited that function's own default of
+ * the most recent day — a default written for the folder table. Measured on the
+ * pinned file for `toolkit/components/telemetry/tests/unit`, the ranking scores
+ * the folder over 7 days and the listing showed **29** flaky tests where **32**
+ * were flaky across those days: three tests the ranking counted were absent from
+ * the drill-down of it. The listing now takes one verdict per test over the same
+ * 7 days — flaky if flaky on any of them — so drilling in is a refinement of the
+ * row rather than a different question. `listingTree()` has the mechanism.
+ *
+ * The two numbers still differ, and both are right: the ranking's 26.7 is a mean
+ * per day, the listing's 32 is a count of distinct tests. Only the *window* is
+ * shared, and the header says so.
+ *
  * ## Flaky and skipped overlap, and the header says so
  *
  * A test that fails on Linux and is disabled on Windows is both. Measured on the
@@ -158,11 +172,15 @@ export const FLAKY_NOTES: string[] = [
     '  number of weeks, because weekend push volume is 2.6x lower and one day\'s ranking is',
     '  otherwise partly the calendar: on the pinned window netwerk/test/unit reads 137',
     '  flaky on a Tuesday and 76 on a Sunday.',
-    '  The PER-TEST view does not average — a single test has no meaningful mean — and',
-    '  takes one verdict over one day, the most recent, as flaky.html does.',
-    '  --day <date> picks another day. --all-days takes a single verdict over the whole',
-    '  file window, flaky if flaky on ANY day — a much looser bar, tree-wide ~84% of',
-    '  tests, because a test runs on dozens of configs dozens of times a day.',
+    '  The PER-TEST view covers the SAME 7 days but does not average — a single test has',
+    '  no meaningful mean — so it takes one verdict per test: flaky if flaky on ANY of',
+    '  those days. Drilling into a ranked folder therefore stays inside the window it was',
+    '  ranked over. The two numbers are still different quantities and both are right: on',
+    '  the pinned window toolkit/components/telemetry/tests/unit ranks at 26.7 (a mean per',
+    '  day) and lists 32 (distinct tests flaky at least once in the 7 days).',
+    '  --day <date> takes one verdict on one named day instead. --all-days takes one over',
+    '  the whole 21-day file, flaky if flaky on ANY day — a much looser bar, tree-wide',
+    '  ~84% of tests, because a test runs on dozens of configs dozens of times a day.',
     '  Every run names the window it used in its header.',
     '',
     'Flaky and skipped OVERLAP:',
@@ -262,20 +280,27 @@ interface FlakyHeader {
     testCount: number;
     dataSource: string;
     /**
-     * How the folder views classified: an average, one day, or the whole window.
+     * Which window classified: an average, one day, the whole file, or a trailing
+     * window of it.
      *
-     * Named rather than left implicit because the three give a 48%, a 53% and a
-     * 75% reading of the same folder, and a reader cannot tell them apart from
-     * the numbers. See the module comment.
+     * Named rather than left implicit because they give a 48%, a 53% and a 75%
+     * reading of the same folder, and a reader cannot tell them apart from the
+     * numbers. See the module comment.
+     *
+     * `window` is the per-test listing's default and appears on no folder view: it
+     * is one verdict per test over the same `DEFAULT_AVERAGE_DAYS` days the folder
+     * ranking averages — see `listingTree`. The folder views never take it,
+     * because "flaky on any of 7 days" inflates a folder's count toward the same
+     * denominator effect `--all-days` has, which is what the averaging avoids.
      */
-    scope: 'average' | 'day' | 'all-days';
+    scope: 'average' | 'day' | 'all-days' | 'window';
     /**
      * Whether the scope was asked for, rather than being a view's default.
      *
      * Only the suggested follow-up commands read it, and only to avoid printing a
-     * flag the reader never typed: the per-test listing classifies one day by
-     * default (`listingHeader`), so `scope: 'day'` there is not the same fact as
-     * `--day 2026-08-04` on the command line.
+     * flag the reader never typed: the per-test listing classifies the ranking's
+     * 7 days by default (`listingHeader`), which is not the same fact as
+     * `--all-days` or `--day 2026-08-04` on the command line.
      */
     scopeRequested: boolean;
     /** The dates the folder views covered, oldest first. */
@@ -626,6 +651,11 @@ interface TestRow {
      * `skipped` and `stable`, namely 0 and 1, with `total` always 1. Using the
      * same derivation is also what stops the CLI and the page disagreeing about
      * a test, which `test/flaky-tests-listing.test.ts` pins.
+     *
+     * What the listing *does* share with the ranking is the **window**, which is
+     * not the same thing as the averaging: by default the verdict covers the same
+     * `DEFAULT_AVERAGE_DAYS` days, flaky if flaky on any of them. See
+     * `listingTree`.
      */
     flaky: number;
     /** Whether it is skipped somewhere: 0 or 1, overlapping `flaky`. */
@@ -663,14 +693,14 @@ interface TestResult {
      *
      * | scope | clean, not listed | considered |
      * | --- | --- | --- |
-     * | 7-day average (default) | 2,224 | 4,806 |
+     * | the ranking's 7 days (default) | 2,224 | 4,806 |
      * | `--all-days` | 707 | 4,807 |
      * | `--day 2026-08-04` | 3,122 | 4,805 |
      *
      * The two ends are the page's own measured figures for its two readings
      * (`site/flaky-view.ts`'s `isWorthListing`), which is the check that this
      * hides the same rows the page hides. The default sits between them, as a
-     * 7-day mean of per-day verdicts must.
+     * verdict over 7 of the 21 days must.
      */
     cleanTests: number;
     /** Every test considered, clean ones included. */
@@ -706,17 +736,50 @@ interface TestResult {
  * page cannot disagree about whether a test is flaky —
  * `test/flaky-tests-listing.test.ts` asserts they agree leaf for leaf.
  *
- * The averaging stays where it means something: the folder ranking, where "126.7
- * tests flaky on a typical day" is a real population quantity. `--day` and
- * `--all-days` still select which window the verdict covers.
+ * ## The default window is the ranking's, and used not to be
+ *
+ * With neither `--day` nor `--all-days` this passed **no window option at all**,
+ * so `flakinessByFolder` fell through to its own default of the most recent day —
+ * a default written for the *folder* table, where a single day is the right unit,
+ * and inherited here by omission. The ranking above it scores over
+ * `DEFAULT_AVERAGE_DAYS` days, so drilling into a row crossed a window boundary
+ * with nothing saying so. Measured on the pinned file for
+ * `toolkit/components/telemetry/tests/unit`: the ranking scores 7 days, and the
+ * listing showed **29** flaky tests where **32** were flaky in those 7 days.
+ * Three tests the ranking counted were silently absent from the drill-down.
+ *
+ * So the default is now the ranking's window, expressed as the only shape a
+ * per-test verdict can take over several days: `allDays` bounded by `fromDay`,
+ * flaky if flaky on **any** of them. Still 0/1 per test, still no means, still
+ * `windowState`'s precedence — a test flaky on one of those days and skipped on
+ * another is flaky-and-skipped, as it is under every other scope.
+ *
+ * **The two numbers are not the same quantity and must not be forced to match.**
+ * The ranking's 26.7 is a mean per day; this listing's 32 is a count of distinct
+ * tests flaky at least once in the window. Both are correct over the same 7 days,
+ * and the header states the relationship rather than leaving a reader to notice
+ * that 32 > 26.7.
+ *
+ * `--day` and `--all-days` are untouched: one named day, and one verdict over the
+ * whole 21-day file.
  */
 function listingTree(query: FlakyQuery): FolderNode {
     const noise = { minWindowFailures: query.header.requestedMinWindowFailures };
+    const days = query.file.days ?? 1;
+    // The default: the ranking's trailing window, as a single verdict per test.
+    // `header.scope` is what resolved which of the four ran, so the tree and the
+    // header cannot disagree about it — the mismatch `flaky.html` had to fix.
+    const window =
+        query.header.scope === 'average'
+            ? { allDays: true as const, fromDay: days - (query.header.averageDays ?? days) }
+            : {
+                  ...(query.allDays ? { allDays: true as const } : {}),
+                  ...(query.day === undefined ? {} : { day: query.day }),
+              };
     return flakinessByFolder(query.file, {
         ...noise,
         ...(query.pathPrefix === undefined ? {} : { pathPrefix: query.pathPrefix }),
-        ...(query.allDays ? { allDays: true } : {}),
-        ...(query.day === undefined ? {} : { day: query.day }),
+        ...window,
     });
 }
 
@@ -724,30 +787,31 @@ function listingTree(query: FlakyQuery): FolderNode {
  * The header as it applies to the **per-test listing**, whose scope differs.
  *
  * `loadFlakyQuery` resolves one header for every view, and its default is the
- * folder ranking's 7-day average. `listingTree` does not average: with neither
- * `--day` nor `--all-days` it classifies the most recent day alone. Emitting the
- * shared header unchanged would have `--json` claim `scope: "average"` with seven
- * `scopeDates` over a table built from one day — precisely the tiles-say-one-day,
- * table-says-another mismatch `flaky.html` had to fix, and the reason this header
- * names its scope at all.
+ * folder ranking's 7-day *average*. `listingTree` covers the same seven days but
+ * does not average them: a single test's mean can only be 0, 1/7 … 1, so it takes
+ * one verdict over the window instead. Emitting the shared header unchanged would
+ * have `--json` claim `scope: "average"` and `averageDays: 7` over a table of 0/1
+ * verdicts — the tiles-say-one-thing, table-says-another mismatch `flaky.html`
+ * had to fix, and the reason this header names its scope at all.
  *
- * So the listing corrects the three fields that describe the scope and leaves the
- * rest — the file's own window, the harness, the noise accounting — alone.
+ * So the listing corrects the fields that describe *how* it classified and leaves
+ * the rest — the dates themselves, the file's window, the harness, the noise
+ * accounting — alone. `scopeDates` is deliberately unchanged: the window really
+ * is those seven days, which is the whole point of the fix. Only `averageDays`
+ * goes to `null`, because nothing here is a mean.
  *
- * `scopeRequested` stays false in that correction, because the day was this
+ * `scopeRequested` stays false in that correction, because the window was this
  * view's default rather than something the reader asked for. `suggestion` reads
- * it: a footer that appended `--day 2026-08-04` would be telling the reader to
- * type a flag they never typed, and pinning tomorrow's run to today's date.
+ * it: a footer that appended `--all-days` would be telling the reader to type a
+ * flag they never typed, and one that named a date would pin a later run to it.
  */
 function listingHeader(header: FlakyHeader): FlakyHeader {
     if (header.scope !== 'average') {
         return header;
     }
-    const day = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
     return {
         ...header,
-        scope: 'day',
-        scopeDates: [day],
+        scope: 'window',
         averageDays: null,
         scopeRequested: false,
     };
@@ -983,8 +1047,9 @@ function suggestion(
         flags.push(`--harness ${header.harness}`);
     }
     // Only a scope the reader actually asked for. The per-test listing's default
-    // is one day (`listingHeader`), and suggesting `--day <today>` for it would
-    // both invent a flag they did not type and pin a later run to this date.
+    // window is `scope: 'window'` and not `'day'` (`listingHeader`), so it never
+    // reaches this branch — and naming its last date would both invent a flag the
+    // reader never typed and pin a later run to today.
     if (header.scope === 'day' && header.scopeRequested) {
         flags.push(`--day ${header.scopeDates[0] ?? header.endDate}`);
     }
@@ -1045,7 +1110,7 @@ function testEmptyMessage(result: TestResult): string {
             ? `on ${header.scopeDates[0] ?? header.endDate}`
             : header.scope === 'all-days'
               ? `over all ${header.dayCount} days`
-              : `over the last ${header.averageDays ?? 0} days`;
+              : `over the last ${header.scopeDates.length} days`;
     if (result.consideredTests === 0) {
         return (
             `No test ran under ${where} ${over}. Searched ` +
@@ -1523,14 +1588,27 @@ function headerLines(result: FolderResult | TrendResult | TestResult): string[] 
             `Window: --all-days — one verdict over all ${header.dayCount} days, flaky if flaky ` +
                 'on ANY of them. A much looser bar than the default (see --help).'
         );
+    } else if (header.scope === 'window') {
+        // The per-test listing's default: the same days the ranking averages, but
+        // one verdict per test rather than a mean, so a reader drilling into a row
+        // stays inside the window it was scored over. The second sentence is what
+        // stops the two numbers reading as a contradiction — the ranking says 26.7
+        // for toolkit/components/telemetry/tests/unit and this lists 32, because a
+        // mean per day and a count of distinct tests are different quantities over
+        // the same seven days.
+        const first = header.scopeDates[0] ?? header.startDate;
+        const last = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
+        lines.push(
+            `Window: the ranking's ${header.scopeDates.length} days ${first} … ${last}, one ` +
+                'verdict per test, flaky if flaky on ANY of them — so more tests than the ' +
+                'ranking\'s mean per day (--day, --all-days).'
+        );
     } else if (header.scope === 'day') {
-        // One day, either because --day named it or — on the per-test listing —
-        // because that is what `listingTree` classifies by default: it is
-        // `flakinessByFolder`, the derivation the page renders its test rows from,
-        // and with no flag that is the most recent day. Measured on the pinned
-        // file it finds 923 flaky tests, exactly the 2026-08-04 row of
-        // --group-by days, so naming the day is naming the number's real source
-        // rather than inheriting the folder ranking's 7-day average.
+        // One day, because --day named it. The per-test listing no longer lands
+        // here by default: it used to, by omitting a window option entirely, and
+        // that is the bug — measured on the pinned file for
+        // toolkit/components/telemetry/tests/unit it listed 29 flaky tests under a
+        // ranking that had scored 32 over 7 days. See `listingTree`.
         const date = dateWithWeekday(header.scopeDates[0] ?? header.endDate);
         lines.push(
             result.groupBy === 'tests'

@@ -3180,21 +3180,21 @@ function stateOn(row, day, neutralised) {
   }
   return passed > 0 ? "stable" : null;
 }
-function wasSkipped(row, days, day) {
+function wasSkipped(row, days, day, from = 0) {
   if (day !== null) {
     return (row.skip[day] ?? 0) > 0;
   }
-  for (let index = 0; index < days; index++) {
+  for (let index = from; index < days; index++) {
     if (row.skip[index] > 0) {
       return true;
     }
   }
   return false;
 }
-function windowState(row, days, neutralised) {
+function windowState(row, days, neutralised, from = 0) {
   let sawSkip = false;
   let sawPass = false;
-  for (let day = 0; day < days; day++) {
+  for (let day = from; day < days; day++) {
     switch (stateOn(row, day, neutralised)) {
       case "flaky":
         return "flaky";
@@ -3324,6 +3324,7 @@ function flakinessByFolder(file, options = {}) {
   const { rows: rows2, neutralised, days } = walk(file, options, ids);
   const lastDay = days - 1;
   const day = options.day ?? lastDay;
+  const fromDay = Math.max(0, Math.min(options.fromDay ?? 0, lastDay));
   const root = {
     path: "",
     name: "",
@@ -3340,11 +3341,11 @@ function flakinessByFolder(file, options = {}) {
   for (let index = 0; index < ids.length; index++) {
     const row = rows2[index];
     const noise = neutralised[index];
-    const state = options.allDays === true ? windowState(row, days, noise) : stateOn(row, day, noise);
+    const state = options.allDays === true ? windowState(row, days, noise, fromDay) : stateOn(row, day, noise);
     if (state === null) {
       continue;
     }
-    const skipped = wasSkipped(row, days, options.allDays === true ? null : day);
+    const skipped = wasSkipped(row, days, options.allDays === true ? null : day, fromDay);
     const both = state === "flaky" && skipped;
     const identity = file.testAt(ids[index]);
     const { directory } = identity;
@@ -3607,11 +3608,15 @@ var FLAKY_NOTES = [
   "  number of weeks, because weekend push volume is 2.6x lower and one day's ranking is",
   "  otherwise partly the calendar: on the pinned window netwerk/test/unit reads 137",
   "  flaky on a Tuesday and 76 on a Sunday.",
-  "  The PER-TEST view does not average \u2014 a single test has no meaningful mean \u2014 and",
-  "  takes one verdict over one day, the most recent, as flaky.html does.",
-  "  --day <date> picks another day. --all-days takes a single verdict over the whole",
-  "  file window, flaky if flaky on ANY day \u2014 a much looser bar, tree-wide ~84% of",
-  "  tests, because a test runs on dozens of configs dozens of times a day.",
+  "  The PER-TEST view covers the SAME 7 days but does not average \u2014 a single test has",
+  "  no meaningful mean \u2014 so it takes one verdict per test: flaky if flaky on ANY of",
+  "  those days. Drilling into a ranked folder therefore stays inside the window it was",
+  "  ranked over. The two numbers are still different quantities and both are right: on",
+  "  the pinned window toolkit/components/telemetry/tests/unit ranks at 26.7 (a mean per",
+  "  day) and lists 32 (distinct tests flaky at least once in the 7 days).",
+  "  --day <date> takes one verdict on one named day instead. --all-days takes one over",
+  "  the whole 21-day file, flaky if flaky on ANY day \u2014 a much looser bar, tree-wide",
+  "  ~84% of tests, because a test runs on dozens of configs dozens of times a day.",
   "  Every run names the window it used in its header.",
   "",
   "Flaky and skipped OVERLAP:",
@@ -3866,22 +3871,24 @@ function classifiedTree(query) {
 }
 function listingTree(query) {
   const noise = { minWindowFailures: query.header.requestedMinWindowFailures };
+  const days = query.file.days ?? 1;
+  const window = query.header.scope === "average" ? { allDays: true, fromDay: days - (query.header.averageDays ?? days) } : {
+    ...query.allDays ? { allDays: true } : {},
+    ...query.day === void 0 ? {} : { day: query.day }
+  };
   return flakinessByFolder(query.file, {
     ...noise,
     ...query.pathPrefix === void 0 ? {} : { pathPrefix: query.pathPrefix },
-    ...query.allDays ? { allDays: true } : {},
-    ...query.day === void 0 ? {} : { day: query.day }
+    ...window
   });
 }
 function listingHeader(header) {
   if (header.scope !== "average") {
     return header;
   }
-  const day = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
   return {
     ...header,
-    scope: "day",
-    scopeDates: [day],
+    scope: "window",
     averageDays: null,
     scopeRequested: false
   };
@@ -4024,7 +4031,7 @@ function testEpilogue(result) {
 function testEmptyMessage(result) {
   const { header } = result;
   const where = result.pathPrefix === null ? "the tree" : result.pathPrefix;
-  const over = header.scope === "day" ? `on ${header.scopeDates[0] ?? header.endDate}` : header.scope === "all-days" ? `over all ${header.dayCount} days` : `over the last ${header.averageDays ?? 0} days`;
+  const over = header.scope === "day" ? `on ${header.scopeDates[0] ?? header.endDate}` : header.scope === "all-days" ? `over all ${header.dayCount} days` : `over the last ${header.scopeDates.length} days`;
   if (result.consideredTests === 0) {
     return `No test ran under ${where} ${over}. Searched ${count(header.testCount)} tests in ${header.harness}-issues.json. Check the path (a directory prefix) for typos` + (result.hereOnly ? ", and note that --here-only needs the path to name a directory exactly \u2014 drop it for the subtree." : ".");
   }
@@ -4243,6 +4250,12 @@ function headerLines2(result) {
   } else if (header.scope === "all-days") {
     lines.push(
       `Window: --all-days \u2014 one verdict over all ${header.dayCount} days, flaky if flaky on ANY of them. A much looser bar than the default (see --help).`
+    );
+  } else if (header.scope === "window") {
+    const first = header.scopeDates[0] ?? header.startDate;
+    const last = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
+    lines.push(
+      `Window: the ranking's ${header.scopeDates.length} days ${first} \u2026 ${last}, one verdict per test, flaky if flaky on ANY of them \u2014 so more tests than the ranking's mean per day (--day, --all-days).`
     );
   } else if (header.scope === "day") {
     const date = dateWithWeekday(header.scopeDates[0] ?? header.endDate);

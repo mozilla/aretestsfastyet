@@ -290,13 +290,15 @@ function stateOn(row: TestDays, day: number, neutralised: boolean): FlakyState |
  * verdict: a test that failed on Linux and is disabled on Windows is flaky *and*
  * skipped, and both facts are worth a column. See `OverlappingCounts`.
  *
- * `day` is a single day, or `null` for the whole window.
+ * `day` is a single day, or `null` for every day from `from` to the end — which
+ * is the whole window at the default `from` of 0, and the trailing window under
+ * `FolderOptions.fromDay`.
  */
-function wasSkipped(row: TestDays, days: number, day: number | null): boolean {
+function wasSkipped(row: TestDays, days: number, day: number | null, from = 0): boolean {
     if (day !== null) {
         return (row.skip[day] ?? 0) > 0;
     }
-    for (let index = 0; index < days; index++) {
+    for (let index = from; index < days; index++) {
         if (row.skip[index]! > 0) {
             return true;
         }
@@ -304,10 +306,15 @@ function wasSkipped(row: TestDays, days: number, day: number | null): boolean {
     return false;
 }
 
-function windowState(row: TestDays, days: number, neutralised: boolean): FlakyState | null {
+function windowState(
+    row: TestDays,
+    days: number,
+    neutralised: boolean,
+    from = 0
+): FlakyState | null {
     let sawSkip = false;
     let sawPass = false;
-    for (let day = 0; day < days; day++) {
+    for (let day = from; day < days; day++) {
         switch (stateOn(row, day, neutralised)) {
             case 'flaky':
                 return 'flaky';
@@ -655,6 +662,36 @@ export interface FolderOptions extends FlakinessOptions {
      * the noise filter matters more here than in single-day mode.
      */
     allDays?: boolean | undefined;
+    /**
+     * The **oldest** day of an `allDays` verdict, as an absolute day index.
+     *
+     * Only read when `allDays` is true, and ignored otherwise: it narrows the
+     * "flaky on ANY day" verdict from the whole file to a trailing window, using
+     * the same `windowState` precedence — flaky beats skipped beats stable — so a
+     * test flaky on one of those days and skipped on another is still
+     * flaky-and-skipped. Every leaf stays 0 or 1 and `total` stays 1, exactly as
+     * with `allDays` alone; the only thing that moves is how many days the verdict
+     * looked at.
+     *
+     * It exists because neither of the two existing shapes is the window the
+     * folder ranking uses. The ranking averages `DEFAULT_AVERAGE_DAYS` days of
+     * per-day verdicts, and a reader who drills into one of its rows must not
+     * cross into a different window: measured on the pinned file for
+     * `toolkit/components/telemetry/tests/unit`, one day finds 29 flaky tests
+     * where the ranking's 7 days contain 32, so three tests the ranking counted
+     * were silently absent from the drill-down.
+     *
+     * A per-test verdict over 7 days is **not** an approximation of the ranking's
+     * mean and cannot be compared to it as a number: the ranking says 26.7 flaky
+     * tests on a typical day, this says 32 distinct tests were flaky at least once
+     * across those days. Both are correct over the same 7 days. Only the *window*
+     * is shared, which is the thing a drill-down has to inherit.
+     *
+     * The noise filter is unaffected: it is judged over the whole file however
+     * narrow this window is, which is the asymmetry `MIN_FILTERABLE_DAYS`
+     * documents.
+     */
+    fromDay?: number | undefined;
 }
 
 /**
@@ -666,6 +703,10 @@ export interface FolderOptions extends FlakinessOptions {
  *
  * The root node is returned; its `path` is `''` and its counts are the whole
  * selection's, so the caller does not need a separate total row.
+ *
+ * Three windows, all giving **one verdict per test**: `day` (or none, meaning the
+ * most recent day), `allDays` for the whole file, and `allDays` with `fromDay` for
+ * a trailing window of it. See `FolderOptions`.
  */
 export function flakinessByFolder(
     file: DecodedTimingFile,
@@ -675,6 +716,11 @@ export function flakinessByFolder(
     const { rows, neutralised, days } = walk(file, options, ids);
     const lastDay = days - 1;
     const day = options.day ?? lastDay;
+    // Clamped rather than refused, as `flakinessByFolderAveraged` clamps its own
+    // window: asking for the last 7 days of a 3-day file is a reasonable thing to
+    // type and the answer is the days that exist. 0 keeps `allDays` meaning the
+    // whole file, so an existing caller passing no `fromDay` is unchanged.
+    const fromDay = Math.max(0, Math.min(options.fromDay ?? 0, lastDay));
 
     const root: FolderNode = {
         path: '',
@@ -699,14 +745,18 @@ export function flakinessByFolder(
         // charts use: over the window it is the worst state the test reached on
         // any day, flaky beating skipped beating stable.
         const state =
-            options.allDays === true ? windowState(row, days, noise) : stateOn(row, day, noise);
+            options.allDays === true
+                ? windowState(row, days, noise, fromDay)
+                : stateOn(row, day, noise);
         if (state === null) {
             continue;
         }
         // ...and separately, whether it was skipped at all. A test can be both,
         // and in the table both facts count — see `OverlappingCounts`. So the
-        // skipped column is this, not `state === 'skipped'`.
-        const skipped = wasSkipped(row, days, options.allDays === true ? null : day);
+        // skipped column is this, not `state === 'skipped'`. Over the same days
+        // the verdict looked at, or the drill-down would report a skip from
+        // outside its own window.
+        const skipped = wasSkipped(row, days, options.allDays === true ? null : day, fromDay);
         const both = state === 'flaky' && skipped;
 
         const identity = file.testAt(ids[index]!);

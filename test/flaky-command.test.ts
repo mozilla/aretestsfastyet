@@ -548,15 +548,21 @@ test('a suggestion carries the scope only when the reader asked for it', async (
         assert.match(line, /--day 2026-08-03/, `"${line.trim()}" must carry the day it ranked`);
     }
 
-    // But the per-test listing classifies one day *by default*, and suggesting
-    // `--day <that day>` would print a flag the reader never typed and pin a later
-    // run to this date. `scopeRequested` is what separates the two cases.
+    // But the per-test listing takes the ranking's window *by default*, and
+    // suggesting a flag for it would print something the reader never typed and
+    // pin a later run to today's dates. `scopeRequested` is what separates the two
+    // cases. Checked on the suggestion lines rather than the whole output: the
+    // header's own caveat names `--day` and `--all-days` as the two other windows
+    // available, which is prose about the alternatives and not a command to run.
     const listing = await invoke(['flaky', 'toolkit', '--quiet', '--limit', '2']);
-    assert.doesNotMatch(
-        listing.stdout,
-        /--day/,
-        'the listing’s default day was not requested, so no suggestion may name it'
-    );
+    for (const line of listing.stdout.split('\n').filter((l) => l.trim().startsWith('fx-tests '))) {
+        assert.doesNotMatch(
+            line,
+            /--day|--all-days|--average-days/,
+            `"${line.trim()}": the listing’s default window was not requested, so no suggestion ` +
+                'may name it'
+        );
+    }
 
     // `--noise` goes only to the command that accepts it: `fx-tests test` and
     // `fx-tests skips` would reject it as an unknown flag.

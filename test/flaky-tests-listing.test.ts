@@ -18,26 +18,32 @@
  * ## Where the goldens come from
  *
  * Not from the code under test, and not from `test/flaky-command.test.ts`'s walk
- * either. `independentTestDays()` below re-decodes the fixture's delta-encoded day
- * arrays, matches statuses by regular expression rather than through
- * `classifyStatus`, applies the three-state precedence with its own `if` chain,
- * and — the part that matters for this view — counts **days per test** as integers
- * and never divides. That last difference is deliberate: the implementation
- * divides by the window in `flakinessByFolderAveraged` and multiplies back in
- * `days()`, and a walk that did the same round trip could not catch it going
- * wrong. This one never leaves integers.
+ * either. Two independent recomputations live below, each re-decoding the
+ * fixture's delta-encoded day arrays and matching statuses by regular expression
+ * rather than through `classifyStatus`:
+ *
+ * - `independentTestDays()` counts **days per test** as integers and never
+ *   divides, which is what checks the population and the clean-test accounting.
+ * - `independentWindowVerdicts()` keeps no counters at all — two booleans per
+ *   test, ORed across the window — which is what checks the listing's default
+ *   window. Deliberately a second walk rather than `> 0` applied to the first:
+ *   the property under test is that the verdict is an OR across days and not
+ *   arithmetic, and a walk that counted first could not distinguish the two.
  *
  * ## What these are defending
  *
  * 1. **Flaky-first ranking**, so the `issues` failure mode cannot recur.
- * 2. **Whole days, not means.** A test's mean can only be 0, 1/7 … 1, so printed
- *    as means every worst row reads `1`; the columns are counts of days.
+ * 2. **0/1 verdicts, not means and not day counts.** A test's mean can only be
+ *    0, 1/7 … 1, so printed as means every worst row reads `1`.
  * 3. **Clean tests are hidden and counted.** `rowCount + cleanTests` must be
  *    every test that ran, or the listing is silently shorter than the folder row
  *    above it.
  * 4. **The subtree is the default**, and `--here-only` really is narrower.
- * 5. **The same classification as the folder ranking**, so a reader who ranks
- *    folders and drills in does not cross a definition boundary.
+ * 5. **The same classification *and the same window* as the folder ranking**, so
+ *    a reader who ranks folders and drills in does not cross a boundary of
+ *    either. The window half was broken: the listing passed no window option and
+ *    inherited `flakinessByFolder`'s single-day default, so a folder the ranking
+ *    scored at 32 flaky tests over 7 days drilled into a list of 29.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -197,6 +203,131 @@ function independentTestDays(file: IssuesFile, windowDays: number): Map<string, 
     return out;
 }
 
+/** One test file's single verdict over the window: two booleans and nothing else. */
+interface ExpectedVerdict {
+    /** It failed at least once on at least one day of the window. */
+    flaky: boolean;
+    /** It was skipped somewhere on at least one day of it. */
+    skipped: boolean;
+}
+
+/**
+ * Every test's **single verdict** over the trailing `windowDays` days.
+ *
+ * The listing's default window, recomputed the dumb way. Deliberately *not*
+ * `independentTestDays` with a `> 0` applied afterwards: that would derive both
+ * the day counts and the verdict from one walk, and the thing being checked here
+ * is precisely that the verdict is an OR across days rather than something with
+ * arithmetic in it. So this keeps no counters at all — two booleans per test, set
+ * once and never cleared — which is the shape a 0/1 verdict has and the shape a
+ * day count does not.
+ *
+ * A test that did not run at all in the window is absent, as it is from the tree.
+ * The noise filter is judged against the **whole** file however narrow the window
+ * is, which is the asymmetry `MIN_FILTERABLE_DAYS` documents.
+ */
+function independentWindowVerdicts(
+    file: IssuesFile,
+    windowDays: number
+): Map<string, ExpectedVerdict> {
+    const days = file.metadata.days;
+    const statuses = file.tables.statuses;
+    const messages = file.tables.messages;
+    const from = days - windowDays;
+
+    const out = new Map<string, ExpectedVerdict>();
+
+    const paths = file.tables.testPaths;
+    const pathIds = file.testInfo.testPathIds;
+    const names = file.tables.testNames;
+    const nameIds = file.testInfo.testNameIds;
+
+    for (let testId = 0; testId < file.testRuns.length; testId++) {
+        const perTest = file.testRuns[testId];
+        if (!perTest) {
+            continue;
+        }
+        const directory = paths[pathIds[testId]!]!;
+        const name = names[nameIds[testId]!]!;
+        const fullPath = directory === '' ? name : `${directory}/${name}`;
+
+        const fail = new Array<number>(days).fill(0);
+        const pass = new Array<number>(days).fill(0);
+        const skip = new Array<number>(days).fill(0);
+        let windowFailures = 0;
+
+        for (let statusId = 0; statusId < perTest.length; statusId++) {
+            const group = perTest[statusId];
+            if (!group) {
+                continue;
+            }
+            const status = statuses[statusId]!;
+            const raw = group as unknown as {
+                days?: number[];
+                counts?: number[];
+                messageIds?: (number | null)[];
+            };
+            if (raw.days === undefined || raw.counts === undefined) {
+                continue;
+            }
+            // Prefix matching, not the shared classifier, so a taxonomy change
+            // cannot move both sides at once.
+            const isSkip = status === 'SKIP';
+            const isExpectedFail = status.startsWith('EXPECTED-FAIL');
+            const isFail = !isExpectedFail && /^(FAIL|TIMEOUT|CRASH)/.test(status);
+            const isPass = isExpectedFail || status.startsWith('PASS');
+
+            let day = 0;
+            for (let index = 0; index < raw.days.length; index++) {
+                day += raw.days[index]!;
+                const count = raw.counts[index]!;
+                if (isFail) {
+                    fail[day] = fail[day]! + count;
+                    windowFailures += count;
+                } else if (isPass) {
+                    pass[day] = pass[day]! + count;
+                } else if (isSkip) {
+                    const messageId = raw.messageIds?.[index];
+                    const message =
+                        messageId === null || messageId === undefined
+                            ? null
+                            : messages[messageId]!;
+                    if (message === null || !message.startsWith('run-if')) {
+                        skip[day] = skip[day]! + count;
+                    }
+                }
+            }
+        }
+
+        // The default noise threshold of 1, reimplemented against the whole file.
+        const neutralised = windowFailures > 0 && windowFailures <= 1;
+
+        let anyFlaky = false;
+        let anySkipped = false;
+        let ran = false;
+        for (let day = from; day < days; day++) {
+            const failed = neutralised ? 0 : fail[day]!;
+            const passed = pass[day]! + (neutralised ? fail[day]! : 0);
+            const skipped = skip[day]!;
+            if (failed === 0 && skipped === 0 && passed === 0) {
+                continue;
+            }
+            ran = true;
+            if (failed > 0) {
+                anyFlaky = true;
+            }
+            if (skipped > 0) {
+                anySkipped = true;
+            }
+        }
+        if (!ran) {
+            continue;
+        }
+        out.set(fullPath, { flaky: anyFlaky, skipped: anySkipped });
+    }
+    return out;
+}
+
 /** The tests the listing must show: those with something to act on. */
 function expectedListed(expected: Map<string, ExpectedTest>): Map<string, ExpectedTest> {
     const out = new Map<string, ExpectedTest>();
@@ -273,7 +404,7 @@ async function listing(extra: string[] = []): Promise<Record<string, unknown>> {
 
 // --- the numbers ---------------------------------------------------------
 
-test('every listed row is the page’s own verdict for that test', async () => {
+test('every listed row is the page’s own verdict for that test, on the listing’s window', async () => {
     // ## Why this replaced an independent day-count walk
     //
     // The listing used to print how many of the last 7 days each test was flaky
@@ -293,8 +424,19 @@ test('every listed row is the page’s own verdict for that test', async () => {
 
     // The page's derivation, called directly. Not a reimplementation: agreeing
     // with a copy of the logic would prove nothing about agreeing with the page.
+    //
+    // `fromDay` because the listing's default window is now the folder ranking's
+    // — see `listingTree` — so the page function has to be asked the same
+    // question. Asking it its own default (the most recent day) would be
+    // re-asserting the bug: on the pinned file that reads 29 flaky tests in
+    // `toolkit/components/telemetry/tests/unit` where the ranking scored 32.
+    const decoded = decodeIssues(issuesFixture);
     const leaves = subtreeTests(
-        flakinessByFolder(decodeIssues(issuesFixture), { minWindowFailures: 1 })
+        flakinessByFolder(decoded, {
+            minWindowFailures: 1,
+            allDays: true,
+            fromDay: (decoded.days ?? 1) - DEFAULT_AVERAGE_DAYS,
+        })
     );
     const want = new Map(leaves.filter(hasSomethingToAct).map((leaf) => [leaf.fullPath, leaf]));
 
@@ -509,39 +651,76 @@ test('--here-only needs a path, and applies only to this view', async () => {
 
 // --- the window, shared with the folder ranking ---------------------------
 
-test('the two scopes give different readings, and the header names which ran', async () => {
-    // **The default here is one day, not the folder ranking's 7-day average**, and
-    // the header says so. The listing reads `flakinessByFolder` — the page's own
-    // test-row derivation — which classifies the most recent day unless a flag
-    // says otherwise; the 7-day averaging stays on the folder ranking, where a
-    // mean over a population means something. `listingHeader` narrows the shared
-    // header to match, because `--json` claiming `scope: "average"` with seven
-    // `scopeDates` over a one-day table is exactly the tiles-say-one-day
-    // mismatch `flaky.html` had to fix.
+test('the three scopes give different readings, and the header names which ran', async () => {
+    // **The default here is the folder ranking's 7 days**, and the header says so.
+    // It used to be one day — not by choice but by omission: `listingTree` passed
+    // no window option, so `flakinessByFolder` fell through to its own default of
+    // the most recent day, a default written for the folder table. Measured on the
+    // pinned file, that made the drill-down of a folder the ranking had scored at
+    // 32 flaky tests over 7 days show only 29.
+    //
+    // The listing still does not *average* — a single test's mean can only be 0,
+    // 1/7 … 1 — so it takes one verdict per test over those days, flaky if flaky
+    // on any of them. `listingHeader` reports that as `scope: "window"` with
+    // `averageDays: null`, because `--json` claiming `scope: "average"` over a
+    // table of 0/1 verdicts is exactly the tiles-say-one-thing mismatch
+    // `flaky.html` had to fix.
     const byDefault = await listing();
     const allDays = await listing(['--all-days']);
     const oneDay = await listing(['--day', '2026-08-03']);
 
     const headerOf = (result: Record<string, unknown>): Record<string, unknown> =>
         result['header'] as Record<string, unknown>;
-    assert.equal(headerOf(byDefault)['scope'], 'day', 'the listing classifies one day by default');
+    assert.equal(
+        headerOf(byDefault)['scope'],
+        'window',
+        'the listing classifies the ranking’s window by default'
+    );
     assert.equal(headerOf(byDefault)['averageDays'], null, 'and averages nothing');
+    assert.equal(
+        (headerOf(byDefault)['scopeDates'] as string[]).length,
+        DEFAULT_AVERAGE_DAYS,
+        'over exactly the days the ranking averages, named so a reader can check them'
+    );
     assert.equal(headerOf(allDays)['scope'], 'all-days');
     assert.equal(headerOf(oneDay)['scope'], 'day');
 
-    // The default's day was not asked for, and the suggested follow-up commands
-    // read that flag so they do not print a `--day` the reader never typed.
+    // The default's window was not asked for, and the suggested follow-up commands
+    // read that flag so they do not print a scope flag the reader never typed.
     assert.equal(headerOf(byDefault)['scopeRequested'], false);
     assert.equal(headerOf(oneDay)['scopeRequested'], true);
 
-    // `--all-days` is the looser bar: "flaky on ANY of 21 days" cannot be false
-    // where "flaky on the last day" is true, so it must list strictly more. A
-    // scope flag that changed nothing could not produce this.
+    // The three are ordered by how loose the bar is, and each step must be strict —
+    // a scope flag that changed nothing could not produce this. "Flaky on ANY of 21
+    // days" ⊇ "ANY of the last 7" ⊇ "on one named day".
     assert.ok(
         (allDays['rowCount'] as number) > (byDefault['rowCount'] as number),
-        '--all-days must list strictly more than the one-day default: got ' +
+        '--all-days must list strictly more than the 7-day default: got ' +
             `${String(allDays['rowCount'])} against ${String(byDefault['rowCount'])}`
     );
+    // Against the *flaky* rows rather than every row, because a skipped-only test
+    // is skipped on most days and so is listed under either window: on this
+    // 10-test fixture both windows list 7 rows and the difference is entirely in
+    // the verdicts. Six tests are flaky somewhere in the 7 days against five on the
+    // last day alone, which is the containment being checked.
+    const flakyRows = (result: Record<string, unknown>): number =>
+        (result['rows'] as Row[]).filter((row) => row.flaky > 0).length;
+    assert.ok(
+        flakyRows(byDefault) > flakyRows(oneDay),
+        'the 7-day default must find strictly more flaky tests than one day: got ' +
+            `${flakyRows(byDefault)} against ${flakyRows(oneDay)}`
+    );
+    // Containment, not just a bigger number: the looser window must be a superset,
+    // or the two are answering different questions rather than the same one wider.
+    const flakyPaths = (result: Record<string, unknown>): Set<string> =>
+        new Set((result['rows'] as Row[]).filter((row) => row.flaky > 0).map((row) => row.path));
+    for (const path of flakyPaths(oneDay)) {
+        assert.ok(
+            flakyPaths(byDefault).has(path),
+            `${path} is flaky on 2026-08-03, which is inside the default window, so the default ` +
+                'must call it flaky too'
+        );
+    }
 
     // Every scope yields one verdict per test, so `total` is 1 throughout — the
     // day-count ceilings this used to assert were an artefact of the averaging.
@@ -556,8 +735,85 @@ test('the two scopes give different readings, and the header names which ran', a
     }
 
     const { stdout } = await invoke(['flaky', 'toolkit', '--quiet', '--limit', '3']);
-    assert.match(stdout, /Window: .* alone, one verdict per test/);
+    // Whitespace-normalised: the caveat is one sentence wrapped for the terminal,
+    // so the phrase straddles two lines. This checks the prose is present, not how
+    // it is folded.
+    const flat = stdout.replace(/\s+/g, ' ');
+    assert.match(flat, /Window: the ranking's 7 days 2026-07-28 … 2026-08-03, one verdict per test/);
+    assert.match(flat, /flaky if flaky on ANY of them/);
     assert.match(stdout, /Test files under toolkit and its subfolders/);
+
+    // And the two other windows still name themselves as they did before the
+    // default moved, which is what makes this a change to one scope and not three.
+    const namedDay = await invoke([
+        'flaky', 'toolkit', '--quiet', '--limit', '3', '--day', '2026-08-03',
+    ]);
+    assert.match(namedDay.stdout, /Window: 2026-08-03 \(Mon\) alone, one verdict per test/);
+    const whole = await invoke(['flaky', 'toolkit', '--quiet', '--limit', '3', '--all-days']);
+    assert.match(whole.stdout, /Window: --all-days — one verdict over all 21 days/);
+});
+
+test('the listing’s default window is exactly the folder ranking’s, by an independent walk', async () => {
+    // The bug this closes: the ranking scored 7 days and the listing classified 1,
+    // so drilling into a ranked row silently changed the question. Measured on the
+    // pinned file for `toolkit/components/telemetry/tests/unit`, the ranking's 7
+    // days hold **32** flaky tests and the listing printed **29** — three tests the
+    // reader had just been shown a count of, absent from the list of them.
+    //
+    // The expectation comes from `independentWindowVerdicts` below: a second,
+    // deliberately dumber recomputation that re-decodes the fixture's delta-encoded
+    // days, matches statuses by regular expression, and ORs across the window with
+    // its own `if` chain. It calls nothing in `lib/query/flakiness.ts`, so it
+    // cannot move with the code under test.
+    //
+    // The **set** is what is asserted, not a count: a listing that got the total
+    // right by swapping one test for another would be exactly as broken, and the
+    // three missing tests in the measurement above are why.
+    const result = await listing();
+    const rows = result['rows'] as Row[];
+    const expected = independentWindowVerdicts(issuesFixture, DEFAULT_AVERAGE_DAYS);
+
+    const shouldList = new Map([...expected].filter(([, v]) => v.flaky || v.skipped));
+    assert.ok(shouldList.size > 0, 'the fixture must produce rows, or this asserts nothing');
+    assert.deepEqual(
+        new Set(rows.map((row) => row.path)),
+        new Set(shouldList.keys()),
+        'the listed tests must be exactly those flaky or skipped on ANY of the ranking’s days'
+    );
+
+    for (const row of rows) {
+        const want = shouldList.get(row.path)!;
+        assert.equal(row.flaky, want.flaky ? 1 : 0, `${row.path}: flaky on any day of the window`);
+        assert.equal(row.skipped, want.skipped ? 1 : 0, `${row.path}: skipped on any of them`);
+        // The overlap keeps its name across a multi-day window: a test flaky on one
+        // day and skipped on another is both, which is `windowState`'s precedence
+        // applied between days rather than a second classifier.
+        assert.equal(
+            row.flakyAndSkipped,
+            want.flaky && want.skipped ? 1 : 0,
+            `${row.path}: flakyAndSkipped must name the overlap over the whole window`
+        );
+        assert.equal(row.total, 1, `${row.path}: still one verdict, not a day count`);
+    }
+
+    // And the drill-down is a refinement of the row above it: every test the
+    // ranking counted as flaky in that folder is a flaky row here. Asserted as an
+    // equal **set** rather than as equal numbers, because the ranking's figure is a
+    // mean per day and this is a count of distinct tests — on the pinned data 26.7
+    // and 32 are both right over the same 7 days, and forcing them equal would be
+    // wrong.
+    const folder = 'toolkit/components/extensions/test/xpcshell';
+    const scoped = await listing(['--path', folder, '--here-only']);
+    const listedFlaky = new Set(
+        (scoped['rows'] as Row[]).filter((row) => row.flaky > 0).map((row) => row.path)
+    );
+    const wantFlaky = new Set(
+        [...expected]
+            .filter(([path, v]) => v.flaky && path.startsWith(`${folder}/`))
+            .map(([path]) => path)
+    );
+    assert.ok(wantFlaky.size > 0, `${folder} must have flaky tests in the window`);
+    assert.deepEqual(listedFlaky, wantFlaky, `${folder}: the drill-down must list the same tests`);
 });
 
 test('the listing agrees with the folder ranking on the same window', async () => {
