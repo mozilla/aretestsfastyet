@@ -30,6 +30,15 @@ const DASHBOARDS = [
             'so you can find which areas are noisiest, then drill down to the individual ' +
             'tests and their failure counts. Switch between XPCShell and Mochitest with ' +
             'the harness selector. The best place to start triaging intermittents.' },
+    { file: 'flaky.html', tier: 1, title: 'Test Flakiness', featured: true,
+      desc: 'How flaky the tree is over time, and which folders are worst.',
+      long: 'Classifies every test once per day — flaky if it failed at all, skipped if it ' +
+            'was only disabled somewhere, stable if it passed everywhere — and charts the ' +
+            'result over the last 21 days with a 7-day average, so you can see whether ' +
+            'flakiness is trending up or down. Underneath, a folder tree with flaky and skip ' +
+            'percentages that drills down to individual test files, plus a flat folder ' +
+            'ranking for picking a burndown target. A noise filter discards tests that ' +
+            'failed only once in the whole window.' },
     { file: 'test.html', tier: 1, title: 'Test Info', featured: true,
       desc: 'Everything about a single test: issues, run times and pass/fail by job.',
       long: 'A deep dive on one test (opened via ?test=path/to/test) that brings 21 days ' +

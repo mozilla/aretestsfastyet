@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Flakiness</title>
+    <script src="fetch-utils.js"></script>
+    <script src="dashboards.js"></script>
+    <script src="common-ui.js"></script>
+    <script src="common-links.js"></script>
+    <script defer src="shared.js"></script>
+    <link rel="icon" href="favicon-orange.svg">
+    <link rel="stylesheet" href="shared.css">
+    <style>
+        /* --- the headline ------------------------------------------------ */
+
+        .headline-tiles {
+            display: flex;
+            gap: 15px;
+            margin: 6px 0 10px 0;
+            flex-wrap: wrap;
+        }
+
+        .headline-tile {
+            flex: 1 1 140px;
+            background: white;
+            border-radius: 8px;
+            border-left: 4px solid #ccc;
+            padding: 12px 16px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        /* Flaky is orange, not red: it is a nuisance to burn down rather than
+           something broken, and red is reserved for that on these dashboards. */
+        .headline-tile.is-flaky { border-left-color: #e8834a; }
+        .headline-tile.is-stable { border-left-color: #5cb85c; }
+        .headline-tile.is-skipped { border-left-color: #9b9b9b; }
+
+        .headline-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #222;
+            line-height: 1.1;
+        }
+
+        .headline-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        .headline-help {
+            color: #aaa;
+            font-size: 10px;
+            margin-left: 3px;
+            cursor: help;
+        }
+
+        .headline-tile { cursor: help; }
+
+        .headline-note {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        .headline-scope {
+            font-size: 13px;
+            color: #555;
+            margin: 15px 0 0 0;
+            font-weight: 600;
+        }
+
+        .folder-scope {
+            color: #999;
+            font-size: 10px;
+            text-transform: uppercase;
+            margin-left: 10px;
+            white-space: nowrap;
+            cursor: help;
+        }
+
+        .headline-caption, .headline-note-line {
+            font-size: 13px;
+            color: #555;
+            margin: 6px 0 0 0;
+        }
+
+        .headline-trend {
+            font-weight: bold;
+        }
+
+        .headline-trend.is-up { color: #d9534f; }
+        .headline-trend.is-down { color: #2e7d32; }
+        .headline-trend.is-flat { color: #666; }
+
+        /* --- the chart --------------------------------------------------- */
+
+        #charts {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            margin: 15px 0;
+        }
+
+        .chart-box {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 12px 16px 8px 16px;
+        }
+
+        .chart-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #333;
+            margin: 0 0 8px 0;
+        }
+
+        .chart-area { height: 230px; }
+
+        .chart-note {
+            font-size: 12px;
+            color: #888;
+            margin: 6px 0 0 0;
+            line-height: 1.5;
+        }
+
+        /* --- controls ---------------------------------------------------- */
+
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .date-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-text {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .historical-button {
+            margin-left: 15px;
+            padding: 6px 12px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .historical-button:hover { background-color: #0056b3; }
+        .historical-button.active { background-color: #28a745; }
+        .historical-button.active:hover { background-color: #1e7e34; }
+
+        .search-container {
+            position: relative;
+            display: inline-block;
+        }
+
+        .search-box {
+            padding: 8px 30px 8px 12px;
+            width: 300px;
+            box-sizing: border-box;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .search-clear {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            color: #999;
+            padding: 0;
+            width: 20px;
+            height: 20px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .explanation {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px 20px;
+            margin: 15px 0;
+            font-size: 14px;
+            line-height: 1.6;
+            color: #333;
+        }
+
+        .explanation strong { color: #000; }
+
+        .explanation ul {
+            margin: 8px 0 0 0;
+            padding-left: 20px;
+        }
+
+        .explanation code {
+            background-color: #e9ecef;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .noise-control {
+            margin-top: 10px;
+            font-size: 13px;
+            color: #444;
+        }
+
+        .noise-control input {
+            width: 60px;
+            padding: 3px 6px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            margin: 0 4px;
+        }
+
+        #table-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 20px 0 8px 0;
+            font-size: 14px;
+            color: #444;
+            flex-wrap: wrap;
+        }
+
+        #table-controls select {
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .table-scope-note {
+            color: #888;
+            font-size: 13px;
+        }
+
+        /* --- the folder table -------------------------------------------- */
+
+        #folder-table {
+            width: 100%;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .folder-row {
+            display: flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            min-height: 30px;
+            /* The colour band sits behind the row; a left border makes the
+               band readable without tinting the text. */
+            border-left: 4px solid transparent;
+        }
+
+        .folder-row.is-leaf { cursor: default; }
+
+        .folder-row:hover { background-color: #f5f7fa; }
+
+        /* The bands run green → amber → orange → deep orange. No red: the
+           severe end of "flaky" is still flakiness, not breakage. */
+        .folder-row.band-none { border-left-color: #d7d7d7; }
+        .folder-row.band-low { border-left-color: #9ccc9c; background-color: #f6fbf6; }
+        .folder-row.band-medium { border-left-color: #f0c674; background-color: #fffbf2; }
+        .folder-row.band-high { border-left-color: #e8834a; background-color: #fff6f0; }
+        .folder-row.band-severe { border-left-color: #c25a16; background-color: #fdeee3; }
+
+        .folder-row.band-low:hover { background-color: #eef7ee; }
+        .folder-row.band-medium:hover { background-color: #fdf5e6; }
+        .folder-row.band-high:hover { background-color: #fdeee4; }
+        .folder-row.band-severe:hover { background-color: #fae2d2; }
+
+        .sort-header {
+            background: #f8f9fa;
+            border-bottom: 2px solid #ddd;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            cursor: default;
+            border-left: 4px solid transparent;
+        }
+
+        .sort-header:hover { background: #f8f9fa; }
+
+        .total-row {
+            background-color: #f8f9fa;
+            border-bottom: 2px solid #ddd;
+            font-weight: bold;
+            cursor: default;
+            border-left: 4px solid #bbb;
+        }
+
+        .total-row:hover { background-color: #f8f9fa; }
+
+        .folder-name {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            font-family: monospace;
+            font-size: 13px;
+            min-width: 0;
+        }
+
+        .folder-indent {
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .folder-icon { margin-right: 5px; flex-shrink: 0; }
+        .folder-icon::before { content: "\25B8 "; color: #888; }
+        .folder-icon.expanded::before { content: "\25BE "; color: #444; }
+        .folder-icon.leaf::before { content: "\2022 "; color: #bbb; }
+
+        .folder-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .folder-count {
+            color: #999;
+            font-size: 11px;
+            margin-left: 8px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .folder-bar-cell {
+            width: 160px;
+            flex-shrink: 0;
+            padding: 0 16px;
+        }
+
+        .folder-bar-header {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #666;
+        }
+
+        .folder-bar {
+            display: flex;
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #eee;
+        }
+
+        .folder-bar-part.is-flaky { background-color: #e8834a; }
+        .folder-bar-part.is-stable { background-color: #5cb85c; }
+        .folder-bar-part.is-skipped { background-color: #bdbdbd; }
+
+        /* --- the inline per-folder history chart -------------------------- */
+
+        .inline-chart {
+            background: #fbfcfd;
+            border-bottom: 1px solid #eee;
+            border-left: 4px solid #dfe4ea;
+            padding: 8px 16px 4px 16px;
+        }
+
+        .inline-chart-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #888;
+            font-family: monospace;
+            margin-bottom: 4px;
+        }
+
+        .inline-chart-canvas {
+            height: 120px;
+            max-height: 120px;
+            width: 100%;
+        }
+
+        .clean-note {
+            font-size: 11px;
+            color: #aaa;
+            font-style: italic;
+            padding-top: 3px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #eee;
+            background: #fcfcfc;
+        }
+
+        /* --- test rows and the mode switch -------------------------------- */
+
+        .test-icon { margin-right: 5px; flex-shrink: 0; }
+        .test-icon::before { content: "\1F4C4 "; }
+
+        .folder-row.test-row { background-color: #fcfcfd; }
+        .folder-row.test-row:hover { background-color: #f2f5f9; }
+
+        .test-link {
+            color: #0b5ed7;
+            text-decoration: none;
+        }
+
+        .test-link:hover { text-decoration: underline; }
+
+        .folder-count.is-note {
+            color: #b07d2b;
+            font-style: italic;
+        }
+
+        .mode-switch {
+            display: inline-flex;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .mode-button {
+            background: white;
+            border: none;
+            padding: 5px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            color: #444;
+        }
+
+        .mode-button + .mode-button { border-left: 1px solid #ccc; }
+        .mode-button:hover { background: #f1f3f5; }
+        .mode-button.active { background: #007bff; color: white; }
+
+        .folder-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            text-align: right;
+            min-width: 58px;
+        }
+
+        .stat-value { font-weight: bold; color: #333; }
+        .stat-value.is-flaky { color: #c25a16; }
+        .stat-value.is-skipped { color: #6c757d; }
+        .stat-value.is-zero { color: #ccc; font-weight: normal; }
+        .stat-value.is-muted { color: #888; font-weight: normal; }
+
+        .sort-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 8px;
+            margin: 0 -8px;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #666;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            width: 100%;
+            white-space: nowrap;
+        }
+
+        .sort-button:hover { background-color: #e9ecef; }
+        .sort-button.active { color: #007bff; background-color: #e7f3ff; }
+
+        .sort-arrow {
+            font-size: 10px;
+            margin-right: 2px;
+            width: 8px;
+            display: inline-block;
+            text-align: left;
+        }
+
+        .action-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px 4px;
+            margin-left: 6px;
+            font-size: 11px;
+            color: #666;
+            border-radius: 3px;
+            opacity: 0;
+            text-decoration: none;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .folder-row:hover .action-button { opacity: 1; }
+        .action-button:hover { background-color: #e9ecef; color: #333; }
+
+        .no-data {
+            padding: 40px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Test Flakiness</h1>
+
+        <div class="controls">
+            <div class="date-selector">
+                <label for="date-select">Select Date: </label>
+                <select id="date-select"></select>
+                <span id="status-text" class="status-text">Loading data...</span>
+                <button id="historical-button" class="historical-button">Show Last 21 Days</button>
+            </div>
+            <div class="search-container">
+                <input type="text" class="search-box" id="search-box" placeholder="Filter folders...">
+                <button class="search-clear" id="search-clear" title="Clear search">&times;</button>
+            </div>
+        </div>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <div id="headline"></div>
+
+        <div id="charts">
+            <div class="chart-box">
+                <h2 class="chart-title">Flaky and skipped tests per day</h2>
+                <div class="chart-area"><canvas id="flaky-count-chart"></canvas></div>
+                <p class="chart-note">
+                    Stable tests are left out of this chart on purpose &mdash; they are around
+                    80% of every day, and stacking them flattens everything else. They are
+                    still in every percentage and in the table below.
+                </p>
+            </div>
+            <div class="chart-box">
+                <h2 class="chart-title">Share of tests, per day</h2>
+                <div class="chart-area"><canvas id="flaky-percent-chart"></canvas></div>
+            </div>
+        </div>
+
+        <div class="explanation">
+            <strong>Each test is classified once per day, over the runs it had that day:</strong>
+            <ul>
+                <li><strong>Flaky:</strong> it failed at least once &mdash; a failure, a timeout or a crash.</li>
+                <li><strong>Skipped:</strong> it did not fail, and was skipped on at least one configuration.</li>
+                <li><strong>Stable:</strong> it did not fail and was not skipped anywhere &mdash; 100% pass.</li>
+            </ul>
+            In the charts above, failing beats being skipped, so a test that failed on Linux
+            and is disabled on Windows counts once, as flaky. <strong>The table counts it in
+            both columns</strong> &mdash; &ldquo;how much is skipped here&rdquo; is a question
+            about skipping, and answering it with only the tests that never failed hides most
+            of them. So the table&rsquo;s Flaky and Skipped columns overlap and do not sum to
+            Tests. Tests annotated <code>run-if</code> are explicitly scoped to
+            another platform, so not running elsewhere is not a skip. A test that did not run
+            at all on a given day is left out of that day entirely. Opening a folder lists
+            only its flaky and skipped tests &mdash; the ones that passed everywhere are
+            counted in the percentages but not listed, since there is nothing to do about
+            them.
+            <div class="noise-control">
+                <label for="noise-threshold">Ignore tests that failed no more than</label>
+                <input type="number" id="noise-threshold" min="0" step="1" value="1">
+                <label for="noise-threshold">time(s) in the whole window, counting those runs as passes.</label>
+            </div>
+        </div>
+
+        <div id="table-controls"></div>
+
+        <div id="folder-table"></div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script type="module" src="./flaky-main.ts"></script>
+</body>
+</html>
