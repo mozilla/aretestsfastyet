@@ -1481,16 +1481,21 @@ test('flaky counts fail, timeout and crash — not just fail', async () => {
 test('flaky says which of the three windows it used, in text', async () => {
     // The page shipped tiles showing one day above a table showing 21 with
     // nothing saying so. Every scope has to name itself, or the numbers are
-    // unreadable — 48%, 53% and 75% of the same folder.
+    // unreadable — 48%, 53% and 75% of the same folder. Naming it is all that is
+    // required here; *why* each window behaves as it does is standing prose and
+    // lives in `flaky --help`, not in the preamble of every run.
     const average = await invoke(['flaky', '--limit', '2']);
-    assert.match(average.stdout, /MEAN PER DAY over the last 7 days/);
+    assert.match(average.stdout, /Window: mean per day over the 7 days/);
 
     const all = await invoke(['flaky', '--limit', '2', '--all-days']);
-    assert.match(all.stdout, /--all-days/);
-    assert.match(all.stdout, /84%/);
+    assert.match(all.stdout, /Window: --all-days/);
 
     const one = await invoke(['flaky', '--limit', '2', '--day', '2026-08-03']);
-    assert.match(one.stdout, /--day: classified on 2026-08-03/);
+    assert.match(one.stdout, /Window: --day 2026-08-03/);
+
+    // The ~84% denominator caveat that used to ride along on every --all-days run.
+    const help = await invoke(['flaky', '--help']);
+    assert.match(help.stdout, /~84% of/);
 });
 
 // =========================================================================

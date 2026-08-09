@@ -133,6 +133,63 @@ import {
 import type { Harness } from '../options.ts';
 import { dayIndexOfDate, loadIssues, resolveDayKeyword } from '../data.ts';
 
+/**
+ * The standing definitions, printed by `flaky --help` and nowhere else.
+ *
+ * These are the lines that used to open **every** run. None of them changes
+ * between two invocations — "flaky means failed, timed out or crashed" is as
+ * true of tomorrow's data as of today's — so a reader needs them once and an
+ * agent consumer pays for them every time. Measured on the pinned window they
+ * were 13 of `flaky --limit 5`'s 24 lines (955 characters, ~238 tokens), where
+ * the comparable `issues --limit 5` spends 4.
+ *
+ * They are not deleted, they are moved: the same text is in `docs/CLI.md`
+ * §`fx-tests flaky`, and what remains in the output is the per-run provenance
+ * `headerLines` documents.
+ */
+export const FLAKY_NOTES: string[] = [
+    'How a test is classified:',
+    '  flaky    it failed, timed out or crashed at least once',
+    '  skipped  it was disabled somewhere (run-if exclusions are not counted)',
+    '',
+    'The window:',
+    '  The FOLDER views average per-day counts over the last 7 days, so a folder reading',
+    '  187.0 means "on a typical day, 187 of this folder\'s tests were flaky". A whole',
+    '  number of weeks, because weekend push volume is 2.6x lower and one day\'s ranking is',
+    '  otherwise partly the calendar: on the pinned window netwerk/test/unit reads 137',
+    '  flaky on a Tuesday and 76 on a Sunday.',
+    '  The PER-TEST view does not average — a single test has no meaningful mean — and',
+    '  takes one verdict over one day, the most recent, as flaky.html does.',
+    '  --day <date> picks another day. --all-days takes a single verdict over the whole',
+    '  file window, flaky if flaky on ANY day — a much looser bar, tree-wide ~84% of',
+    '  tests, because a test runs on dozens of configs dozens of times a day.',
+    '  Every run names the window it used in its header.',
+    '',
+    'Flaky and skipped OVERLAP:',
+    '  A test failing on Linux and disabled on Windows is both, so the flaky and skip',
+    '  columns do not sum to the test count — on the pinned window 800 of 4,807 tests are',
+    '  in both. On the folder views flaky% is flaky/tests, not flaky/(flaky+skip). Rows are',
+    '  ranked flaky-first, so a skipped-only test is never above a flaky one.',
+    '',
+    'Reading the columns:',
+    '  Folder views rank a population, so they carry counts and a flaky% share of the',
+    '  folder\'s tests, plus +subtree — the flaky count including subfolders.',
+    '  The per-test view is one verdict per test over the window, as flaky.html shows it:',
+    '    flaky        1 if it failed, timed out or crashed at all in the window, else 0',
+    '    skipped      1 if it is disabled somewhere, else 0. A test can be both; 0 flaky',
+    '                 with 1 skipped is switched off rather than failing.',
+    '    failures     failing RUNS over the whole file window, across every configuration —',
+    '                 a different unit and window from the two verdicts, and what --noise',
+    '                 is compared against. It is what separates "failed twice" from',
+    '                 "failed 2,543 times".',
+    '  There is no percentage on a single test: a percentage needs a population, and one',
+    '  test can only be 0% or 100%. Use `fx-tests test <path>` for a per-configuration',
+    '  breakdown of one test, or --json for the raw counters.',
+    '',
+    '--group-by days is the exception: its flaky, stable and skipped columns are mutually',
+    'exclusive and do sum to total.',
+];
+
 /** `fx-tests flaky` options. */
 export const FLAKY_OPTIONS: OptionSpecs = {
     path: {
@@ -212,6 +269,15 @@ interface FlakyHeader {
      * the numbers. See the module comment.
      */
     scope: 'average' | 'day' | 'all-days';
+    /**
+     * Whether the scope was asked for, rather than being a view's default.
+     *
+     * Only the suggested follow-up commands read it, and only to avoid printing a
+     * flag the reader never typed: the per-test listing classifies one day by
+     * default (`listingHeader`), so `scope: 'day'` there is not the same fact as
+     * `--day 2026-08-04` on the command line.
+     */
+    scopeRequested: boolean;
     /** The dates the folder views covered, oldest first. */
     scopeDates: string[];
     /**
@@ -364,6 +430,10 @@ async function loadFlakyQuery(context: CommandContext, args: ParsedArgs): Promis
             testCount: file.testCount,
             dataSource: context.source.name,
             scope,
+            // Asked for here by construction: this scope came from --day,
+            // --all-days or the default average. `listingHeader` is the one place
+            // that narrows a scope on the view's own behalf, and it clears this.
+            scopeRequested: true,
             scopeDates,
             averageDays: scope === 'average' ? effectiveAverage : null,
             minWindowFailures: series.minWindowFailures,
@@ -455,17 +525,18 @@ export async function runFlaky(context: CommandContext, args: ParsedArgs): Promi
         return;
     }
 
-    const root = classifiedTree(query);
-
     if (groupBy === 'tests') {
+        // Its own tree: one verdict over the window, as the page's test rows are.
+        // See `listingTree`.
         emitResult(
             context,
-            testResult(query, root, boolOption(args, 'here-only'), sort, limit),
+            testResult(query, listingTree(query), boolOption(args, 'here-only'), sort, limit),
             renderTests
         );
         return;
     }
 
+    const root = classifiedTree(query);
     const rows = groupBy === 'list' ? listRows(root) : treeRows(root);
     const sorted = sortRows(rows, sort);
     const shown = applyLimit(sorted, limit);
@@ -538,28 +609,37 @@ interface TestRow {
      */
     verdict: 'flaky' | 'flaky+skipped' | 'skipped';
     /**
-     * How many **days** this test was flaky on.
+     * Whether this test was flaky in the window: **0 or 1**, as the page's table
+     * shows it.
      *
-     * A count of days and not the per-day mean the folder views print, and the
-     * difference is what makes the row readable. `flakinessByFolderAveraged`
-     * divides every counter by the window, which is right for a folder — 187.0
-     * flaky tests on a typical day — and degenerate for a single test, whose mean
-     * can only be one of 0, 1/7, 2/7 … 1. Printed as means, every worst-case row
-     * in this table reads `1` and every "was flaky twice" reads `0.3`, so the
-     * column that ranks the table would carry a decimal that is a fraction of a
-     * single test rather than a population. Multiplied back by `windowDays` it is
-     * "flaky on 6 of the 7 days it ran", which is what a reader is asking. See
-     * `scaleFor()`.
+     * Not a day count and not a mean, and both of those were mistakes this view
+     * made in turn. The 7-day averaging is a *folder-ranking* concept — "126.7 of
+     * this folder's tests were flaky on a typical day" is a real quantity —
+     * and pushing it down onto a single test produces nothing a reader can use:
+     * a single test's mean can only be 0, 1/7 … 1, so it was multiplied back out
+     * into "flaky on 6 of the 7 days", and `7 of 7` to say "always" is more
+     * digits than "yes" with no more meaning.
+     *
+     * `flakinessByFolder` — what `flaky.html` renders its test rows from — gives
+     * one verdict over the window instead. Measured on the pinned file, its
+     * 4,807 leaves take exactly **two** distinct values in each of `flaky`,
+     * `skipped` and `stable`, namely 0 and 1, with `total` always 1. Using the
+     * same derivation is also what stops the CLI and the page disagreeing about
+     * a test, which `test/flaky-tests-listing.test.ts` pins.
      */
     flaky: number;
-    /** Days skipped somewhere, overlapping `flaky` by `flakyAndSkipped`. */
+    /** Whether it is skipped somewhere: 0 or 1, overlapping `flaky`. */
     skipped: number;
     flakyAndSkipped: number;
-    /** Days the test ran or was skipped at all — the denominator of `flakyPercent`. */
+    /** Always 1 — one test, one verdict. Kept so `--json` stays self-describing. */
     total: number;
-    /** Rounded **once**, from the raw ratio. Unaffected by the day scaling. */
-    flakyPercent: number;
-    /** Failing runs over the **whole file's window**, not the scope. */
+    /**
+     * Failing runs over the **whole file's window**, not the scope.
+     *
+     * The one number here with real resolution: 272 distinct values over the
+     * pinned file's leaves, up to 5,200, where every other column is 0 or 1. It
+     * is what separates "failed twice" from "failed 2,543 times".
+     */
     windowFailures: number;
     /** Whether the noise filter read this test's failures as passes. */
     neutralised: boolean;
@@ -615,30 +695,62 @@ interface TestResult {
  * `site/flaky-view.ts` states and measures.
  */
 /**
- * How many days the leaves' per-day means have to be multiplied by to be days.
+ * The tree the **per-test listing** reads, which is not the one the folder views
+ * read.
  *
- * 1 under `--day` and `--all-days`, where `flakinessByFolder` already counts a
- * test once and its leaf counters are 0 or 1. `windowDays` under the averaged
- * default, where `flakinessByFolderAveraged` divided them. Read from the header's
- * `averageDays`, which is the count **actually** averaged and is clamped on a
- * short file, so a 3-day file cannot be multiplied by 7.
+ * `flakinessByFolder` rather than `flakinessByFolderAveraged`, because a single
+ * test has no meaningful average: it gives one verdict over the window, and its
+ * leaves are 0 or 1 (measured: exactly two distinct values in `flaky`, `skipped`
+ * and `stable` across the pinned file's 4,807 leaves, `total` always 1). This is
+ * also the derivation `flaky.html` renders its test rows from, so the CLI and the
+ * page cannot disagree about whether a test is flaky —
+ * `test/flaky-tests-listing.test.ts` asserts they agree leaf for leaf.
+ *
+ * The averaging stays where it means something: the folder ranking, where "126.7
+ * tests flaky on a typical day" is a real population quantity. `--day` and
+ * `--all-days` still select which window the verdict covers.
  */
-function scaleFor(query: FlakyQuery): number {
-    return query.header.scope === 'average' ? (query.header.averageDays ?? 1) : 1;
+function listingTree(query: FlakyQuery): FolderNode {
+    const noise = { minWindowFailures: query.header.requestedMinWindowFailures };
+    return flakinessByFolder(query.file, {
+        ...noise,
+        ...(query.pathPrefix === undefined ? {} : { pathPrefix: query.pathPrefix }),
+        ...(query.allDays ? { allDays: true } : {}),
+        ...(query.day === undefined ? {} : { day: query.day }),
+    });
 }
 
 /**
- * A leaf's per-day mean turned back into a whole number of days.
+ * The header as it applies to the **per-test listing**, whose scope differs.
  *
- * Rounded, because the multiplication undoes a division that was not exact:
- * `flakinessByFolderAveraged` accumulates integer test-days and divides once, so
- * `6/7 * 7` comes back as 5.999999999999999 and would print as `6.0` with a
- * decimal that claims a fractionality a count of days does not have. The value
- * is an integer by construction — the only question is which one — so `Math.round`
- * is a recovery and not an approximation.
+ * `loadFlakyQuery` resolves one header for every view, and its default is the
+ * folder ranking's 7-day average. `listingTree` does not average: with neither
+ * `--day` nor `--all-days` it classifies the most recent day alone. Emitting the
+ * shared header unchanged would have `--json` claim `scope: "average"` with seven
+ * `scopeDates` over a table built from one day — precisely the tiles-say-one-day,
+ * table-says-another mismatch `flaky.html` had to fix, and the reason this header
+ * names its scope at all.
+ *
+ * So the listing corrects the three fields that describe the scope and leaves the
+ * rest — the file's own window, the harness, the noise accounting — alone.
+ *
+ * `scopeRequested` stays false in that correction, because the day was this
+ * view's default rather than something the reader asked for. `suggestion` reads
+ * it: a footer that appended `--day 2026-08-04` would be telling the reader to
+ * type a flag they never typed, and pinning tomorrow's run to today's date.
  */
-function days(mean: number, scale: number): number {
-    return Math.round(mean * scale);
+function listingHeader(header: FlakyHeader): FlakyHeader {
+    if (header.scope !== 'average') {
+        return header;
+    }
+    const day = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
+    return {
+        ...header,
+        scope: 'day',
+        scopeDates: [day],
+        averageDays: null,
+        scopeRequested: false,
+    };
 }
 
 function testResult(
@@ -658,7 +770,9 @@ function testResult(
         : root;
     const leaves: TestLeaf[] = node === null ? [] : hereOnly ? node.tests : subtreeTests(node);
     const worth = leaves.filter(hasSomethingToAct);
-    const scale = scaleFor(query);
+    // Straight off the leaf. No scaling, no rounding, no ratio: the counters are
+    // already the 0/1 verdicts the page shows, and every transformation this used
+    // to apply was recovering information it had just destroyed.
     const rows: TestRow[] = worth.map((leaf) => ({
         path: leaf.fullPath,
         verdict:
@@ -667,20 +781,18 @@ function testResult(
                 : leaf.flaky > 0
                   ? 'flaky'
                   : 'skipped',
-        flaky: days(leaf.flaky, scale),
-        skipped: days(leaf.skipped, scale),
-        flakyAndSkipped: days(leaf.flakyAndSkipped, scale),
-        total: days(leaf.total, scale),
-        // From the leaf's own unscaled counters, so the percentage cannot pick
-        // up the scaling's rounding: it is one ratio of two numbers that were
-        // divided by the same constant, which is the constant cancelling.
-        flakyPercent: ratio(leaf.flaky, leaf.total),
+        flaky: leaf.flaky,
+        skipped: leaf.skipped,
+        flakyAndSkipped: leaf.flakyAndSkipped,
+        total: leaf.total,
         windowFailures: leaf.windowFailures,
         neutralised: leaf.neutralised,
     }));
     const sorted = sortTestRows(rows, sort);
     return {
-        header: query.header,
+        // Corrected to the scope this listing actually classified. See
+        // `listingHeader`.
+        header: listingHeader(query.header),
         groupBy: 'tests',
         sort,
         pathPrefix: query.pathPrefix ?? null,
@@ -695,38 +807,42 @@ function testResult(
 /**
  * Ranks test rows **flaky-first**, then by how much they are skipped.
  *
- * The tie-break matters more here than on a folder row: a folder's flaky count is
- * a sum over many files and rarely ties, while a test's is a whole number of days
- * in `0 … 7`, so ties are the normal case rather than the edge one. Measured on
- * `toolkit/components/telemetry/tests/unit` over the pinned 7-day window, **33 of
- * the 35 listed tests** share their flaky-day count with at least one other — 17
- * at 7 days and 10 at 6 — so without a second key most of the table would be in
- * path order inside blocks and read as arbitrary.
+ * The tie-break carries almost all the ordering here, because the keys are 0/1:
+ * `flaky` and `skipped` sort the rows into at most four blocks, so within a block
+ * the second and third keys are what a reader sees. `windowFailures` is that
+ * second key — 272 distinct values over the pinned file's leaves against 2 for
+ * every verdict column — which puts "failed 2,543 times" above "failed twice"
+ * instead of leaving both in path order.
  *
- * A purely-skipped test therefore cannot outrank a flaky one, which is the whole
- * defect being fixed: `issues --group-by test` on that folder puts
- * `test_UserInteraction_annotations.js` first on 6,879 issues of which 6,782 are
- * skips, and this classification calls that test skipped and not flaky.
+ * A purely-skipped test cannot outrank a flaky one, which is the whole defect
+ * being fixed: `issues --group-by test` on `toolkit/components/telemetry/tests/
+ * unit` puts `test_UserInteraction_annotations.js` first on 6,879 issues of which
+ * 6,782 are skips, and this classification calls that test skipped and not flaky.
  */
 function sortTestRows(rows: readonly TestRow[], sort: FlakySort): TestRow[] {
     const sorted = [...rows];
     const byPath = (a: TestRow, b: TestRow): number => a.path.localeCompare(b.path);
+    /** Failing runs, then path: the only keys with resolution below the verdicts. */
+    const byWeight = (a: TestRow, b: TestRow): number =>
+        b.windowFailures - a.windowFailures || byPath(a, b);
     switch (sort) {
+        // `share` ranked on a percentage that no longer exists, and could not
+        // meaningfully: a percentage of one test is 0% or 100%, which is the
+        // `flaky` verdict restated. It ranks as `flaky` rather than being
+        // rejected, since it stays valid on the folder views this flag is shared
+        // with.
         case 'flaky':
-            sorted.sort(
-                (a, b) => b.flaky - a.flaky || b.skipped - a.skipped || byPath(a, b)
-            );
-            break;
         case 'share':
-            sorted.sort((a, b) => b.flakyPercent - a.flakyPercent || byPath(a, b));
+            sorted.sort((a, b) => b.flaky - a.flaky || b.skipped - a.skipped || byWeight(a, b));
             break;
         case 'skips':
-            sorted.sort((a, b) => b.skipped - a.skipped || b.flaky - a.flaky || byPath(a, b));
+            sorted.sort((a, b) => b.skipped - a.skipped || b.flaky - a.flaky || byWeight(a, b));
             break;
         case 'tests':
-            // `tests` is a folder's population and a test has none, so the
-            // nearest thing this row has is how many days it ran at all.
-            sorted.sort((a, b) => b.total - a.total || byPath(a, b));
+            // `tests` is a folder's population and a test has none — `total` is 1
+            // on every row — so the closest honest reading is "how much did it
+            // fail", which is the one number a test row has a lot of.
+            sorted.sort(byWeight);
             break;
         case 'name':
             sorted.sort(byPath);
@@ -737,14 +853,61 @@ function sortTestRows(rows: readonly TestRow[], sort: FlakySort): TestRow[] {
 
 /** Renders the per-test listing. */
 function renderTests(result: TestResult): Rendered {
-    // Every count on a test row is a whole number of days or of runs — see
-    // `days()` — so nothing here goes through `mean()`. That is the one place
-    // this view deliberately does not mirror the folder ones.
+    // Six columns cut to three. What the old six actually contained, measured over
+    // every listed row on the pinned window (2,582 rows):
+    //
+    // | column | distinct values | mode |
+    // | --- | --- | --- |
+    // | `ran d` | 2 | **7 on 2,581 of 2,582 rows** |
+    // | `verdict` | 3 | `flaky` on 60.0% |
+    // | `flaky d` | 8 | 1 on 29.2% |
+    // | `flaky%` | 8 | 14.3% on 29.2% |
+    // | `skip d` | 3 | 0 on 60.0% |
+    // | `failures` | 271 | 2 on 14.9% |
+    //
+    // - **`ran d` was a constant** — 7 on all but one row (the exception is
+    //   `test_distribution_idonly.js`, 5 of 7 days), and a single distinct value
+    //   inside each of `netwerk/test/unit` (412 rows), `toolkit/components/
+    //   extensions/test/xpcshell` (371) and `dom/indexedDB/test/unit` (103).
+    // - **`flaky%` was `flaky d` in other units** — exactly `100*flaky/ran` on
+    //   every row, so over a constant denominator the two are 1:1, 8 distinct
+    //   values each. A percentage needs a population to be a proportion of, and a
+    //   single test is not one: it can only be 0% or 100%. **`flaky%` stays on the
+    //   folder ranking**, where it is "of this folder's tests, what share were
+    //   flaky" over a real population — the asymmetry is deliberate, so do not
+    //   restore it here for consistency.
+    // - **`verdict` was derivable** — `f(flaky>0, skip>0)` on every row, which the
+    //   two verdict columns now print directly.
+    // - **The day counts were the deeper mistake.** They came from multiplying a
+    //   7-day *mean* back out by 7, and the mean itself was a folder concept
+    //   pushed onto a single test. `flaky.html` never did this: its test rows come
+    //   from `flakinessByFolder`, whose leaves are 0 or 1 (measured: two distinct
+    //   values in each of `flaky`, `skipped`, `stable` across 4,807 leaves,
+    //   `total` always 1). This view now reads the same derivation — see
+    //   `listingTree` — so `7 of 7` to say "always" is gone along with the
+    //   arithmetic that produced it.
+    //
+    // What survives, and why each earns a column on every row:
+    //
+    // - **`flaky` and `skipped`, 0 or 1**, exactly as the page shows them. Both,
+    //   not one: the flaky-vs-skipped distinction is the entire reason this view
+    //   exists rather than `fx-tests issues`, which let a skipped test top a list
+    //   a reader would read as "most flaky". `1  1` is both, `0  1` is switched
+    //   off rather than failing.
+    // - **`failures`**, kept, because it is the only column with real resolution —
+    //   272 distinct values up to 5,200 against 2 for each verdict — and the only
+    //   thing separating "failed twice" from "failed 2,543 times". It is a count
+    //   of *runs* over the file's whole window rather than of days in the scope,
+    //   which is what made it read as a jumble beside three day-counts; with the
+    //   day-counts gone it is the one number on the row, and its header names the
+    //   window so the different unit is visible rather than implied.
     const sortColumn: Record<FlakySort, string> = {
-        flaky: 'flaky d',
-        share: 'flaky%',
-        skips: 'skip d',
-        tests: 'ran d',
+        flaky: 'flaky',
+        // `share` ranked a percentage that is gone from this view; it orders as
+        // `flaky` here and keeps its own column on the folder views.
+        share: 'flaky',
+        skips: 'skipped',
+        tests: `failures ${result.header.dayCount}d`,
         name: 'Test',
     };
     const column = (header: string, rest: Omit<Column, 'header'> = {}): Column => ({
@@ -756,16 +919,9 @@ function renderTests(result: TestResult): Rendered {
     });
     const columns = [
         column('Test', { path: true }),
-        column('verdict'),
-        // `d` for days on all three, so the unit is on the column rather than
-        // only in the header block — a folder row's `flaky` is a count of tests
-        // and a test row's is a count of days, and the two tables sit one
-        // command apart.
-        column('flaky d', { align: 'right' }),
-        column('flaky%', { align: 'right' }),
-        column('skip d', { align: 'right' }),
-        column('ran d', { align: 'right' }),
-        { header: 'failures', align: 'right' as const },
+        column('flaky', { align: 'right' }),
+        column('skipped', { align: 'right' }),
+        column(`failures ${result.header.dayCount}d`, { align: 'right' }),
     ];
     return {
         preamble: headerLines(result),
@@ -773,11 +929,8 @@ function renderTests(result: TestResult): Rendered {
             columns,
             rows: result.rows.map((row) => [
                 row.path,
-                row.verdict,
                 fmtCount(row.flaky),
-                percent(row.flakyPercent),
                 fmtCount(row.skipped),
-                fmtCount(row.total),
                 fmtCount(row.windowFailures),
             ]),
         },
@@ -786,6 +939,66 @@ function renderTests(result: TestResult): Rendered {
         epilogue: testEpilogue(result),
         empty: testEmptyMessage(result),
     };
+}
+
+/**
+ * Renders a suggested `fx-tests` invocation carrying the flags that reproduce
+ * this run's context.
+ *
+ * A footer that prints a copy-pasteable command is promising the reader it
+ * answers the question they are looking at. It did not: `fx-tests flaky
+ * --harness mochitest` suggested `fx-tests flaky <directory>`, and because a
+ * **directory** has no filename for `detectHarness()` to classify it falls
+ * through to the xpcshell default — so the suggestion silently answered about
+ * the wrong harness. `detectHarness` rescues the per-test footer, whose argument
+ * is a file (`browser_*.js` infers mochitest), and cannot rescue the two
+ * directory-argument ones. Rather than depend on which suggestions happen to
+ * take a filename, every one of them goes through here.
+ *
+ * ## What is carried, and what is not
+ *
+ * - **`--harness`, only when it is not the default.** `--harness xpcshell` on
+ *   the common path is noise on a footer that is already being trimmed for
+ *   length, and xpcshell is what an omitted flag means anyway.
+ * - **`--day`**, because it *is* the question, and every target accepts it: it
+ *   is a global. A table classified on one day whose footer suggests a command
+ *   reverting to the 7-day mean sends the reader to different numbers than the
+ *   ones they picked a row from — the same mismatch `headerLines` names the
+ *   window to prevent.
+ * - **`--all-days`, `--average-days` and `--noise` only for `fx-tests flaky`**,
+ *   which is the only command that has them. They are not globals: `skips` and
+ *   `test` would reject them as unknown flags (`cli/args.ts` rejects rather than
+ *   ignores), turning a suggestion into an error. `flakyScope` is the opt-in.
+ * - **Not `--limit`, `--json`, `--markdown` or the cache flags.** They shape
+ *   *this* rendering, not the question, and a reader who wants them still has
+ *   them typed in their own scrollback.
+ */
+function suggestion(
+    command: string,
+    header: FlakyHeader,
+    options: { readonly flakyScope?: boolean } = {}
+): string {
+    const flags: string[] = [];
+    if (header.harness !== 'xpcshell') {
+        flags.push(`--harness ${header.harness}`);
+    }
+    // Only a scope the reader actually asked for. The per-test listing's default
+    // is one day (`listingHeader`), and suggesting `--day <today>` for it would
+    // both invent a flag they did not type and pin a later run to this date.
+    if (header.scope === 'day' && header.scopeRequested) {
+        flags.push(`--day ${header.scopeDates[0] ?? header.endDate}`);
+    }
+    if (options.flakyScope === true) {
+        if (header.scope === 'all-days') {
+            flags.push('--all-days');
+        } else if (header.averageDays !== null && header.averageDays !== DEFAULT_AVERAGE_DAYS) {
+            flags.push(`--average-days ${header.averageDays}`);
+        }
+        if (header.requestedMinWindowFailures !== DEFAULT_MIN_WINDOW_FAILURES) {
+            flags.push(`--noise ${header.requestedMinWindowFailures}`);
+        }
+    }
+    return flags.length === 0 ? command : `${command} ${flags.join(' ')}`;
 }
 
 /**
@@ -813,7 +1026,11 @@ function testEpilogue(result: TestResult): string[] {
         }
         lines.push(
             '  Next, for a test you pick:',
-            `    fx-tests test ${top.path}     # every config it ran on, and what it failed with`
+            // `fx-tests test` reads a bucket file rather than `issues.json` and
+            // has none of this command's scope flags, so only the globals carry.
+            // See `suggestion`.
+            `    ${suggestion(`fx-tests test ${top.path}`, result.header)}` +
+                '     # every config it ran on, and what it failed with'
         );
     }
     return lines;
@@ -1108,10 +1325,16 @@ function epilogueFor(result: FolderResult): string[] {
     if (top === undefined) {
         return [];
     }
+    // Both arguments here are **directories**, which is what made the missing
+    // `--harness` a silent wrong answer rather than a cosmetic omission:
+    // `detectHarness()` classifies on a filename, a directory has none, and it
+    // defaults to xpcshell. See `suggestion`.
     return [
         `  Next, for the folder you pick:`,
-        `    fx-tests flaky ${top.path}     # which tests, flaky ones first`,
-        `    fx-tests skips --path ${top.path}      # what is already disabled there, and why`,
+        `    ${suggestion(`fx-tests flaky ${top.path}`, result.header, { flakyScope: true })}` +
+            '     # which tests, flaky ones first',
+        `    ${suggestion(`fx-tests skips --path ${top.path}`, result.header)}` +
+            '      # what is already disabled there, and why',
     ];
 }
 
@@ -1230,10 +1453,32 @@ function renderTrend(result: TrendResult): Rendered {
 /**
  * The provenance lines every view prints.
  *
- * Three things have to be here rather than in a footnote, because each one is a
- * factor-of-several difference a reader would otherwise attribute to Firefox:
- * which day was classified, whether the flaky and skip columns overlap, and
- * whether the noise filter ran.
+ * ## Only what varies between two invocations
+ *
+ * This block used to open every run with the standing definitions — what "flaky"
+ * means, what "skipped" means, why the window is a whole number of weeks, that
+ * the flaky and skip columns overlap. Measured on the pinned window,
+ * `flaky --limit 5` was 24 lines of which **13 were preamble** (955 characters,
+ * ~238 tokens) before the reader reached a number, against 4 lines for
+ * `issues --limit 5`. A primary consumer of this CLI is an agent, which pays
+ * that on every invocation and needs the explanation at most once, so the
+ * standing definitions moved to `flaky --help` (`FLAKY_NOTES`) and `docs/CLI.md`.
+ *
+ * What stays is what a reader cannot recover from the digits in front of them,
+ * and each line here is one a wrong reading of would be a factor-of-several
+ * error:
+ *
+ * - **which window produced the table.** `flaky.html` shipped a bug where the
+ *   tiles showed one day above a table showing 21 with nothing saying so; naming
+ *   the window in both places was the fix, and dropping it here would recreate
+ *   it. The three scopes read 48%, 53% and 75% on the same folder.
+ * - **the harness, the file's window and its test count** — the first line,
+ *   which every command in this tool opens with.
+ * - **how many tests the noise filter neutralised**, when it neutralised any,
+ *   because that changes every count below it. Silent when it neutralised none:
+ *   "0 tests neutralised" is a line that cannot change a reading.
+ * - **which selection ran** on the per-test view, since on 4 of 250 pinned
+ *   folders `--here-only` and the subtree differ and the tables look alike.
  */
 function headerLines(result: FolderResult | TrendResult | TestResult): string[] {
     const { header } = result;
@@ -1251,101 +1496,53 @@ function headerLines(result: FolderResult | TrendResult | TestResult): string[] 
             `(${dateWithWeekday(header.startDate)} … ${dateWithWeekday(header.endDate)}), ` +
             `${fmtCount(header.testCount)} tests in the file`
     );
+    // Which selection ran, said in the header rather than left to the flag the
+    // reader typed: on 4 of 250 pinned folders `--here-only` and the subtree
+    // differ, and a listing that silently answered the other question would look
+    // exactly like this one.
     if (result.groupBy === 'tests') {
-        // Which of the two selections ran, said in the header rather than left to
-        // the flag the reader typed: on 4 of 250 pinned folders the two differ,
-        // and a listing that silently answered the other question would look
-        // exactly like this one.
-        lines.push(
-            result.pathPrefix === null
-                ? 'Every test file in the tree.'
-                : result.hereOnly
-                  ? `Test files directly in ${result.pathPrefix}, not its subfolders (--here-only).`
-                  : `Test files under ${result.pathPrefix} and its subfolders.`
-        );
+        if (result.pathPrefix !== null) {
+            lines.push(
+                result.hereOnly
+                    ? `Test files directly in ${result.pathPrefix}, not its subfolders (--here-only).`
+                    : `Test files under ${result.pathPrefix} and its subfolders.`
+            );
+        }
     } else if (result.pathPrefix !== null) {
         lines.push(`Under ${result.pathPrefix} only.`);
     }
-    lines.push(
-        'Flaky means a test failed, timed out or crashed at least once; skipped means it was ' +
-            'disabled somewhere, run-if excluded.'
-    );
 
+    // Which window produced the table. Non-negotiable, and the one caveat that
+    // survives on every view: `flaky.html` shipped tiles showing one day above a
+    // table showing 21 with nothing saying so. What each window *means* is in
+    // `flaky --help`; this only has to name the one that ran.
     if (result.groupBy === 'days') {
-        // The one view whose three columns are mutually exclusive, said plainly
-        // because the other two views' are not and share these column names.
-        lines.push(
-            'Each test is classified on the runs it had that day, in exactly one of the three ' +
-                'states, so flaky + stable + skipped = total.'
-        );
+        // Nothing to say: the Date column is the window, one row per day.
     } else if (header.scope === 'all-days') {
-        // The 84% measurement. A reader who does not know this reads 75% as a
-        // statement about the folder rather than about the window.
         lines.push(
-            `--all-days: a test counts as flaky if it failed on ANY of the ${header.dayCount} ` +
-                'days, which is a much looser bar — tree-wide that is ~84% of tests, because a ' +
-                'test runs on dozens of configs dozens of times a day. Drop --all-days for the ' +
-                '7-day average, which discriminates.'
+            `Window: --all-days — one verdict over all ${header.dayCount} days, flaky if flaky ` +
+                'on ANY of them. A much looser bar than the default (see --help).'
         );
     } else if (header.scope === 'day') {
+        // One day, either because --day named it or — on the per-test listing —
+        // because that is what `listingTree` classifies by default: it is
+        // `flakinessByFolder`, the derivation the page renders its test rows from,
+        // and with no flag that is the most recent day. Measured on the pinned
+        // file it finds 923 flaky tests, exactly the 2026-08-04 row of
+        // --group-by days, so naming the day is naming the number's real source
+        // rather than inheriting the folder ranking's 7-day average.
+        const date = dateWithWeekday(header.scopeDates[0] ?? header.endDate);
         lines.push(
-            `--day: classified on ${dateWithWeekday(header.scopeDates[0] ?? header.endDate)} ` +
-                'alone. One day is partly a fact about the weekday — weekend push volume is 2.6x ' +
-                'lower, and on the pinned window netwerk/test/unit reads 137 flaky on a Tuesday ' +
-                'and 76 on a Sunday. Drop --day for the 7-day average.'
+            result.groupBy === 'tests'
+                ? `Window: ${date} alone, one verdict per test (--all-days for the whole file).`
+                : `Window: --day ${date} alone, which is partly a fact about the weekday ` +
+                  '(see --help).'
         );
     } else {
-        // The default, and the one that needs the most saying: the numbers are
-        // means, over a whole number of weeks, of per-day verdicts. Each of those
-        // three properties is load-bearing and none is visible in the digits.
         const first = header.scopeDates[0] ?? header.startDate;
         const last = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
-        if (result.groupBy === 'tests') {
-            // The counts on a test row are **days**, not the folder views' means:
-            // a single test's mean can only be 0, 1/7 … 1, so every worst row
-            // would read `1`. See `days()`.
-            lines.push(
-                `Each test is classified separately on each of the last ` +
-                    `${header.averageDays ?? 0} days (${first} … ${last}), and the d columns ` +
-                    'count those days: flaky d 6 of ran d 7 means "flaky on 6 of the 7 days it ' +
-                    'ran". A whole number of weeks, because weekend push volume is 2.6x lower. ' +
-                    `--day <date> uses one day, --all-days one verdict over the whole ${header.dayCount}.`
-            );
-        } else {
-            lines.push(
-                `Counts are the MEAN PER DAY over the last ${header.averageDays ?? 0} days ` +
-                    `(${first} … ${last}), each day classified on its own runs — so 187.0 means ` +
-                    '"on a typical day, 187 of this folder\'s tests were flaky". A whole number ' +
-                    "of weeks, because weekend push volume is 2.6x lower and one day's ranking " +
-                    `is partly the calendar. --day <date> ranks one day, --all-days the whole ` +
-                    `${header.dayCount}.`
-            );
-        }
-    }
-
-    if (result.groupBy === 'tests') {
-        // The two things a reader of *this* table has to know before trusting a
-        // row: that the two count columns overlap, and — the whole reason the
-        // view exists — that being at the bottom of it is not the same as being
-        // clean, because a purely-skipped test can never outrank a flaky one.
         lines.push(
-            'The flaky d and skip d columns OVERLAP — a test failing on Linux and disabled on ' +
-                'Windows is both, and the verdict column says flaky+skipped for those. Rows are ' +
-                'ranked flaky-first, so a skipped-only test is never above a flaky one.'
-        );
-        // The one column on this table with a different window from the rest,
-        // which a reader has no way to see: `windowFailures` is what the noise
-        // filter judges and it is a count of *runs* over the whole file.
-        lines.push(
-            `failures is failing runs over the whole ${header.dayCount} days, not the days above ` +
-                '— it is a count of runs across every configuration, and it is what the noise ' +
-                'filter is compared against.'
-        );
-    } else if (result.groupBy !== 'days') {
-        lines.push(
-            'The flaky and skip columns OVERLAP — a test failing on Linux and disabled on ' +
-                'Windows is both — so they do not sum to tests. flaky% is flaky/tests, not ' +
-                'flaky/(flaky+skip), and +subtree is the flaky count including subfolders.'
+            `Window: mean per day over the ${header.averageDays ?? 0} days ${first} … ${last}.`
         );
     }
 
@@ -1358,17 +1555,19 @@ function headerLines(result: FolderResult | TrendResult | TestResult): string[] 
                 `fewer than ${MIN_FILTERABLE_DAYS} days, and "did this fail more than once in ` +
                 'the window" cannot be judged from one day. The counts below are unfiltered.'
         );
-    } else if (header.minWindowFailures > 0) {
+    } else if (header.minWindowFailures > 0 && header.neutralisedTests > 0) {
+        // Only when it changed something. A filter that neutralised nothing
+        // cannot change a reading, and saying so on every run is the bloat this
+        // block was trimmed for; `--json`'s `neutralisedTests` still reports 0.
         lines.push(
-            `Noise filter: a test failing ${header.minWindowFailures} time` +
-                `${header.minWindowFailures === 1 ? '' : 's'} or fewer across the ` +
-                `${header.dayCount} days is read as passing — ` +
-                `${fmtCount(header.neutralisedTests)} tests neutralised (--noise 0 disables).`
+            `Noise filter neutralised ${fmtCount(header.neutralisedTests)} tests failing ` +
+                `${header.minWindowFailures} time${header.minWindowFailures === 1 ? '' : 's'} ` +
+                `or fewer in ${header.dayCount} days (--noise 0 disables).`
         );
-    } else {
-        lines.push(
-            'Noise filter off (--noise 1 is the default; it reads a single failure as a pass).'
-        );
+    } else if (header.minWindowFailures === 0) {
+        // The opposite direction, and it does change the numbers: every
+        // one-off failure is being counted as flakiness.
+        lines.push('Noise filter off (--noise 0): a single failure counts as flaky.');
     }
     return lines;
 }

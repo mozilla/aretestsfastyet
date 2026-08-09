@@ -26,7 +26,7 @@ import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
 import { CRASH_OPTIONS, runCrash } from './commands/crash.ts';
 import { runDates } from './commands/dates.ts';
 import { ERRORS_OPTIONS, runErrors } from './commands/errors.ts';
-import { FLAKY_OPTIONS, runFlaky } from './commands/flaky.ts';
+import { FLAKY_NOTES, FLAKY_OPTIONS, runFlaky } from './commands/flaky.ts';
 import { GUIDE_OPTIONS, runGuide } from './commands/guide.ts';
 import {
     CRASHES_OPTIONS,
@@ -56,6 +56,18 @@ interface CommandSpec {
     summary: string;
     usage: string;
     options: OptionSpecs;
+    /**
+     * Standing definitions printed after the options, for a command whose output
+     * would otherwise have to carry them on every run.
+     *
+     * Only `flaky` has these today. Its preamble had grown to 13 of 24 lines —
+     * definitions of "flaky" and "skipped", why the window is a whole number of
+     * weeks, that two columns overlap — none of which varies between two
+     * invocations, so a reader wants them once and the primary consumer here is
+     * an agent that pays for them every time. `--help` is where a reader asks
+     * for them once.
+     */
+    notes?: readonly string[];
     run(context: CommandContext, args: ReturnType<typeof parseArgs>): Promise<void>;
 }
 
@@ -108,6 +120,7 @@ const COMMANDS: CommandSpec[] = [
         summary: 'Which folder to book a flakiness burndown on, ranked. With a path, its tests.',
         usage: 'fx-tests flaky [path] [options]',
         options: FLAKY_OPTIONS,
+        notes: FLAKY_NOTES,
         run: runFlaky,
     },
     {
@@ -614,6 +627,9 @@ function commandHelp(command: CommandSpec, specs: OptionSpecs): string {
         '',
         'Options:',
         ...names.map((entry) => `  ${entry.flag.padEnd(width)}  ${entry.describe}`),
+        // The standing definitions, for a command that would otherwise print
+        // them on every run. See `CommandSpec.notes`.
+        ...(command.notes === undefined ? [] : ['', ...command.notes]),
         '',
         `Cache: ${defaultCacheDir()}`,
         '',

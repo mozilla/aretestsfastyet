@@ -2201,9 +2201,9 @@ function entryCount(group, shape, status = "(unknown status)") {
   if (distinct.size > 1) {
     throw new MisalignedStatusGroupError(status, lengths);
   }
-  const days2 = lengths["days"];
-  if (days2 !== void 0) {
-    return days2;
+  const days = lengths["days"];
+  if (days !== void 0) {
+    return days;
   }
   switch (shape ?? statusGroupShape(group, status)) {
     case "flat":
@@ -2538,8 +2538,8 @@ async function loadIndex(context, harness) {
   });
 }
 function resolveDayWindow(globals, file) {
-  const days2 = file.days;
-  if (days2 === null) {
+  const days = file.days;
+  if (days === null) {
     return {
       range: null,
       startDate: file.endDate,
@@ -2549,13 +2549,13 @@ function resolveDayWindow(globals, file) {
       reason: "whole-window"
     };
   }
-  const oldest = dateOfDayIndex(file.endDate, days2, 0);
+  const oldest = dateOfDayIndex(file.endDate, days, 0);
   if (globals.day !== void 0) {
     const wanted = resolveDayKeyword(globals.day, file.endDate);
-    const index = dayIndexOfDate(file.endDate, days2, wanted);
+    const index = dayIndexOfDate(file.endDate, days, wanted);
     if (index === null) {
       throw notFoundError(
-        `no data for ${wanted}: the published window is ${oldest} \u2026 ${file.endDate} (${days2} days)`,
+        `no data for ${wanted}: the published window is ${oldest} \u2026 ${file.endDate} (${days} days)`,
         "Older data is not fetchable today \u2014 the index publishes a rolling window. Run `fx-tests dates` to see what is available."
       );
     }
@@ -2569,11 +2569,11 @@ function resolveDayWindow(globals, file) {
     };
   }
   if (globals.since !== void 0) {
-    const wanted = Math.min(globals.since, days2);
-    const from = days2 - wanted;
+    const wanted = Math.min(globals.since, days);
+    const from = days - wanted;
     return {
-      range: { from, to: days2 - 1 },
-      startDate: dateOfDayIndex(file.endDate, days2, from),
+      range: { from, to: days - 1 },
+      startDate: dateOfDayIndex(file.endDate, days, from),
       endDate: file.endDate,
       dayCount: wanted,
       singleDay: wanted === 1,
@@ -2584,8 +2584,8 @@ function resolveDayWindow(globals, file) {
     range: null,
     startDate: oldest,
     endDate: file.endDate,
-    dayCount: days2,
-    singleDay: days2 === 1,
+    dayCount: days,
+    singleDay: days === 1,
     reason: "whole-window"
   };
 }
@@ -2608,18 +2608,18 @@ function addDays(date, offset) {
   parsed.setUTCDate(parsed.getUTCDate() + offset);
   return parsed.toISOString().slice(0, 10);
 }
-function dateOfDayIndex(endDate, days2, dayIndex) {
-  return addDays(endDate, -(days2 - 1 - dayIndex));
+function dateOfDayIndex(endDate, days, dayIndex) {
+  return addDays(endDate, -(days - 1 - dayIndex));
 }
-function dayIndexOfDate(endDate, days2, date) {
+function dayIndexOfDate(endDate, days, date) {
   const end = Date.parse(`${endDate}T00:00:00Z`);
   const wanted = Date.parse(`${date}T00:00:00Z`);
   if (Number.isNaN(end) || Number.isNaN(wanted)) {
     return null;
   }
   const daysBack = Math.round((end - wanted) / 864e5);
-  const index = days2 - 1 - daysBack;
-  return index >= 0 && index < days2 ? index : null;
+  const index = days - 1 - daysBack;
+  return index >= 0 && index < days ? index : null;
 }
 
 // cli/commands/errors.ts
@@ -3131,16 +3131,16 @@ function displaySkipMessage(message) {
 // lib/query/flakiness.ts
 var DEFAULT_MIN_WINDOW_FAILURES = 1;
 var MIN_FILTERABLE_DAYS = 2;
-function testDays(file, testId, days2) {
+function testDays(file, testId, days) {
   const row = {
-    fail: new Int32Array(days2),
-    pass: new Int32Array(days2),
-    skip: new Int32Array(days2),
+    fail: new Int32Array(days),
+    pass: new Int32Array(days),
+    skip: new Int32Array(days),
     windowFailures: 0
   };
   for (const entry of file.runsOfTest(testId)) {
     const day = entry.day ?? 0;
-    if (day < 0 || day >= days2) {
+    if (day < 0 || day >= days) {
       continue;
     }
     switch (classifyStatus(entry.status).kind) {
@@ -3180,21 +3180,21 @@ function stateOn(row, day, neutralised) {
   }
   return passed > 0 ? "stable" : null;
 }
-function wasSkipped(row, days2, day) {
+function wasSkipped(row, days, day) {
   if (day !== null) {
     return (row.skip[day] ?? 0) > 0;
   }
-  for (let index = 0; index < days2; index++) {
+  for (let index = 0; index < days; index++) {
     if (row.skip[index] > 0) {
       return true;
     }
   }
   return false;
 }
-function windowState(row, days2, neutralised) {
+function windowState(row, days, neutralised) {
   let sawSkip = false;
   let sawPass = false;
-  for (let day = 0; day < days2; day++) {
+  for (let day = 0; day < days; day++) {
     switch (stateOn(row, day, neutralised)) {
       case "flaky":
         return "flaky";
@@ -3221,22 +3221,22 @@ function dateOfDay(startDate, day) {
   return new Date(start + day * 864e5).toISOString().slice(0, 10);
 }
 function startDateOf(file) {
-  const days2 = file.days ?? 1;
+  const days = file.days ?? 1;
   const end = Date.parse(`${file.endDate}T00:00:00Z`);
   if (Number.isNaN(end)) {
     return file.endDate;
   }
-  return new Date(end - (days2 - 1) * 864e5).toISOString().slice(0, 10);
+  return new Date(end - (days - 1) * 864e5).toISOString().slice(0, 10);
 }
 function walk(file, options, testIds) {
-  const days2 = file.days ?? 1;
-  const minWindowFailures = days2 < MIN_FILTERABLE_DAYS ? 0 : options.minWindowFailures ?? DEFAULT_MIN_WINDOW_FAILURES;
+  const days = file.days ?? 1;
+  const minWindowFailures = days < MIN_FILTERABLE_DAYS ? 0 : options.minWindowFailures ?? DEFAULT_MIN_WINDOW_FAILURES;
   const rows2 = [];
   const neutralised = [];
   let neutralisedCount = 0;
   const ids = testIds ?? Array.from({ length: file.testCount }, (_unused, index) => index);
   for (const testId of ids) {
-    const row = testDays(file, testId, days2);
+    const row = testDays(file, testId, days);
     const noise = isNoise(row, minWindowFailures);
     rows2.push(row);
     neutralised.push(noise);
@@ -3248,7 +3248,7 @@ function walk(file, options, testIds) {
     rows: rows2,
     neutralised,
     neutralisedCount,
-    days: days2,
+    days,
     startDate: startDateOf(file),
     minWindowFailures
   };
@@ -3265,13 +3265,13 @@ function selectTests(file, pathPrefix) {
 }
 function flakinessOverTime(file, options = {}) {
   const ids = selectTests(file, options.pathPrefix);
-  const { rows: rows2, neutralised, neutralisedCount, days: days2, startDate, minWindowFailures } = walk(
+  const { rows: rows2, neutralised, neutralisedCount, days, startDate, minWindowFailures } = walk(
     file,
     options,
     ids
   );
   const series = [];
-  for (let day = 0; day < days2; day++) {
+  for (let day = 0; day < days; day++) {
     const counts = { flaky: 0, stable: 0, skipped: 0 };
     for (let index = 0; index < rows2.length; index++) {
       const state = stateOn(rows2[index], day, neutralised[index]);
@@ -3289,27 +3289,27 @@ function flakinessOverTime(file, options = {}) {
   return { days: series, neutralisedTests: neutralisedCount, minWindowFailures };
 }
 var THIN_DAY_SHARE = 0.1;
-function thinDays(days2) {
-  const populations = days2.map((day) => day.total).filter((total) => total > 0);
+function thinDays(days) {
+  const populations = days.map((day) => day.total).filter((total) => total > 0);
   if (populations.length === 0) {
-    return days2.map(() => false);
+    return days.map(() => false);
   }
   populations.sort((a, b) => a - b);
   const median = populations[Math.floor(populations.length / 2)];
   const floor = median * THIN_DAY_SHARE;
-  return days2.map((day) => day.total > 0 && day.total < floor);
+  return days.map((day) => day.total > 0 && day.total < floor);
 }
-function runningAverage(days2, window = 7) {
+function runningAverage(days, window = 7) {
   const half = Math.floor(window / 2);
-  const thin = thinDays(days2);
-  return days2.map((_unused, index) => {
+  const thin = thinDays(days);
+  return days.map((_unused, index) => {
     if (thin[index] === true) {
       return null;
     }
     let flaky = 0;
     let total = 0;
     for (let offset = -half; offset <= half; offset++) {
-      const day = days2[index + offset];
+      const day = days[index + offset];
       if (day === void 0 || day.total === 0 || thin[index + offset] === true) {
         continue;
       }
@@ -3321,8 +3321,8 @@ function runningAverage(days2, window = 7) {
 }
 function flakinessByFolder(file, options = {}) {
   const ids = selectTests(file, options.pathPrefix);
-  const { rows: rows2, neutralised, days: days2 } = walk(file, options, ids);
-  const lastDay = days2 - 1;
+  const { rows: rows2, neutralised, days } = walk(file, options, ids);
+  const lastDay = days - 1;
   const day = options.day ?? lastDay;
   const root = {
     path: "",
@@ -3340,11 +3340,11 @@ function flakinessByFolder(file, options = {}) {
   for (let index = 0; index < ids.length; index++) {
     const row = rows2[index];
     const noise = neutralised[index];
-    const state = options.allDays === true ? windowState(row, days2, noise) : stateOn(row, day, noise);
+    const state = options.allDays === true ? windowState(row, days, noise) : stateOn(row, day, noise);
     if (state === null) {
       continue;
     }
-    const skipped = wasSkipped(row, days2, options.allDays === true ? null : day);
+    const skipped = wasSkipped(row, days, options.allDays === true ? null : day);
     const both = state === "flaky" && skipped;
     const identity = file.testAt(ids[index]);
     const { directory } = identity;
@@ -3414,10 +3414,10 @@ function sortTree(node) {
 var DEFAULT_AVERAGE_DAYS = 7;
 function flakinessByFolderAveraged(file, options = {}) {
   const ids = selectTests(file, options.pathPrefix);
-  const { rows: rows2, neutralised, days: days2, startDate } = walk(file, options, ids);
+  const { rows: rows2, neutralised, days, startDate } = walk(file, options, ids);
   const wanted = options.averageDays ?? DEFAULT_AVERAGE_DAYS;
-  const windowDays = Math.max(1, Math.min(wanted, days2));
-  const from = days2 - windowDays;
+  const windowDays = Math.max(1, Math.min(wanted, days));
+  const from = days - windowDays;
   const root = {
     path: "",
     name: "",
@@ -3439,14 +3439,14 @@ function flakinessByFolderAveraged(file, options = {}) {
     let skippedShare = 0;
     let bothShare = 0;
     let ranAtAll = false;
-    for (let day = from; day < days2; day++) {
+    for (let day = from; day < days; day++) {
       const state = stateOn(row, day, noise);
       if (state === null) {
         continue;
       }
       ranAtAll = true;
       counts[state]++;
-      if (wasSkipped(row, days2, day)) {
+      if (wasSkipped(row, days, day)) {
         skippedShare++;
         if (state === "flaky") {
           bothShare++;
@@ -3523,7 +3523,7 @@ function flakinessByFolderAveraged(file, options = {}) {
   average(root);
   sortTree(root);
   const dates = [];
-  for (let day = from; day < days2; day++) {
+  for (let day = from; day < days; day++) {
     dates.push(dateOfDay(startDate, day));
   }
   return { root, windowDays, dates };
@@ -3596,6 +3596,48 @@ function hasSomethingToAct(leaf) {
 }
 
 // cli/commands/flaky.ts
+var FLAKY_NOTES = [
+  "How a test is classified:",
+  "  flaky    it failed, timed out or crashed at least once",
+  "  skipped  it was disabled somewhere (run-if exclusions are not counted)",
+  "",
+  "The window:",
+  "  The FOLDER views average per-day counts over the last 7 days, so a folder reading",
+  `  187.0 means "on a typical day, 187 of this folder's tests were flaky". A whole`,
+  "  number of weeks, because weekend push volume is 2.6x lower and one day's ranking is",
+  "  otherwise partly the calendar: on the pinned window netwerk/test/unit reads 137",
+  "  flaky on a Tuesday and 76 on a Sunday.",
+  "  The PER-TEST view does not average \u2014 a single test has no meaningful mean \u2014 and",
+  "  takes one verdict over one day, the most recent, as flaky.html does.",
+  "  --day <date> picks another day. --all-days takes a single verdict over the whole",
+  "  file window, flaky if flaky on ANY day \u2014 a much looser bar, tree-wide ~84% of",
+  "  tests, because a test runs on dozens of configs dozens of times a day.",
+  "  Every run names the window it used in its header.",
+  "",
+  "Flaky and skipped OVERLAP:",
+  "  A test failing on Linux and disabled on Windows is both, so the flaky and skip",
+  "  columns do not sum to the test count \u2014 on the pinned window 800 of 4,807 tests are",
+  "  in both. On the folder views flaky% is flaky/tests, not flaky/(flaky+skip). Rows are",
+  "  ranked flaky-first, so a skipped-only test is never above a flaky one.",
+  "",
+  "Reading the columns:",
+  "  Folder views rank a population, so they carry counts and a flaky% share of the",
+  "  folder's tests, plus +subtree \u2014 the flaky count including subfolders.",
+  "  The per-test view is one verdict per test over the window, as flaky.html shows it:",
+  "    flaky        1 if it failed, timed out or crashed at all in the window, else 0",
+  "    skipped      1 if it is disabled somewhere, else 0. A test can be both; 0 flaky",
+  "                 with 1 skipped is switched off rather than failing.",
+  "    failures     failing RUNS over the whole file window, across every configuration \u2014",
+  "                 a different unit and window from the two verdicts, and what --noise",
+  '                 is compared against. It is what separates "failed twice" from',
+  '                 "failed 2,543 times".',
+  "  There is no percentage on a single test: a percentage needs a population, and one",
+  "  test can only be 0% or 100%. Use `fx-tests test <path>` for a per-configuration",
+  "  breakdown of one test, or --json for the raw counters.",
+  "",
+  "--group-by days is the exception: its flaky, stable and skipped columns are mutually",
+  "exclusive and do sum to total."
+];
 var FLAKY_OPTIONS = {
   path: {
     type: "string",
@@ -3643,7 +3685,7 @@ async function loadFlakyQuery(context, args) {
       "Flakiness here is a per-test verdict over all configurations. `fx-tests test <path> --config` reads a bucket file and can break one test down by configuration."
     );
   }
-  const days2 = file.days ?? 1;
+  const days = file.days ?? 1;
   const allDays = boolOption(args, "all-days");
   const requested = numberOption(args, "noise") ?? DEFAULT_MIN_WINDOW_FAILURES;
   const averageDays = numberOption(args, "average-days") ?? DEFAULT_AVERAGE_DAYS;
@@ -3671,10 +3713,10 @@ async function loadFlakyQuery(context, args) {
       );
     }
     const wanted = resolveDayKeyword(context.globals.day, file.endDate);
-    const index = dayIndexOfDate(file.endDate, days2, wanted);
+    const index = dayIndexOfDate(file.endDate, days, wanted);
     if (index === null) {
       throw usageError(
-        `no data for ${wanted}: ${harness}-issues.json covers ${dateOfIndex(file.endDate, days2, 0)} \u2026 ${file.endDate} (${days2} days)`,
+        `no data for ${wanted}: ${harness}-issues.json covers ${dateOfIndex(file.endDate, days, 0)} \u2026 ${file.endDate} (${days} days)`,
         "Run `fx-tests dates` to see what is published."
       );
     }
@@ -3686,10 +3728,10 @@ async function loadFlakyQuery(context, args) {
     ...pathPrefix === void 0 ? {} : { pathPrefix }
   });
   const scope = allDays ? "all-days" : day !== void 0 ? "day" : "average";
-  const effectiveAverage = Math.max(1, Math.min(averageDays, days2));
-  const scopeDates = scope === "day" ? [dateOfIndex(file.endDate, days2, day)] : scope === "all-days" ? [dateOfIndex(file.endDate, days2, 0), file.endDate] : Array.from(
+  const effectiveAverage = Math.max(1, Math.min(averageDays, days));
+  const scopeDates = scope === "day" ? [dateOfIndex(file.endDate, days, day)] : scope === "all-days" ? [dateOfIndex(file.endDate, days, 0), file.endDate] : Array.from(
     { length: effectiveAverage },
-    (_unused, offset) => dateOfIndex(file.endDate, days2, days2 - effectiveAverage + offset)
+    (_unused, offset) => dateOfIndex(file.endDate, days, days - effectiveAverage + offset)
   );
   return {
     harness,
@@ -3702,12 +3744,16 @@ async function loadFlakyQuery(context, args) {
     header: {
       harness,
       family: file.family,
-      startDate: dateOfIndex(file.endDate, days2, 0),
+      startDate: dateOfIndex(file.endDate, days, 0),
       endDate: file.endDate,
-      dayCount: days2,
+      dayCount: days,
       testCount: file.testCount,
       dataSource: context.source.name,
       scope,
+      // Asked for here by construction: this scope came from --day,
+      // --all-days or the default average. `listingHeader` is the one place
+      // that narrows a scope on the view's own behalf, and it clears this.
+      scopeRequested: true,
       scopeDates,
       averageDays: scope === "average" ? effectiveAverage : null,
       minWindowFailures: series.minWindowFailures,
@@ -3721,12 +3767,12 @@ async function loadFlakyQuery(context, args) {
     }
   };
 }
-function dateOfIndex(endDate, days2, index) {
+function dateOfIndex(endDate, days, index) {
   const end = Date.parse(`${endDate}T00:00:00Z`);
   if (Number.isNaN(end)) {
     return endDate;
   }
-  return new Date(end - (days2 - 1 - index) * 864e5).toISOString().slice(0, 10);
+  return new Date(end - (days - 1 - index) * 864e5).toISOString().slice(0, 10);
 }
 async function runFlaky(context, args) {
   if (args.positionals.length > 1) {
@@ -3773,15 +3819,15 @@ async function runFlaky(context, args) {
     emitResult(context, trendResult(query, context, limit), (result2) => renderTrend(result2));
     return;
   }
-  const root = classifiedTree(query);
   if (groupBy === "tests") {
     emitResult(
       context,
-      testResult(query, root, boolOption(args, "here-only"), sort, limit),
+      testResult(query, listingTree(query), boolOption(args, "here-only"), sort, limit),
       renderTests
     );
     return;
   }
+  const root = classifiedTree(query);
   const rows2 = groupBy === "list" ? listRows(root) : treeRows(root);
   const sorted = sortRows(rows2, sort);
   const shown = applyLimit(sorted, limit);
@@ -3818,34 +3864,47 @@ function classifiedTree(query) {
     ...query.day === void 0 ? {} : { day: query.day }
   });
 }
-function scaleFor(query) {
-  return query.header.scope === "average" ? query.header.averageDays ?? 1 : 1;
+function listingTree(query) {
+  const noise = { minWindowFailures: query.header.requestedMinWindowFailures };
+  return flakinessByFolder(query.file, {
+    ...noise,
+    ...query.pathPrefix === void 0 ? {} : { pathPrefix: query.pathPrefix },
+    ...query.allDays ? { allDays: true } : {},
+    ...query.day === void 0 ? {} : { day: query.day }
+  });
 }
-function days(mean2, scale) {
-  return Math.round(mean2 * scale);
+function listingHeader(header) {
+  if (header.scope !== "average") {
+    return header;
+  }
+  const day = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
+  return {
+    ...header,
+    scope: "day",
+    scopeDates: [day],
+    averageDays: null,
+    scopeRequested: false
+  };
 }
 function testResult(query, root, hereOnly, sort, limit) {
   const node = hereOnly && query.pathPrefix !== void 0 ? folderAt(root, query.pathPrefix) : root;
   const leaves = node === null ? [] : hereOnly ? node.tests : subtreeTests(node);
   const worth = leaves.filter(hasSomethingToAct);
-  const scale = scaleFor(query);
   const rows2 = worth.map((leaf) => ({
     path: leaf.fullPath,
     verdict: leaf.flakyAndSkipped > 0 ? "flaky+skipped" : leaf.flaky > 0 ? "flaky" : "skipped",
-    flaky: days(leaf.flaky, scale),
-    skipped: days(leaf.skipped, scale),
-    flakyAndSkipped: days(leaf.flakyAndSkipped, scale),
-    total: days(leaf.total, scale),
-    // From the leaf's own unscaled counters, so the percentage cannot pick
-    // up the scaling's rounding: it is one ratio of two numbers that were
-    // divided by the same constant, which is the constant cancelling.
-    flakyPercent: ratio(leaf.flaky, leaf.total),
+    flaky: leaf.flaky,
+    skipped: leaf.skipped,
+    flakyAndSkipped: leaf.flakyAndSkipped,
+    total: leaf.total,
     windowFailures: leaf.windowFailures,
     neutralised: leaf.neutralised
   }));
   const sorted = sortTestRows(rows2, sort);
   return {
-    header: query.header,
+    // Corrected to the scope this listing actually classified. See
+    // `listingHeader`.
+    header: listingHeader(query.header),
     groupBy: "tests",
     sort,
     pathPrefix: query.pathPrefix ?? null,
@@ -3859,20 +3918,22 @@ function testResult(query, root, hereOnly, sort, limit) {
 function sortTestRows(rows2, sort) {
   const sorted = [...rows2];
   const byPath = (a, b) => a.path.localeCompare(b.path);
+  const byWeight = (a, b) => b.windowFailures - a.windowFailures || byPath(a, b);
   switch (sort) {
+    // `share` ranked on a percentage that no longer exists, and could not
+    // meaningfully: a percentage of one test is 0% or 100%, which is the
+    // `flaky` verdict restated. It ranks as `flaky` rather than being
+    // rejected, since it stays valid on the folder views this flag is shared
+    // with.
     case "flaky":
-      sorted.sort(
-        (a, b) => b.flaky - a.flaky || b.skipped - a.skipped || byPath(a, b)
-      );
-      break;
     case "share":
-      sorted.sort((a, b) => b.flakyPercent - a.flakyPercent || byPath(a, b));
+      sorted.sort((a, b) => b.flaky - a.flaky || b.skipped - a.skipped || byWeight(a, b));
       break;
     case "skips":
-      sorted.sort((a, b) => b.skipped - a.skipped || b.flaky - a.flaky || byPath(a, b));
+      sorted.sort((a, b) => b.skipped - a.skipped || b.flaky - a.flaky || byWeight(a, b));
       break;
     case "tests":
-      sorted.sort((a, b) => b.total - a.total || byPath(a, b));
+      sorted.sort(byWeight);
       break;
     case "name":
       sorted.sort(byPath);
@@ -3882,10 +3943,12 @@ function sortTestRows(rows2, sort) {
 }
 function renderTests(result) {
   const sortColumn = {
-    flaky: "flaky d",
-    share: "flaky%",
-    skips: "skip d",
-    tests: "ran d",
+    flaky: "flaky",
+    // `share` ranked a percentage that is gone from this view; it orders as
+    // `flaky` here and keeps its own column on the folder views.
+    share: "flaky",
+    skips: "skipped",
+    tests: `failures ${result.header.dayCount}d`,
     name: "Test"
   };
   const column = (header, rest = {}) => ({
@@ -3895,16 +3958,9 @@ function renderTests(result) {
   });
   const columns = [
     column("Test", { path: true }),
-    column("verdict"),
-    // `d` for days on all three, so the unit is on the column rather than
-    // only in the header block — a folder row's `flaky` is a count of tests
-    // and a test row's is a count of days, and the two tables sit one
-    // command apart.
-    column("flaky d", { align: "right" }),
-    column("flaky%", { align: "right" }),
-    column("skip d", { align: "right" }),
-    column("ran d", { align: "right" }),
-    { header: "failures", align: "right" }
+    column("flaky", { align: "right" }),
+    column("skipped", { align: "right" }),
+    column(`failures ${result.header.dayCount}d`, { align: "right" })
   ];
   return {
     preamble: headerLines2(result),
@@ -3912,11 +3968,8 @@ function renderTests(result) {
       columns,
       rows: result.rows.map((row) => [
         row.path,
-        row.verdict,
         count(row.flaky),
-        percent(row.flakyPercent),
         count(row.skipped),
-        count(row.total),
         count(row.windowFailures)
       ])
     },
@@ -3925,6 +3978,26 @@ function renderTests(result) {
     epilogue: testEpilogue(result),
     empty: testEmptyMessage(result)
   };
+}
+function suggestion(command, header, options = {}) {
+  const flags = [];
+  if (header.harness !== "xpcshell") {
+    flags.push(`--harness ${header.harness}`);
+  }
+  if (header.scope === "day" && header.scopeRequested) {
+    flags.push(`--day ${header.scopeDates[0] ?? header.endDate}`);
+  }
+  if (options.flakyScope === true) {
+    if (header.scope === "all-days") {
+      flags.push("--all-days");
+    } else if (header.averageDays !== null && header.averageDays !== DEFAULT_AVERAGE_DAYS) {
+      flags.push(`--average-days ${header.averageDays}`);
+    }
+    if (header.requestedMinWindowFailures !== DEFAULT_MIN_WINDOW_FAILURES) {
+      flags.push(`--noise ${header.requestedMinWindowFailures}`);
+    }
+  }
+  return flags.length === 0 ? command : `${command} ${flags.join(" ")}`;
 }
 function testEpilogue(result) {
   const lines = [];
@@ -3940,7 +4013,10 @@ function testEpilogue(result) {
     }
     lines.push(
       "  Next, for a test you pick:",
-      `    fx-tests test ${top.path}     # every config it ran on, and what it failed with`
+      // `fx-tests test` reads a bucket file rather than `issues.json` and
+      // has none of this command's scope flags, so only the globals carry.
+      // See `suggestion`.
+      `    ${suggestion(`fx-tests test ${top.path}`, result.header)}     # every config it ran on, and what it failed with`
     );
   }
   return lines;
@@ -4082,8 +4158,8 @@ function epilogueFor(result) {
   }
   return [
     `  Next, for the folder you pick:`,
-    `    fx-tests flaky ${top.path}     # which tests, flaky ones first`,
-    `    fx-tests skips --path ${top.path}      # what is already disabled there, and why`
+    `    ${suggestion(`fx-tests flaky ${top.path}`, result.header, { flakyScope: true })}     # which tests, flaky ones first`,
+    `    ${suggestion(`fx-tests skips --path ${top.path}`, result.header)}      # what is already disabled there, and why`
   ];
 }
 function trendResult(query, context, limit) {
@@ -4155,64 +4231,41 @@ function headerLines2(result) {
     `${header.harness} ${subject} \u2014 ${header.dayCount} days (${dateWithWeekday(header.startDate)} \u2026 ${dateWithWeekday(header.endDate)}), ${count(header.testCount)} tests in the file`
   );
   if (result.groupBy === "tests") {
-    lines.push(
-      result.pathPrefix === null ? "Every test file in the tree." : result.hereOnly ? `Test files directly in ${result.pathPrefix}, not its subfolders (--here-only).` : `Test files under ${result.pathPrefix} and its subfolders.`
-    );
+    if (result.pathPrefix !== null) {
+      lines.push(
+        result.hereOnly ? `Test files directly in ${result.pathPrefix}, not its subfolders (--here-only).` : `Test files under ${result.pathPrefix} and its subfolders.`
+      );
+    }
   } else if (result.pathPrefix !== null) {
     lines.push(`Under ${result.pathPrefix} only.`);
   }
-  lines.push(
-    "Flaky means a test failed, timed out or crashed at least once; skipped means it was disabled somewhere, run-if excluded."
-  );
   if (result.groupBy === "days") {
-    lines.push(
-      "Each test is classified on the runs it had that day, in exactly one of the three states, so flaky + stable + skipped = total."
-    );
   } else if (header.scope === "all-days") {
     lines.push(
-      `--all-days: a test counts as flaky if it failed on ANY of the ${header.dayCount} days, which is a much looser bar \u2014 tree-wide that is ~84% of tests, because a test runs on dozens of configs dozens of times a day. Drop --all-days for the 7-day average, which discriminates.`
+      `Window: --all-days \u2014 one verdict over all ${header.dayCount} days, flaky if flaky on ANY of them. A much looser bar than the default (see --help).`
     );
   } else if (header.scope === "day") {
+    const date = dateWithWeekday(header.scopeDates[0] ?? header.endDate);
     lines.push(
-      `--day: classified on ${dateWithWeekday(header.scopeDates[0] ?? header.endDate)} alone. One day is partly a fact about the weekday \u2014 weekend push volume is 2.6x lower, and on the pinned window netwerk/test/unit reads 137 flaky on a Tuesday and 76 on a Sunday. Drop --day for the 7-day average.`
+      result.groupBy === "tests" ? `Window: ${date} alone, one verdict per test (--all-days for the whole file).` : `Window: --day ${date} alone, which is partly a fact about the weekday (see --help).`
     );
   } else {
     const first = header.scopeDates[0] ?? header.startDate;
     const last = header.scopeDates[header.scopeDates.length - 1] ?? header.endDate;
-    if (result.groupBy === "tests") {
-      lines.push(
-        `Each test is classified separately on each of the last ${header.averageDays ?? 0} days (${first} \u2026 ${last}), and the d columns count those days: flaky d 6 of ran d 7 means "flaky on 6 of the 7 days it ran". A whole number of weeks, because weekend push volume is 2.6x lower. --day <date> uses one day, --all-days one verdict over the whole ${header.dayCount}.`
-      );
-    } else {
-      lines.push(
-        `Counts are the MEAN PER DAY over the last ${header.averageDays ?? 0} days (${first} \u2026 ${last}), each day classified on its own runs \u2014 so 187.0 means "on a typical day, 187 of this folder's tests were flaky". A whole number of weeks, because weekend push volume is 2.6x lower and one day's ranking is partly the calendar. --day <date> ranks one day, --all-days the whole ${header.dayCount}.`
-      );
-    }
-  }
-  if (result.groupBy === "tests") {
     lines.push(
-      "The flaky d and skip d columns OVERLAP \u2014 a test failing on Linux and disabled on Windows is both, and the verdict column says flaky+skipped for those. Rows are ranked flaky-first, so a skipped-only test is never above a flaky one."
-    );
-    lines.push(
-      `failures is failing runs over the whole ${header.dayCount} days, not the days above \u2014 it is a count of runs across every configuration, and it is what the noise filter is compared against.`
-    );
-  } else if (result.groupBy !== "days") {
-    lines.push(
-      "The flaky and skip columns OVERLAP \u2014 a test failing on Linux and disabled on Windows is both \u2014 so they do not sum to tests. flaky% is flaky/tests, not flaky/(flaky+skip), and +subtree is the flaky count including subfolders."
+      `Window: mean per day over the ${header.averageDays ?? 0} days ${first} \u2026 ${last}.`
     );
   }
   if (header.noiseFilterSkipped) {
     lines.push(
       `--noise ${header.requestedMinWindowFailures} was NOT applied: this file covers fewer than ${MIN_FILTERABLE_DAYS} days, and "did this fail more than once in the window" cannot be judged from one day. The counts below are unfiltered.`
     );
-  } else if (header.minWindowFailures > 0) {
+  } else if (header.minWindowFailures > 0 && header.neutralisedTests > 0) {
     lines.push(
-      `Noise filter: a test failing ${header.minWindowFailures} time${header.minWindowFailures === 1 ? "" : "s"} or fewer across the ${header.dayCount} days is read as passing \u2014 ${count(header.neutralisedTests)} tests neutralised (--noise 0 disables).`
+      `Noise filter neutralised ${count(header.neutralisedTests)} tests failing ${header.minWindowFailures} time${header.minWindowFailures === 1 ? "" : "s"} or fewer in ${header.dayCount} days (--noise 0 disables).`
     );
-  } else {
-    lines.push(
-      "Noise filter off (--noise 1 is the default; it reads a single failure as a pass)."
-    );
+  } else if (header.minWindowFailures === 0) {
+    lines.push("Noise filter off (--noise 0): a single failure counts as flaky.");
   }
   return lines;
 }
@@ -6765,9 +6818,9 @@ function statsRows(file) {
 // lib/query/summary.ts
 var DEFAULT_SUMMARY_DAYS = 7;
 function computeSummary(file, options = {}) {
-  const days2 = options.days ?? DEFAULT_SUMMARY_DAYS;
-  if (days2 < 1) {
-    throw new Error(`summary period must be at least one day, got ${days2}`);
+  const days = options.days ?? DEFAULT_SUMMARY_DAYS;
+  if (days < 1) {
+    throw new Error(`summary period must be at least one day, got ${days}`);
   }
   const rows2 = statsRows(file);
   if (rows2.length === 0) {
@@ -6782,10 +6835,10 @@ function computeSummary(file, options = {}) {
       );
     }
   }
-  const currentStart = Math.max(0, end - days2 + 1);
+  const currentStart = Math.max(0, end - days + 1);
   const current = summarizeRows(rows2.slice(currentStart, end + 1));
   const priorEnd = currentStart - 1;
-  const priorStart = priorEnd - days2 + 1;
+  const priorStart = priorEnd - days + 1;
   const prior = priorStart >= 0 && priorEnd >= priorStart ? summarizeRows(rows2.slice(priorStart, priorEnd + 1)) : null;
   return {
     harness: file.metadata.harness,
@@ -6848,9 +6901,9 @@ var SUMMARY_OPTIONS = {
   }
 };
 async function runSummary(context, args) {
-  const days2 = numberOption(args, "days");
-  if (days2 !== void 0 && days2 < 1) {
-    throw usageError(`--days expects at least 1, got ${days2}`);
+  const days = numberOption(args, "days");
+  if (days !== void 0 && days < 1) {
+    throw usageError(`--days expects at least 1, got ${days}`);
   }
   if (args.positionals.length > 0) {
     throw usageError(`summary takes no arguments, got "${args.positionals[0]}"`);
@@ -6863,7 +6916,7 @@ async function runSummary(context, args) {
       index: timingsIndex(harness),
       filename: `${harness}-stats.json`
     });
-    const summary = computeSummary(file, days2 === void 0 ? {} : { days: days2 });
+    const summary = computeSummary(file, days === void 0 ? {} : { days });
     results.push({
       harness,
       generatedAt: file.metadata.generatedAt,
@@ -7523,16 +7576,16 @@ function quantile2(sorted, q) {
   return sorted[Math.min(sorted.length - 1, Math.max(0, rank - 1))];
 }
 function buildHistory(file, entries, window) {
-  const days2 = file.days;
-  if (days2 === null) {
+  const days = file.days;
+  if (days === null) {
     return [];
   }
   const from = window.range?.from ?? 0;
-  const to = window.range?.to ?? days2 - 1;
+  const to = window.range?.to ?? days - 1;
   const rows2 = /* @__PURE__ */ new Map();
   for (let day = from; day <= to; day++) {
     rows2.set(day, {
-      date: dateOfDayIndex(file.endDate, days2, day),
+      date: dateOfDayIndex(file.endDate, days, day),
       pass: 0,
       fail: 0,
       timeout: 0,
@@ -7574,7 +7627,7 @@ function buildHistory(file, entries, window) {
 }
 function buildTaskIds(raw, file, entries, window) {
   const rows2 = [];
-  const days2 = file.days;
+  const days = file.days;
   for (const entry of entries) {
     const { kind } = classifyStatus(entry.status);
     if (kind !== "fail" && kind !== "timeout" && kind !== "crash") {
@@ -7592,7 +7645,7 @@ function buildTaskIds(raw, file, entries, window) {
         jobName: taskIdIndex === void 0 ? null : file.jobNameOfTaskIndex(taskIdIndex),
         chunk: taskIdIndex === void 0 || raw.taskInfo === void 0 ? null : chunkOfTask(raw, taskIdIndex),
         status: entry.status,
-        day: entry.day === null || days2 === null ? null : dateOfDayIndex(file.endDate, days2, entry.day),
+        day: entry.day === null || days === null ? null : dateOfDayIndex(file.endDate, days, entry.day),
         message: entry.message ?? null
       };
       const minidumpId = entry.minidumps?.[i];
@@ -9376,6 +9429,7 @@ var COMMANDS = [
     summary: "Which folder to book a flakiness burndown on, ranked. With a path, its tests.",
     usage: "fx-tests flaky [path] [options]",
     options: FLAKY_OPTIONS,
+    notes: FLAKY_NOTES,
     run: runFlaky
   },
   {
@@ -9684,6 +9738,9 @@ function commandHelp(command, specs) {
     "",
     "Options:",
     ...names.map((entry) => `  ${entry.flag.padEnd(width)}  ${entry.describe}`),
+    // The standing definitions, for a command that would otherwise print
+    // them on every run. See `CommandSpec.notes`.
+    ...command.notes === void 0 ? [] : ["", ...command.notes],
     "",
     `Cache: ${defaultCacheDir()}`,
     ""

@@ -49,6 +49,7 @@ import assert from 'node:assert/strict';
 import { type IssuesFile, decodeIssues } from '../lib/formats/issues.ts';
 import {
     DEFAULT_AVERAGE_DAYS,
+    flakinessByFolder,
     flakinessByFolderAveraged,
     folderAt,
     hasSomethingToAct,
@@ -272,72 +273,80 @@ async function listing(extra: string[] = []): Promise<Record<string, unknown>> {
 
 // --- the numbers ---------------------------------------------------------
 
-test('every listed row matches an independent walk of the fixture', async () => {
-    const result = await listing();
-    const rows = result['rows'] as Row[];
-    const expected = independentTestDays(issuesFixture, DEFAULT_AVERAGE_DAYS);
-    const shouldList = expectedListed(expected);
+test('every listed row is the page’s own verdict for that test', async () => {
+    // ## Why this replaced an independent day-count walk
+    //
+    // The listing used to print how many of the last 7 days each test was flaky
+    // on, and this test recomputed those day counts. Both were wrong at the root:
+    // the 7-day mean is a *folder* quantity — "126.7 of this folder's tests were
+    // flaky on a typical day" is real — and a single test's mean can only be 0,
+    // 1/7 … 1, so it was multiplied back out into "flaky on 6 of the 7 days" and
+    // the table read `7  100.0%  7  7` to say "always".
+    //
+    // `flaky.html` never did that: its test rows come from `flakinessByFolder`,
+    // one verdict over the window, whose leaves are 0 or 1. The listing now reads
+    // the same function, so the check that matters is no longer "are these day
+    // counts right" but **"does the CLI say what the page says"** — the two
+    // disagreeing about whether a test is flaky is the failure worth pinning, and
+    // it is the same reasoning as the `hasSomethingToAct` agreement below.
+    const rows = (await listing())['rows'] as Row[];
 
-    // The **set** first: a missing row is as wrong as a wrong number, and
-    // checking only the rows that exist would not catch a test dropped by the
-    // subtree walk.
+    // The page's derivation, called directly. Not a reimplementation: agreeing
+    // with a copy of the logic would prove nothing about agreeing with the page.
+    const leaves = subtreeTests(
+        flakinessByFolder(decodeIssues(issuesFixture), { minWindowFailures: 1 })
+    );
+    const want = new Map(leaves.filter(hasSomethingToAct).map((leaf) => [leaf.fullPath, leaf]));
+
+    // The **set** first: a missing row is as wrong as a wrong number, and checking
+    // only the rows that exist would not catch a test the subtree walk dropped.
     assert.deepEqual(
         new Set(rows.map((row) => row.path)),
-        new Set(shouldList.keys()),
-        'the listed tests must be exactly those with a flaky or a skipped day'
+        new Set(want.keys()),
+        'the listed tests must be exactly the page’s worth-listing leaves'
     );
     assert.ok(rows.length > 0, 'the fixture must produce rows');
 
     for (const row of rows) {
-        const want = shouldList.get(row.path)!;
-        // Exact integers, not a tolerance: these are counts of days, and a
-        // tolerance here would be admitting they might be means. See `days()`.
-        assert.equal(row.flaky, want.flakyDays, `${row.path} flaky days`);
-        assert.equal(row.skipped, want.skippedDays, `${row.path} skipped days`);
-        assert.equal(row.flakyAndSkipped, want.bothDays, `${row.path} flaky+skipped days`);
-        assert.equal(row.total, want.ranDays, `${row.path} days it ran`);
+        const leaf = want.get(row.path)!;
+        assert.equal(row.flaky, leaf.flaky, `${row.path} flaky verdict`);
+        assert.equal(row.skipped, leaf.skipped, `${row.path} skipped verdict`);
+        assert.equal(row.flakyAndSkipped, leaf.flakyAndSkipped, `${row.path} overlap`);
+        assert.equal(row.total, leaf.total, `${row.path} total`);
         assert.equal(
             row.windowFailures,
-            want.windowFailures,
+            leaf.windowFailures,
             `${row.path} failing runs over the whole file`
-        );
-        // Rounded once from the raw ratio of the two day counts.
-        const wantPercent = want.ranDays > 0 ? (want.flakyDays / want.ranDays) * 100 : 0;
-        assert.ok(
-            Math.abs(row.flakyPercent - wantPercent) < 1e-4,
-            `${row.path} flaky%: got ${row.flakyPercent}, the independent walk says ${wantPercent}`
         );
     }
 });
 
-test('the counts are whole days, and can reach the width of the window', async () => {
-    // The bug this pins. `flakinessByFolderAveraged` divides every leaf counter by
-    // the window, so a test flaky on every day it ran has a *mean* of 1 and one
-    // flaky on two of seven days has 0.2857…. Printed as means, every worst row in
-    // the table reads `1` and the ranking column carries a decimal that is a
-    // fraction of a single test rather than of a population. `days()` multiplies
-    // back, and this asserts the result is integral and reaches past 1.
+test('the verdicts are 0 or 1, as the page’s table shows them', async () => {
+    // The encoding, pinned. A test either was flaky in the window or it was not;
+    // there is no rate to express and nothing to multiply by a day count. Measured
+    // on the pinned file, `flakinessByFolder`'s 4,807 leaves take exactly two
+    // distinct values in each of `flaky`, `skipped` and `stable`, with `total`
+    // always 1 — this asserts the CLI's rows have the same shape rather than
+    // reintroducing the arithmetic that produced `7 of 7`.
     const rows = (await listing())['rows'] as Row[];
     for (const row of rows) {
         for (const [key, value] of [
             ['flaky', row.flaky],
             ['skipped', row.skipped],
             ['flakyAndSkipped', row.flakyAndSkipped],
-            ['total', row.total],
         ] as const) {
             assert.ok(
-                Number.isInteger(value),
-                `${row.path}.${key} = ${value} must be a whole number of days`
-            );
-            assert.ok(
-                value <= DEFAULT_AVERAGE_DAYS,
-                `${row.path}.${key} = ${value} cannot exceed the ${DEFAULT_AVERAGE_DAYS}-day window`
+                value === 0 || value === 1,
+                `${row.path}.${key} = ${value} must be a 0/1 verdict, not a day count`
             );
         }
+        assert.equal(row.total, 1, `${row.path}.total must be 1 — one test, one verdict`);
     }
+    // And the one column that does carry magnitude still does, or the listing has
+    // nothing left to rank ties by.
     assert.ok(
-        rows.some((row) => row.flaky > 1),
-        'at least one test must be flaky on more than one day, or the day scaling is untested'
+        rows.some((row) => row.windowFailures > 1),
+        'failing-run counts must survive as the only high-resolution column'
     );
 });
 
@@ -500,77 +509,86 @@ test('--here-only needs a path, and applies only to this view', async () => {
 
 // --- the window, shared with the folder ranking ---------------------------
 
-test('the three scopes give different readings, and the header names which ran', async () => {
-    const average = await listing();
+test('the two scopes give different readings, and the header names which ran', async () => {
+    // **The default here is one day, not the folder ranking's 7-day average**, and
+    // the header says so. The listing reads `flakinessByFolder` — the page's own
+    // test-row derivation — which classifies the most recent day unless a flag
+    // says otherwise; the 7-day averaging stays on the folder ranking, where a
+    // mean over a population means something. `listingHeader` narrows the shared
+    // header to match, because `--json` claiming `scope: "average"` with seven
+    // `scopeDates` over a one-day table is exactly the tiles-say-one-day
+    // mismatch `flaky.html` had to fix.
+    const byDefault = await listing();
     const allDays = await listing(['--all-days']);
     const oneDay = await listing(['--day', '2026-08-03']);
 
+    const headerOf = (result: Record<string, unknown>): Record<string, unknown> =>
+        result['header'] as Record<string, unknown>;
+    assert.equal(headerOf(byDefault)['scope'], 'day', 'the listing classifies one day by default');
+    assert.equal(headerOf(byDefault)['averageDays'], null, 'and averages nothing');
+    assert.equal(headerOf(allDays)['scope'], 'all-days');
+    assert.equal(headerOf(oneDay)['scope'], 'day');
+
+    // The default's day was not asked for, and the suggested follow-up commands
+    // read that flag so they do not print a `--day` the reader never typed.
+    assert.equal(headerOf(byDefault)['scopeRequested'], false);
+    assert.equal(headerOf(oneDay)['scopeRequested'], true);
+
+    // `--all-days` is the looser bar: "flaky on ANY of 21 days" cannot be false
+    // where "flaky on the last day" is true, so it must list strictly more. A
+    // scope flag that changed nothing could not produce this.
+    assert.ok(
+        (allDays['rowCount'] as number) > (byDefault['rowCount'] as number),
+        '--all-days must list strictly more than the one-day default: got ' +
+            `${String(allDays['rowCount'])} against ${String(byDefault['rowCount'])}`
+    );
+
+    // Every scope yields one verdict per test, so `total` is 1 throughout — the
+    // day-count ceilings this used to assert were an artefact of the averaging.
     for (const [name, result] of [
-        ['average', average],
-        ['all-days', allDays],
-        ['day', oneDay],
+        ['default', byDefault],
+        ['--all-days', allDays],
+        ['--day', oneDay],
     ] as const) {
-        assert.equal((result['header'] as Record<string, unknown>)['scope'], name);
+        for (const row of result['rows'] as Row[]) {
+            assert.equal(row.total, 1, `${name}: ${row.path} must carry one verdict, not days`);
+        }
     }
 
-    // The looser bar must list at least as many tests as the mean of 7 days,
-    // because "flaky on ANY of 21 days" cannot be false where "flaky on one of
-    // the last 7" is true. On the fixture, 21 days finds strictly more.
-    assert.ok(
-        (allDays['rowCount'] as number) >= (average['rowCount'] as number),
-        `--all-days (${String(allDays['rowCount'])}) cannot list fewer than the 7-day average ` +
-            `(${String(average['rowCount'])})`
-    );
-    // And the three readings are not the same table, which is what makes naming
-    // the scope in the header load-bearing rather than decorative. On this
-    // 10-test fixture the difference shows in the row set — `--all-days` finds 8
-    // where the 7-day average finds 7 — rather than in the counts, which is
-    // enough: a scope flag that changed nothing could not produce it.
-    assert.ok(
-        (allDays['rowCount'] as number) > (average['rowCount'] as number),
-        '--all-days is the looser bar and must list strictly more on this fixture: got ' +
-            `${String(allDays['rowCount'])} against ${String(average['rowCount'])}`
-    );
-    // The day counts have different ceilings under the three, which is the other
-    // half of the same fact: 7 under the average, 1 under a single day.
-    const maxOf = (result: Record<string, unknown>): number =>
-        Math.max(0, ...(result['rows'] as Row[]).map((row) => row.total));
-    assert.equal(maxOf(oneDay), 1, '--day classifies one day, so a test ran on at most 1');
-    assert.equal(
-        maxOf(average),
-        DEFAULT_AVERAGE_DAYS,
-        'the average classifies each of 7 days separately'
-    );
-
     const { stdout } = await invoke(['flaky', 'toolkit', '--quiet', '--limit', '3']);
-    assert.match(stdout, /Each test is classified separately on each of the last 7 days/);
+    assert.match(stdout, /Window: .* alone, one verdict per test/);
     assert.match(stdout, /Test files under toolkit and its subfolders/);
 });
 
-test('the listing classifies the same way as the folder ranking above it', async () => {
+test('the listing agrees with the folder ranking on the same window', async () => {
     // The join that must not break: a reader ranks folders, picks one, drills in.
-    // If the two used different definitions the drill-down would be the `issues`
-    // bug one level down. So the folder's own flaky *mean* must be the mean of
-    // its listed tests' flaky *days* — the same numbers, divided once.
+    // If the two used different *classifications* the drill-down would be the
+    // `issues` bug one level down.
+    //
+    // They no longer use the same **window**, deliberately: the ranking averages
+    // seven days because a folder mean over a population is meaningful, and the
+    // listing takes one verdict per test because a single test's mean is not. So
+    // the equality is asserted where the two windows coincide — `--day`, where the
+    // ranking classifies that one day too — and the count of flaky tests the
+    // ranking reports for the folder must be the number of flaky rows the listing
+    // shows for it.
     const folder = 'toolkit/components/extensions/test/xpcshell';
+    const day = '2026-08-03';
     const ranking = json(
-        (await invoke(['flaky', '--json', '--quiet', '--limit', '0'])).stdout
+        (await invoke(['flaky', '--json', '--quiet', '--limit', '0', '--day', day])).stdout
     );
     const row = (ranking['rows'] as { path: string; flaky: number; testCount: number }[]).find(
         (entry) => entry.path === folder
     );
     assert.ok(row !== undefined, `${folder} must be a row of the ranking`);
 
-    const drill = await listing(['--path', folder, '--here-only']);
-    let flakyDays = 0;
-    for (const test of drill['rows'] as Row[]) {
-        flakyDays += test.flaky;
-    }
-    assert.ok(
-        Math.abs(row.flaky - flakyDays / DEFAULT_AVERAGE_DAYS) < 1e-4,
-        `${folder}: the ranking says ${row.flaky} flaky per day, the listing's ` +
-            `${flakyDays} flaky days over ${DEFAULT_AVERAGE_DAYS} days is ` +
-            `${flakyDays / DEFAULT_AVERAGE_DAYS}`
+    const drill = await listing(['--path', folder, '--here-only', '--day', day]);
+    const flakyRows = (drill['rows'] as Row[]).filter((test) => test.flaky > 0).length;
+    assert.equal(
+        flakyRows,
+        row.flaky,
+        `${folder}: the ranking counts ${row.flaky} flaky tests on ${day}, the listing shows ` +
+            `${flakyRows} flaky rows — the two must classify identically`
     );
     // Clean tests are hidden from the listing but stay in the folder's count.
     assert.equal(

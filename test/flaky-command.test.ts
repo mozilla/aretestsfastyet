@@ -341,6 +341,11 @@ test('flaky and skipped overlap, so they do not sum to the total', () => {
 const FILES: Record<string, string> = {
     'xpcshell-timings/index.json': 'index.json',
     'xpcshell-timings/xpcshell-issues.json': 'xpcshell-issues.json',
+    // The same fixture bytes served as mochitest, so `--harness mochitest` can be
+    // exercised at all. What is under test is which flags the suggested follow-up
+    // commands carry, not the contents of a mochitest file.
+    'mochitest-timings/index.json': 'index.json',
+    'mochitest-timings/mochitest-issues.json': 'xpcshell-issues.json',
 };
 
 function fixtureSource(): DataSource & { requested: string[] } {
@@ -447,13 +452,36 @@ test('the list ranks a folder’s own tests, not its subtree', async () => {
     assert.ok(treePaths.includes('toolkit'), '--group-by folder rolls subtrees up');
 });
 
-test('the text output states the scope, the overlap and the noise filter', async () => {
+test('the text output states the scope and the noise filter, compactly', async () => {
     const { stdout } = await invoke(['flaky', '--quiet', '--limit', '3']);
-    // Each of these is a factor-of-several difference a reader would otherwise
-    // attribute to Firefox rather than to the window or the categories.
-    assert.match(stdout, /MEAN PER DAY over the last 7 days/);
-    assert.match(stdout, /OVERLAP/);
+    // The two per-run facts that survive the preamble trim, because each is a
+    // factor-of-several difference a reader would otherwise attribute to Firefox:
+    // which window produced the table, and whether the noise filter moved the
+    // numbers. `flaky.html` shipped a bug where tiles showed one day above a
+    // table showing 21 with nothing saying so, so naming the window is not
+    // optional.
+    assert.match(stdout, /Window: mean per day over the 7 days/);
     assert.match(stdout, /Noise filter/);
+
+    // And the standing definitions are **not** here — they moved to `--help`,
+    // where a reader asks for them once, rather than being reprinted on every
+    // invocation. Measured on the pinned window, that preamble was 13 of this
+    // command's 24 lines (955 characters, ~238 tokens).
+    for (const moved of [/Flaky means/, /OVERLAP/, /whole number\s+of weeks/, /run-if excluded/]) {
+        assert.doesNotMatch(stdout, moved, `${String(moved)} belongs in --help, not in every run`);
+    }
+    // Not lost, though: `--help` has to carry every one of them. Matched across
+    // line breaks, since the help text is hand-wrapped and a phrase may straddle
+    // two lines — this is checking the prose is present, not how it is folded.
+    const help = (await invoke(['flaky', '--help'])).stdout.replace(/\s+/g, ' ');
+    for (const kept of [
+        /flaky it failed, timed out or crashed/,
+        /OVERLAP/,
+        /whole number of weeks/,
+        /run-if exclusions are not counted/,
+    ]) {
+        assert.match(help, kept, `${String(kept)} must be findable in --help`);
+    }
     // And the follow-up command, so a reader can act without a second lookup.
     // It must be this command's own per-test listing and **not** `issues --path`,
     // which ranks by issue runs and is dominated by skips: on the pinned window
@@ -473,18 +501,94 @@ test('the text output states the scope, the overlap and the noise filter', async
     assert.match(stdout, /fx-tests skips --path /);
 });
 
-test('--all-days says it is the looser bar, and --day names the weekday risk', async () => {
+test('the suggested commands carry --harness, so they cannot answer for the wrong one', async () => {
+    // A silent wrong answer, not a cosmetic omission. Both suggestions on the
+    // folder ranking take a **directory**, and `detectHarness()` classifies on a
+    // filename — a directory has none, so it falls through to the xpcshell
+    // default. Under `--harness mochitest` the footer therefore offered two
+    // commands that would report on xpcshell and look entirely plausible doing it.
+    const mochitest = await invoke(['flaky', '--quiet', '--harness', 'mochitest', '--limit', '3']);
+    const suggestions = mochitest.stdout
+        .split('\n')
+        .filter((line) => line.trim().startsWith('fx-tests '));
+    assert.ok(suggestions.length >= 2, 'the ranking must suggest a drill-down and a skips lookup');
+    for (const line of suggestions) {
+        assert.match(
+            line,
+            /--harness mochitest/,
+            `"${line.trim()}" would run against xpcshell, the default, and answer for the wrong harness`
+        );
+    }
+
+    // The per-test footer too, whose argument is a file: `detectHarness` would
+    // rescue a `browser_*.js` path and cannot rescue `test_*.js`, which is both
+    // harnesses' naming, so it is propagated there rather than relied upon.
+    const listing = await invoke([
+        'flaky', 'toolkit', '--quiet', '--harness', 'mochitest', '--limit', '2',
+    ]);
+    for (const line of listing.stdout.split('\n').filter((l) => l.trim().startsWith('fx-tests '))) {
+        assert.match(line, /--harness mochitest/, `"${line.trim()}" must name its harness`);
+    }
+
+    // And **not** on the common path, where the flag would be noise: an omitted
+    // --harness already means xpcshell.
+    const xpcshell = await invoke(['flaky', '--quiet', '--limit', '3']);
+    assert.doesNotMatch(
+        xpcshell.stdout,
+        /--harness/,
+        'xpcshell is the default, so saying so on every suggestion is bloat'
+    );
+});
+
+test('a suggestion carries the scope only when the reader asked for it', async () => {
+    // `--day` changes the numbers, so a suggestion reverting to the default would
+    // send the reader to a different table than the row they picked came from.
+    const named = await invoke(['flaky', '--quiet', '--day', '2026-08-03', '--limit', '2']);
+    for (const line of named.stdout.split('\n').filter((l) => l.trim().startsWith('fx-tests '))) {
+        assert.match(line, /--day 2026-08-03/, `"${line.trim()}" must carry the day it ranked`);
+    }
+
+    // But the per-test listing classifies one day *by default*, and suggesting
+    // `--day <that day>` would print a flag the reader never typed and pin a later
+    // run to this date. `scopeRequested` is what separates the two cases.
+    const listing = await invoke(['flaky', 'toolkit', '--quiet', '--limit', '2']);
+    assert.doesNotMatch(
+        listing.stdout,
+        /--day/,
+        'the listing’s default day was not requested, so no suggestion may name it'
+    );
+
+    // `--noise` goes only to the command that accepts it: `fx-tests test` and
+    // `fx-tests skips` would reject it as an unknown flag.
+    const noisy = await invoke(['flaky', '--quiet', '--noise', '0', '--limit', '2']);
+    const lines = noisy.stdout.split('\n').filter((l) => l.trim().startsWith('fx-tests '));
+    assert.ok(
+        lines.some((line) => /fx-tests flaky .*--noise 0/.test(line)),
+        'the flaky drill-down must reproduce the noise threshold'
+    );
+    assert.ok(
+        lines.every((line) => !/fx-tests skips.*--noise/.test(line)),
+        'skips does not accept --noise, and an unknown flag is a usage error'
+    );
+});
+
+test('--all-days and --day each name their window in the header', async () => {
+    // The naming is what must survive the trim: the three scopes give a 48%, a
+    // 53% and a 75% reading of the same folder, and a reader cannot tell them
+    // apart from the digits. Why each window behaves as it does — the ~84%
+    // measurement, the 2.6x weekend volume — is standing prose and lives in
+    // `--help`.
     const all = await invoke(['flaky', '--quiet', '--all-days', '--limit', '2']);
-    assert.match(all.stdout, /--all-days/);
-    assert.match(all.stdout, /84%/, 'the window reading must carry its denominator caveat');
+    assert.match(all.stdout, /Window: --all-days/);
+    assert.match(all.stdout, /all 21 days/, 'the looser bar must say what it covers');
 
     const one = await invoke(['flaky', '--quiet', '--day', '2026-08-03', '--limit', '2']);
-    assert.match(one.stdout, /2026-08-03/);
-    assert.match(
-        one.stdout,
-        /weekend push volume/,
-        'a single-day ranking must say why one day is not a stable ranking'
-    );
+    assert.match(one.stdout, /Window: --day 2026-08-03/);
+
+    // The explanations are in --help, once, rather than on both of those runs.
+    const help = (await invoke(['flaky', '--help'])).stdout.replace(/\s+/g, ' ');
+    assert.match(help, /~84% of tests/, 'the all-days denominator caveat moved here');
+    assert.match(help, /weekend push volume is 2\.6x lower/, 'as did the weekday risk');
 });
 
 test('the scopes are mutually exclusive rather than one silently winning', async () => {
