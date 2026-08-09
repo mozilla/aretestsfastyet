@@ -547,17 +547,14 @@
 
         <div id="charts">
             <div class="chart-box">
-                <h2 class="chart-title">Flaky and skipped tests per day</h2>
+                <h2 class="chart-title">Tests per day, by state</h2>
                 <div class="chart-area"><canvas id="flaky-count-chart"></canvas></div>
-                <p class="chart-note">
-                    Stable tests are left out of this chart on purpose &mdash; they are around
-                    80% of every day, and stacking them flattens everything else. They are
-                    still in every percentage and in the table below.
-                </p>
+                <p class="chart-note" id="count-chart-note"></p>
             </div>
             <div class="chart-box">
                 <h2 class="chart-title">Share of tests, per day</h2>
                 <div class="chart-area"><canvas id="flaky-percent-chart"></canvas></div>
+                <p class="chart-note" id="chart-scope-note"></p>
             </div>
         </div>
 

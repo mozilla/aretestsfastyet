@@ -1,0 +1,1827 @@
+{
+ "metadata": {
+  "harness": "xpcshell",
+  "startDate": "2025-11-25",
+  "endDate": "2026-08-08",
+  "days": 257,
+  "windowDays": 21,
+  "minWindowFailures": 1,
+  "generatedAt": "2026-08-09T14:55:25.682Z",
+  "sourceWindows": [
+   "2025-12-15",
+   "2025-12-21",
+   "2026-01-10",
+   "2026-01-31",
+   "2026-02-21",
+   "2026-03-14",
+   "2026-04-04",
+   "2026-04-25",
+   "2026-05-16",
+   "2026-06-06",
+   "2026-06-27",
+   "2026-07-18",
+   "2026-08-08"
+  ]
+ },
+ "days": [
+  {
+   "date": "2025-11-25",
+   "flaky": 841,
+   "stable": 2756,
+   "skipped": 867,
+   "total": 4464
+  },
+  {
+   "date": "2025-11-26",
+   "flaky": 626,
+   "stable": 2896,
+   "skipped": 943,
+   "total": 4465
+  },
+  {
+   "date": "2025-11-27",
+   "flaky": 850,
+   "stable": 2768,
+   "skipped": 847,
+   "total": 4465
+  },
+  {
+   "date": "2025-11-28",
+   "flaky": 712,
+   "stable": 2837,
+   "skipped": 918,
+   "total": 4467
+  },
+  {
+   "date": "2025-11-29",
+   "flaky": 583,
+   "stable": 2918,
+   "skipped": 966,
+   "total": 4467
+  },
+  {
+   "date": "2025-11-30",
+   "flaky": 555,
+   "stable": 2930,
+   "skipped": 982,
+   "total": 4467
+  },
+  {
+   "date": "2025-12-01",
+   "flaky": 753,
+   "stable": 2790,
+   "skipped": 927,
+   "total": 4470
+  },
+  {
+   "date": "2025-12-02",
+   "flaky": 643,
+   "stable": 2908,
+   "skipped": 921,
+   "total": 4472
+  },
+  {
+   "date": "2025-12-03",
+   "flaky": 824,
+   "stable": 2759,
+   "skipped": 891,
+   "total": 4474
+  },
+  {
+   "date": "2025-12-04",
+   "flaky": 933,
+   "stable": 2679,
+   "skipped": 864,
+   "total": 4476
+  },
+  {
+   "date": "2025-12-05",
+   "flaky": 857,
+   "stable": 2724,
+   "skipped": 899,
+   "total": 4480
+  },
+  {
+   "date": "2025-12-06",
+   "flaky": 613,
+   "stable": 2897,
+   "skipped": 970,
+   "total": 4480
+  },
+  {
+   "date": "2025-12-07",
+   "flaky": 540,
+   "stable": 2934,
+   "skipped": 1006,
+   "total": 4480
+  },
+  {
+   "date": "2025-12-08",
+   "flaky": 749,
+   "stable": 2836,
+   "skipped": 895,
+   "total": 4480
+  },
+  {
+   "date": "2025-12-09",
+   "flaky": 942,
+   "stable": 2668,
+   "skipped": 877,
+   "total": 4487
+  },
+  {
+   "date": "2025-12-10",
+   "flaky": 949,
+   "stable": 2692,
+   "skipped": 849,
+   "total": 4490
+  },
+  {
+   "date": "2025-12-11",
+   "flaky": 874,
+   "stable": 2733,
+   "skipped": 885,
+   "total": 4492
+  },
+  {
+   "date": "2025-12-12",
+   "flaky": 860,
+   "stable": 2746,
+   "skipped": 891,
+   "total": 4497
+  },
+  {
+   "date": "2025-12-13",
+   "flaky": 720,
+   "stable": 2857,
+   "skipped": 922,
+   "total": 4499
+  },
+  {
+   "date": "2025-12-14",
+   "flaky": 531,
+   "stable": 2996,
+   "skipped": 971,
+   "total": 4498
+  },
+  {
+   "date": "2025-12-15",
+   "flaky": 1007,
+   "stable": 2674,
+   "skipped": 819,
+   "total": 4500
+  },
+  {
+   "date": "2025-12-16",
+   "flaky": 835,
+   "stable": 2878,
+   "skipped": 785,
+   "total": 4498
+  },
+  {
+   "date": "2025-12-17",
+   "flaky": 877,
+   "stable": 2910,
+   "skipped": 715,
+   "total": 4502
+  },
+  {
+   "date": "2025-12-18",
+   "flaky": 891,
+   "stable": 2907,
+   "skipped": 711,
+   "total": 4509
+  },
+  {
+   "date": "2025-12-19",
+   "flaky": 853,
+   "stable": 2914,
+   "skipped": 745,
+   "total": 4512
+  },
+  {
+   "date": "2025-12-20",
+   "flaky": 673,
+   "stable": 3046,
+   "skipped": 792,
+   "total": 4511
+  },
+  {
+   "date": "2025-12-21",
+   "flaky": 620,
+   "stable": 3101,
+   "skipped": 790,
+   "total": 4511
+  },
+  {
+   "date": "2025-12-22",
+   "flaky": 565,
+   "stable": 3131,
+   "skipped": 817,
+   "total": 4513
+  },
+  {
+   "date": "2025-12-23",
+   "flaky": 707,
+   "stable": 3036,
+   "skipped": 770,
+   "total": 4513
+  },
+  {
+   "date": "2025-12-24",
+   "flaky": 641,
+   "stable": 3068,
+   "skipped": 804,
+   "total": 4513
+  },
+  {
+   "date": "2025-12-25",
+   "flaky": 271,
+   "stable": 3347,
+   "skipped": 895,
+   "total": 4513
+  },
+  {
+   "date": "2025-12-26",
+   "flaky": 516,
+   "stable": 3155,
+   "skipped": 842,
+   "total": 4513
+  },
+  {
+   "date": "2025-12-27",
+   "flaky": 358,
+   "stable": 3293,
+   "skipped": 862,
+   "total": 4513
+  },
+  {
+   "date": "2025-12-28",
+   "flaky": 357,
+   "stable": 3271,
+   "skipped": 883,
+   "total": 4511
+  },
+  {
+   "date": "2025-12-29",
+   "flaky": 594,
+   "stable": 3113,
+   "skipped": 807,
+   "total": 4514
+  },
+  {
+   "date": "2025-12-30",
+   "flaky": 655,
+   "stable": 3061,
+   "skipped": 798,
+   "total": 4514
+  },
+  {
+   "date": "2025-12-31",
+   "flaky": 631,
+   "stable": 3090,
+   "skipped": 793,
+   "total": 4514
+  },
+  {
+   "date": "2026-01-01",
+   "flaky": 534,
+   "stable": 3147,
+   "skipped": 833,
+   "total": 4514
+  },
+  {
+   "date": "2026-01-02",
+   "flaky": 662,
+   "stable": 3049,
+   "skipped": 803,
+   "total": 4514
+  },
+  {
+   "date": "2026-01-03",
+   "flaky": 635,
+   "stable": 3085,
+   "skipped": 795,
+   "total": 4515
+  },
+  {
+   "date": "2026-01-04",
+   "flaky": 344,
+   "stable": 3289,
+   "skipped": 882,
+   "total": 4515
+  },
+  {
+   "date": "2026-01-05",
+   "flaky": 849,
+   "stable": 2958,
+   "skipped": 720,
+   "total": 4527
+  },
+  {
+   "date": "2026-01-06",
+   "flaky": 800,
+   "stable": 2974,
+   "skipped": 753,
+   "total": 4527
+  },
+  {
+   "date": "2026-01-07",
+   "flaky": 823,
+   "stable": 2956,
+   "skipped": 741,
+   "total": 4520
+  },
+  {
+   "date": "2026-01-08",
+   "flaky": 729,
+   "stable": 2987,
+   "skipped": 807,
+   "total": 4523
+  },
+  {
+   "date": "2026-01-09",
+   "flaky": 687,
+   "stable": 3038,
+   "skipped": 800,
+   "total": 4525
+  },
+  {
+   "date": "2026-01-10",
+   "flaky": 467,
+   "stable": 3224,
+   "skipped": 834,
+   "total": 4525
+  },
+  {
+   "date": "2026-01-11",
+   "flaky": 1601,
+   "stable": 2334,
+   "skipped": 590,
+   "total": 4525
+  },
+  {
+   "date": "2026-01-12",
+   "flaky": 2052,
+   "stable": 2023,
+   "skipped": 451,
+   "total": 4526
+  },
+  {
+   "date": "2026-01-13",
+   "flaky": 2894,
+   "stable": 1286,
+   "skipped": 347,
+   "total": 4527
+  },
+  {
+   "date": "2026-01-14",
+   "flaky": 1990,
+   "stable": 2038,
+   "skipped": 500,
+   "total": 4528
+  },
+  {
+   "date": "2026-01-15",
+   "flaky": 2245,
+   "stable": 1834,
+   "skipped": 445,
+   "total": 4524
+  },
+  {
+   "date": "2026-01-16",
+   "flaky": 2567,
+   "stable": 1445,
+   "skipped": 514,
+   "total": 4526
+  },
+  {
+   "date": "2026-01-17",
+   "flaky": 1878,
+   "stable": 2178,
+   "skipped": 470,
+   "total": 4526
+  },
+  {
+   "date": "2026-01-18",
+   "flaky": 1835,
+   "stable": 2218,
+   "skipped": 473,
+   "total": 4526
+  },
+  {
+   "date": "2026-01-19",
+   "flaky": 2425,
+   "stable": 1677,
+   "skipped": 425,
+   "total": 4527
+  },
+  {
+   "date": "2026-01-20",
+   "flaky": 1737,
+   "stable": 2261,
+   "skipped": 529,
+   "total": 4527
+  },
+  {
+   "date": "2026-01-21",
+   "flaky": 881,
+   "stable": 2904,
+   "skipped": 743,
+   "total": 4528
+  },
+  {
+   "date": "2026-01-22",
+   "flaky": 2221,
+   "stable": 1801,
+   "skipped": 509,
+   "total": 4531
+  },
+  {
+   "date": "2026-01-23",
+   "flaky": 1794,
+   "stable": 2340,
+   "skipped": 398,
+   "total": 4532
+  },
+  {
+   "date": "2026-01-24",
+   "flaky": 1680,
+   "stable": 2258,
+   "skipped": 594,
+   "total": 4532
+  },
+  {
+   "date": "2026-01-25",
+   "flaky": 1928,
+   "stable": 2083,
+   "skipped": 521,
+   "total": 4532
+  },
+  {
+   "date": "2026-01-26",
+   "flaky": 1624,
+   "stable": 2386,
+   "skipped": 523,
+   "total": 4533
+  },
+  {
+   "date": "2026-01-27",
+   "flaky": 2477,
+   "stable": 1612,
+   "skipped": 445,
+   "total": 4534
+  },
+  {
+   "date": "2026-01-28",
+   "flaky": 2622,
+   "stable": 1537,
+   "skipped": 375,
+   "total": 4534
+  },
+  {
+   "date": "2026-01-29",
+   "flaky": 2024,
+   "stable": 2027,
+   "skipped": 483,
+   "total": 4534
+  },
+  {
+   "date": "2026-01-30",
+   "flaky": 2714,
+   "stable": 1372,
+   "skipped": 449,
+   "total": 4535
+  },
+  {
+   "date": "2026-01-31",
+   "flaky": 1489,
+   "stable": 2461,
+   "skipped": 585,
+   "total": 4535
+  },
+  {
+   "date": "2026-02-01",
+   "flaky": 1524,
+   "stable": 2428,
+   "skipped": 583,
+   "total": 4535
+  },
+  {
+   "date": "2026-02-02",
+   "flaky": 1716,
+   "stable": 2310,
+   "skipped": 511,
+   "total": 4537
+  },
+  {
+   "date": "2026-02-03",
+   "flaky": 2375,
+   "stable": 1661,
+   "skipped": 503,
+   "total": 4539
+  },
+  {
+   "date": "2026-02-04",
+   "flaky": 2420,
+   "stable": 1671,
+   "skipped": 448,
+   "total": 4539
+  },
+  {
+   "date": "2026-02-05",
+   "flaky": 2002,
+   "stable": 2049,
+   "skipped": 488,
+   "total": 4539
+  },
+  {
+   "date": "2026-02-06",
+   "flaky": 1869,
+   "stable": 2168,
+   "skipped": 502,
+   "total": 4539
+  },
+  {
+   "date": "2026-02-07",
+   "flaky": 1712,
+   "stable": 2288,
+   "skipped": 539,
+   "total": 4539
+  },
+  {
+   "date": "2026-02-08",
+   "flaky": 1558,
+   "stable": 2416,
+   "skipped": 565,
+   "total": 4539
+  },
+  {
+   "date": "2026-02-09",
+   "flaky": 1768,
+   "stable": 2253,
+   "skipped": 519,
+   "total": 4540
+  },
+  {
+   "date": "2026-02-10",
+   "flaky": 2289,
+   "stable": 1919,
+   "skipped": 332,
+   "total": 4540
+  },
+  {
+   "date": "2026-02-11",
+   "flaky": 2553,
+   "stable": 1668,
+   "skipped": 322,
+   "total": 4543
+  },
+  {
+   "date": "2026-02-12",
+   "flaky": 2180,
+   "stable": 1826,
+   "skipped": 537,
+   "total": 4543
+  },
+  {
+   "date": "2026-02-13",
+   "flaky": 2851,
+   "stable": 1326,
+   "skipped": 367,
+   "total": 4544
+  },
+  {
+   "date": "2026-02-14",
+   "flaky": 1988,
+   "stable": 1935,
+   "skipped": 620,
+   "total": 4543
+  },
+  {
+   "date": "2026-02-15",
+   "flaky": 1277,
+   "stable": 2697,
+   "skipped": 569,
+   "total": 4543
+  },
+  {
+   "date": "2026-02-16",
+   "flaky": 2499,
+   "stable": 1575,
+   "skipped": 470,
+   "total": 4544
+  },
+  {
+   "date": "2026-02-17",
+   "flaky": 2726,
+   "stable": 1368,
+   "skipped": 451,
+   "total": 4545
+  },
+  {
+   "date": "2026-02-18",
+   "flaky": 2891,
+   "stable": 1275,
+   "skipped": 382,
+   "total": 4548
+  },
+  {
+   "date": "2026-02-19",
+   "flaky": 2343,
+   "stable": 1776,
+   "skipped": 431,
+   "total": 4550
+  },
+  {
+   "date": "2026-02-20",
+   "flaky": 2765,
+   "stable": 1279,
+   "skipped": 508,
+   "total": 4552
+  },
+  {
+   "date": "2026-02-21",
+   "flaky": 966,
+   "stable": 2849,
+   "skipped": 736,
+   "total": 4551
+  },
+  {
+   "date": "2026-02-22",
+   "flaky": 1958,
+   "stable": 2127,
+   "skipped": 466,
+   "total": 4551
+  },
+  {
+   "date": "2026-02-23",
+   "flaky": 2501,
+   "stable": 1616,
+   "skipped": 435,
+   "total": 4552
+  },
+  {
+   "date": "2026-02-24",
+   "flaky": 2584,
+   "stable": 1406,
+   "skipped": 565,
+   "total": 4555
+  },
+  {
+   "date": "2026-02-25",
+   "flaky": 2340,
+   "stable": 1686,
+   "skipped": 530,
+   "total": 4556
+  },
+  {
+   "date": "2026-02-26",
+   "flaky": 2290,
+   "stable": 1803,
+   "skipped": 464,
+   "total": 4557
+  },
+  {
+   "date": "2026-02-27",
+   "flaky": 2307,
+   "stable": 1820,
+   "skipped": 433,
+   "total": 4560
+  },
+  {
+   "date": "2026-02-28",
+   "flaky": 1681,
+   "stable": 2296,
+   "skipped": 583,
+   "total": 4560
+  },
+  {
+   "date": "2026-03-01",
+   "flaky": 898,
+   "stable": 2888,
+   "skipped": 774,
+   "total": 4560
+  },
+  {
+   "date": "2026-03-02",
+   "flaky": 2958,
+   "stable": 1207,
+   "skipped": 397,
+   "total": 4562
+  },
+  {
+   "date": "2026-03-03",
+   "flaky": 3286,
+   "stable": 944,
+   "skipped": 336,
+   "total": 4566
+  },
+  {
+   "date": "2026-03-04",
+   "flaky": 2679,
+   "stable": 1419,
+   "skipped": 471,
+   "total": 4569
+  },
+  {
+   "date": "2026-03-05",
+   "flaky": 2248,
+   "stable": 1862,
+   "skipped": 460,
+   "total": 4570
+  },
+  {
+   "date": "2026-03-06",
+   "flaky": 2998,
+   "stable": 1046,
+   "skipped": 528,
+   "total": 4572
+  },
+  {
+   "date": "2026-03-07",
+   "flaky": 3539,
+   "stable": 710,
+   "skipped": 323,
+   "total": 4572
+  },
+  {
+   "date": "2026-03-08",
+   "flaky": 809,
+   "stable": 3033,
+   "skipped": 730,
+   "total": 4572
+  },
+  {
+   "date": "2026-03-09",
+   "flaky": 3844,
+   "stable": 452,
+   "skipped": 278,
+   "total": 4574
+  },
+  {
+   "date": "2026-03-10",
+   "flaky": 4072,
+   "stable": 277,
+   "skipped": 226,
+   "total": 4575
+  },
+  {
+   "date": "2026-03-11",
+   "flaky": 3093,
+   "stable": 975,
+   "skipped": 507,
+   "total": 4575
+  },
+  {
+   "date": "2026-03-12",
+   "flaky": 2851,
+   "stable": 1265,
+   "skipped": 460,
+   "total": 4576
+  },
+  {
+   "date": "2026-03-13",
+   "flaky": 3534,
+   "stable": 641,
+   "skipped": 404,
+   "total": 4579
+  },
+  {
+   "date": "2026-03-14",
+   "flaky": 2768,
+   "stable": 1265,
+   "skipped": 545,
+   "total": 4578
+  },
+  {
+   "date": "2026-03-15",
+   "flaky": 2284,
+   "stable": 1614,
+   "skipped": 680,
+   "total": 4578
+  },
+  {
+   "date": "2026-03-16",
+   "flaky": 3070,
+   "stable": 974,
+   "skipped": 536,
+   "total": 4580
+  },
+  {
+   "date": "2026-03-17",
+   "flaky": 3503,
+   "stable": 678,
+   "skipped": 399,
+   "total": 4580
+  },
+  {
+   "date": "2026-03-18",
+   "flaky": 3624,
+   "stable": 583,
+   "skipped": 374,
+   "total": 4581
+  },
+  {
+   "date": "2026-03-19",
+   "flaky": 2897,
+   "stable": 1154,
+   "skipped": 531,
+   "total": 4582
+  },
+  {
+   "date": "2026-03-20",
+   "flaky": 3196,
+   "stable": 903,
+   "skipped": 496,
+   "total": 4595
+  },
+  {
+   "date": "2026-03-21",
+   "flaky": 2560,
+   "stable": 1365,
+   "skipped": 664,
+   "total": 4589
+  },
+  {
+   "date": "2026-03-22",
+   "flaky": 175,
+   "stable": 3497,
+   "skipped": 915,
+   "total": 4587
+  },
+  {
+   "date": "2026-03-23",
+   "flaky": 1033,
+   "stable": 2891,
+   "skipped": 668,
+   "total": 4592
+  },
+  {
+   "date": "2026-03-24",
+   "flaky": 2332,
+   "stable": 1835,
+   "skipped": 428,
+   "total": 4595
+  },
+  {
+   "date": "2026-03-25",
+   "flaky": 3343,
+   "stable": 877,
+   "skipped": 380,
+   "total": 4600
+  },
+  {
+   "date": "2026-03-26",
+   "flaky": 3541,
+   "stable": 689,
+   "skipped": 369,
+   "total": 4599
+  },
+  {
+   "date": "2026-03-27",
+   "flaky": 3366,
+   "stable": 811,
+   "skipped": 419,
+   "total": 4596
+  },
+  {
+   "date": "2026-03-28",
+   "flaky": 2932,
+   "stable": 1127,
+   "skipped": 538,
+   "total": 4597
+  },
+  {
+   "date": "2026-03-29",
+   "flaky": 2754,
+   "stable": 1250,
+   "skipped": 593,
+   "total": 4597
+  },
+  {
+   "date": "2026-03-30",
+   "flaky": 3435,
+   "stable": 696,
+   "skipped": 467,
+   "total": 4598
+  },
+  {
+   "date": "2026-03-31",
+   "flaky": 2522,
+   "stable": 1602,
+   "skipped": 474,
+   "total": 4598
+  },
+  {
+   "date": "2026-04-01",
+   "flaky": 3570,
+   "stable": 636,
+   "skipped": 401,
+   "total": 4607
+  },
+  {
+   "date": "2026-04-02",
+   "flaky": 3314,
+   "stable": 857,
+   "skipped": 441,
+   "total": 4612
+  },
+  {
+   "date": "2026-04-03",
+   "flaky": 3493,
+   "stable": 724,
+   "skipped": 395,
+   "total": 4612
+  },
+  {
+   "date": "2026-04-04",
+   "flaky": 2783,
+   "stable": 1265,
+   "skipped": 564,
+   "total": 4612
+  },
+  {
+   "date": "2026-04-05",
+   "flaky": 2473,
+   "stable": 1486,
+   "skipped": 652,
+   "total": 4611
+  },
+  {
+   "date": "2026-04-06",
+   "flaky": 3151,
+   "stable": 889,
+   "skipped": 571,
+   "total": 4611
+  },
+  {
+   "date": "2026-04-07",
+   "flaky": 2992,
+   "stable": 1087,
+   "skipped": 532,
+   "total": 4611
+  },
+  {
+   "date": "2026-04-08",
+   "flaky": 3698,
+   "stable": 593,
+   "skipped": 323,
+   "total": 4614
+  },
+  {
+   "date": "2026-04-09",
+   "flaky": 3700,
+   "stable": 527,
+   "skipped": 388,
+   "total": 4615
+  },
+  {
+   "date": "2026-04-10",
+   "flaky": 3591,
+   "stable": 663,
+   "skipped": 360,
+   "total": 4614
+  },
+  {
+   "date": "2026-04-11",
+   "flaky": 2724,
+   "stable": 1269,
+   "skipped": 622,
+   "total": 4615
+  },
+  {
+   "date": "2026-04-12",
+   "flaky": 858,
+   "stable": 3003,
+   "skipped": 754,
+   "total": 4615
+  },
+  {
+   "date": "2026-04-13",
+   "flaky": 3252,
+   "stable": 837,
+   "skipped": 528,
+   "total": 4617
+  },
+  {
+   "date": "2026-04-14",
+   "flaky": 3586,
+   "stable": 680,
+   "skipped": 353,
+   "total": 4619
+  },
+  {
+   "date": "2026-04-15",
+   "flaky": 1201,
+   "stable": 2798,
+   "skipped": 624,
+   "total": 4623
+  },
+  {
+   "date": "2026-04-16",
+   "flaky": 1179,
+   "stable": 2814,
+   "skipped": 632,
+   "total": 4625
+  },
+  {
+   "date": "2026-04-17",
+   "flaky": 1084,
+   "stable": 2866,
+   "skipped": 675,
+   "total": 4625
+  },
+  {
+   "date": "2026-04-18",
+   "flaky": 903,
+   "stable": 3042,
+   "skipped": 681,
+   "total": 4626
+  },
+  {
+   "date": "2026-04-19",
+   "flaky": 959,
+   "stable": 2990,
+   "skipped": 677,
+   "total": 4626
+  },
+  {
+   "date": "2026-04-20",
+   "flaky": 1277,
+   "stable": 2700,
+   "skipped": 650,
+   "total": 4627
+  },
+  {
+   "date": "2026-04-21",
+   "flaky": 1137,
+   "stable": 2871,
+   "skipped": 621,
+   "total": 4629
+  },
+  {
+   "date": "2026-04-22",
+   "flaky": 1495,
+   "stable": 2528,
+   "skipped": 607,
+   "total": 4630
+  },
+  {
+   "date": "2026-04-23",
+   "flaky": 685,
+   "stable": 3150,
+   "skipped": 797,
+   "total": 4632
+  },
+  {
+   "date": "2026-04-24",
+   "flaky": 1043,
+   "stable": 2897,
+   "skipped": 695,
+   "total": 4635
+  },
+  {
+   "date": "2026-04-25",
+   "flaky": 837,
+   "stable": 3086,
+   "skipped": 712,
+   "total": 4635
+  },
+  {
+   "date": "2026-04-26",
+   "flaky": 670,
+   "stable": 3189,
+   "skipped": 776,
+   "total": 4635
+  },
+  {
+   "date": "2026-04-27",
+   "flaky": 1008,
+   "stable": 3026,
+   "skipped": 601,
+   "total": 4635
+  },
+  {
+   "date": "2026-04-28",
+   "flaky": 1218,
+   "stable": 2803,
+   "skipped": 616,
+   "total": 4637
+  },
+  {
+   "date": "2026-04-29",
+   "flaky": 1135,
+   "stable": 2875,
+   "skipped": 629,
+   "total": 4639
+  },
+  {
+   "date": "2026-04-30",
+   "flaky": 1033,
+   "stable": 2916,
+   "skipped": 690,
+   "total": 4639
+  },
+  {
+   "date": "2026-05-01",
+   "flaky": 1143,
+   "stable": 2870,
+   "skipped": 628,
+   "total": 4641
+  },
+  {
+   "date": "2026-05-02",
+   "flaky": 926,
+   "stable": 3040,
+   "skipped": 672,
+   "total": 4638
+  },
+  {
+   "date": "2026-05-03",
+   "flaky": 960,
+   "stable": 3021,
+   "skipped": 659,
+   "total": 4640
+  },
+  {
+   "date": "2026-05-04",
+   "flaky": 1034,
+   "stable": 3058,
+   "skipped": 549,
+   "total": 4641
+  },
+  {
+   "date": "2026-05-05",
+   "flaky": 1129,
+   "stable": 2917,
+   "skipped": 596,
+   "total": 4642
+  },
+  {
+   "date": "2026-05-06",
+   "flaky": 3412,
+   "stable": 1010,
+   "skipped": 227,
+   "total": 4649
+  },
+  {
+   "date": "2026-05-07",
+   "flaky": 1148,
+   "stable": 2975,
+   "skipped": 531,
+   "total": 4654
+  },
+  {
+   "date": "2026-05-08",
+   "flaky": 1200,
+   "stable": 2907,
+   "skipped": 552,
+   "total": 4659
+  },
+  {
+   "date": "2026-05-09",
+   "flaky": 611,
+   "stable": 3349,
+   "skipped": 698,
+   "total": 4658
+  },
+  {
+   "date": "2026-05-10",
+   "flaky": 750,
+   "stable": 3225,
+   "skipped": 682,
+   "total": 4657
+  },
+  {
+   "date": "2026-05-11",
+   "flaky": 1123,
+   "stable": 2985,
+   "skipped": 553,
+   "total": 4661
+  },
+  {
+   "date": "2026-05-12",
+   "flaky": 1345,
+   "stable": 2727,
+   "skipped": 591,
+   "total": 4663
+  },
+  {
+   "date": "2026-05-13",
+   "flaky": 2088,
+   "stable": 2103,
+   "skipped": 476,
+   "total": 4667
+  },
+  {
+   "date": "2026-05-14",
+   "flaky": 3332,
+   "stable": 1081,
+   "skipped": 257,
+   "total": 4670
+  },
+  {
+   "date": "2026-05-15",
+   "flaky": 1281,
+   "stable": 2781,
+   "skipped": 611,
+   "total": 4673
+  },
+  {
+   "date": "2026-05-16",
+   "flaky": 1026,
+   "stable": 2972,
+   "skipped": 672,
+   "total": 4670
+  },
+  {
+   "date": "2026-05-17",
+   "flaky": 932,
+   "stable": 3075,
+   "skipped": 663,
+   "total": 4670
+  },
+  {
+   "date": "2026-05-18",
+   "flaky": 1351,
+   "stable": 2724,
+   "skipped": 596,
+   "total": 4671
+  },
+  {
+   "date": "2026-05-19",
+   "flaky": 1134,
+   "stable": 2936,
+   "skipped": 605,
+   "total": 4675
+  },
+  {
+   "date": "2026-05-20",
+   "flaky": 3449,
+   "stable": 978,
+   "skipped": 253,
+   "total": 4680
+  },
+  {
+   "date": "2026-05-21",
+   "flaky": 1030,
+   "stable": 2976,
+   "skipped": 675,
+   "total": 4681
+  },
+  {
+   "date": "2026-05-22",
+   "flaky": 1257,
+   "stable": 2835,
+   "skipped": 593,
+   "total": 4685
+  },
+  {
+   "date": "2026-05-23",
+   "flaky": 944,
+   "stable": 3040,
+   "skipped": 700,
+   "total": 4684
+  },
+  {
+   "date": "2026-05-24",
+   "flaky": 490,
+   "stable": 3364,
+   "skipped": 830,
+   "total": 4684
+  },
+  {
+   "date": "2026-05-25",
+   "flaky": 843,
+   "stable": 3154,
+   "skipped": 688,
+   "total": 4685
+  },
+  {
+   "date": "2026-05-26",
+   "flaky": 1210,
+   "stable": 2821,
+   "skipped": 656,
+   "total": 4687
+  },
+  {
+   "date": "2026-05-27",
+   "flaky": 1211,
+   "stable": 2861,
+   "skipped": 619,
+   "total": 4691
+  },
+  {
+   "date": "2026-05-28",
+   "flaky": 1153,
+   "stable": 2836,
+   "skipped": 701,
+   "total": 4690
+  },
+  {
+   "date": "2026-05-29",
+   "flaky": 1223,
+   "stable": 2849,
+   "skipped": 622,
+   "total": 4694
+  },
+  {
+   "date": "2026-05-30",
+   "flaky": 974,
+   "stable": 3018,
+   "skipped": 702,
+   "total": 4694
+  },
+  {
+   "date": "2026-05-31",
+   "flaky": 998,
+   "stable": 3012,
+   "skipped": 682,
+   "total": 4692
+  },
+  {
+   "date": "2026-06-01",
+   "flaky": 1136,
+   "stable": 2914,
+   "skipped": 645,
+   "total": 4695
+  },
+  {
+   "date": "2026-06-02",
+   "flaky": 1806,
+   "stable": 2307,
+   "skipped": 583,
+   "total": 4696
+  },
+  {
+   "date": "2026-06-03",
+   "flaky": 1135,
+   "stable": 2863,
+   "skipped": 700,
+   "total": 4698
+  },
+  {
+   "date": "2026-06-04",
+   "flaky": 842,
+   "stable": 3128,
+   "skipped": 730,
+   "total": 4700
+  },
+  {
+   "date": "2026-06-05",
+   "flaky": 840,
+   "stable": 3113,
+   "skipped": 747,
+   "total": 4700
+  },
+  {
+   "date": "2026-06-06",
+   "flaky": 595,
+   "stable": 3277,
+   "skipped": 829,
+   "total": 4701
+  },
+  {
+   "date": "2026-06-07",
+   "flaky": 537,
+   "stable": 3308,
+   "skipped": 857,
+   "total": 4702
+  },
+  {
+   "date": "2026-06-08",
+   "flaky": 777,
+   "stable": 3169,
+   "skipped": 758,
+   "total": 4704
+  },
+  {
+   "date": "2026-06-09",
+   "flaky": 984,
+   "stable": 3006,
+   "skipped": 720,
+   "total": 4710
+  },
+  {
+   "date": "2026-06-10",
+   "flaky": 1059,
+   "stable": 2944,
+   "skipped": 707,
+   "total": 4710
+  },
+  {
+   "date": "2026-06-11",
+   "flaky": 1801,
+   "stable": 2333,
+   "skipped": 580,
+   "total": 4714
+  },
+  {
+   "date": "2026-06-12",
+   "flaky": 1017,
+   "stable": 2990,
+   "skipped": 713,
+   "total": 4720
+  },
+  {
+   "date": "2026-06-13",
+   "flaky": 749,
+   "stable": 3304,
+   "skipped": 667,
+   "total": 4720
+  },
+  {
+   "date": "2026-06-14",
+   "flaky": 687,
+   "stable": 3240,
+   "skipped": 793,
+   "total": 4720
+  },
+  {
+   "date": "2026-06-15",
+   "flaky": 1018,
+   "stable": 2972,
+   "skipped": 731,
+   "total": 4721
+  },
+  {
+   "date": "2026-06-16",
+   "flaky": 866,
+   "stable": 3083,
+   "skipped": 779,
+   "total": 4728
+  },
+  {
+   "date": "2026-06-17",
+   "flaky": 957,
+   "stable": 3049,
+   "skipped": 727,
+   "total": 4733
+  },
+  {
+   "date": "2026-06-18",
+   "flaky": 1085,
+   "stable": 2907,
+   "skipped": 746,
+   "total": 4738
+  },
+  {
+   "date": "2026-06-19",
+   "flaky": 897,
+   "stable": 3093,
+   "skipped": 746,
+   "total": 4736
+  },
+  {
+   "date": "2026-06-20",
+   "flaky": 767,
+   "stable": 3195,
+   "skipped": 774,
+   "total": 4736
+  },
+  {
+   "date": "2026-06-21",
+   "flaky": 671,
+   "stable": 3281,
+   "skipped": 784,
+   "total": 4736
+  },
+  {
+   "date": "2026-06-22",
+   "flaky": 961,
+   "stable": 3066,
+   "skipped": 712,
+   "total": 4739
+  },
+  {
+   "date": "2026-06-23",
+   "flaky": 976,
+   "stable": 3083,
+   "skipped": 682,
+   "total": 4741
+  },
+  {
+   "date": "2026-06-24",
+   "flaky": 986,
+   "stable": 3064,
+   "skipped": 692,
+   "total": 4742
+  },
+  {
+   "date": "2026-06-25",
+   "flaky": 912,
+   "stable": 3074,
+   "skipped": 760,
+   "total": 4746
+  },
+  {
+   "date": "2026-06-26",
+   "flaky": 968,
+   "stable": 3062,
+   "skipped": 716,
+   "total": 4746
+  },
+  {
+   "date": "2026-06-27",
+   "flaky": 643,
+   "stable": 3291,
+   "skipped": 809,
+   "total": 4743
+  },
+  {
+   "date": "2026-06-28",
+   "flaky": 717,
+   "stable": 3232,
+   "skipped": 794,
+   "total": 4743
+  },
+  {
+   "date": "2026-06-29",
+   "flaky": 882,
+   "stable": 3106,
+   "skipped": 759,
+   "total": 4747
+  },
+  {
+   "date": "2026-06-30",
+   "flaky": 1109,
+   "stable": 3000,
+   "skipped": 640,
+   "total": 4749
+  },
+  {
+   "date": "2026-07-01",
+   "flaky": 1041,
+   "stable": 3018,
+   "skipped": 699,
+   "total": 4758
+  },
+  {
+   "date": "2026-07-02",
+   "flaky": 979,
+   "stable": 3073,
+   "skipped": 707,
+   "total": 4759
+  },
+  {
+   "date": "2026-07-03",
+   "flaky": 826,
+   "stable": 3195,
+   "skipped": 740,
+   "total": 4761
+  },
+  {
+   "date": "2026-07-04",
+   "flaky": 561,
+   "stable": 3381,
+   "skipped": 819,
+   "total": 4761
+  },
+  {
+   "date": "2026-07-05",
+   "flaky": 615,
+   "stable": 3342,
+   "skipped": 804,
+   "total": 4761
+  },
+  {
+   "date": "2026-07-06",
+   "flaky": 889,
+   "stable": 3122,
+   "skipped": 753,
+   "total": 4764
+  },
+  {
+   "date": "2026-07-07",
+   "flaky": 1048,
+   "stable": 3021,
+   "skipped": 698,
+   "total": 4767
+  },
+  {
+   "date": "2026-07-08",
+   "flaky": 1307,
+   "stable": 2762,
+   "skipped": 701,
+   "total": 4770
+  },
+  {
+   "date": "2026-07-09",
+   "flaky": 945,
+   "stable": 3087,
+   "skipped": 739,
+   "total": 4771
+  },
+  {
+   "date": "2026-07-10",
+   "flaky": 962,
+   "stable": 3109,
+   "skipped": 703,
+   "total": 4774
+  },
+  {
+   "date": "2026-07-11",
+   "flaky": 0,
+   "stable": 124,
+   "skipped": 4,
+   "total": 128
+  },
+  {
+   "date": "2026-07-12",
+   "flaky": 784,
+   "stable": 3209,
+   "skipped": 782,
+   "total": 4775
+  },
+  {
+   "date": "2026-07-13",
+   "flaky": 842,
+   "stable": 3133,
+   "skipped": 800,
+   "total": 4775
+  },
+  {
+   "date": "2026-07-14",
+   "flaky": 881,
+   "stable": 3144,
+   "skipped": 750,
+   "total": 4775
+  },
+  {
+   "date": "2026-07-15",
+   "flaky": 3118,
+   "stable": 1329,
+   "skipped": 332,
+   "total": 4779
+  },
+  {
+   "date": "2026-07-16",
+   "flaky": 885,
+   "stable": 3164,
+   "skipped": 734,
+   "total": 4783
+  },
+  {
+   "date": "2026-07-17",
+   "flaky": 920,
+   "stable": 3153,
+   "skipped": 717,
+   "total": 4790
+  },
+  {
+   "date": "2026-07-18",
+   "flaky": 599,
+   "stable": 3352,
+   "skipped": 836,
+   "total": 4787
+  },
+  {
+   "date": "2026-07-19",
+   "flaky": 610,
+   "stable": 3360,
+   "skipped": 820,
+   "total": 4790
+  },
+  {
+   "date": "2026-07-20",
+   "flaky": 942,
+   "stable": 3114,
+   "skipped": 734,
+   "total": 4790
+  },
+  {
+   "date": "2026-07-21",
+   "flaky": 989,
+   "stable": 3041,
+   "skipped": 761,
+   "total": 4791
+  },
+  {
+   "date": "2026-07-22",
+   "flaky": 1136,
+   "stable": 2920,
+   "skipped": 736,
+   "total": 4792
+  },
+  {
+   "date": "2026-07-23",
+   "flaky": 1062,
+   "stable": 3033,
+   "skipped": 700,
+   "total": 4795
+  },
+  {
+   "date": "2026-07-24",
+   "flaky": 991,
+   "stable": 3063,
+   "skipped": 742,
+   "total": 4796
+  },
+  {
+   "date": "2026-07-25",
+   "flaky": 593,
+   "stable": 3373,
+   "skipped": 830,
+   "total": 4796
+  },
+  {
+   "date": "2026-07-26",
+   "flaky": 603,
+   "stable": 3353,
+   "skipped": 840,
+   "total": 4796
+  },
+  {
+   "date": "2026-07-27",
+   "flaky": 856,
+   "stable": 3184,
+   "skipped": 758,
+   "total": 4798
+  },
+  {
+   "date": "2026-07-28",
+   "flaky": 987,
+   "stable": 3066,
+   "skipped": 747,
+   "total": 4800
+  },
+  {
+   "date": "2026-07-29",
+   "flaky": 998,
+   "stable": 3102,
+   "skipped": 704,
+   "total": 4804
+  },
+  {
+   "date": "2026-07-30",
+   "flaky": 966,
+   "stable": 3071,
+   "skipped": 767,
+   "total": 4804
+  },
+  {
+   "date": "2026-07-31",
+   "flaky": 974,
+   "stable": 3070,
+   "skipped": 761,
+   "total": 4805
+  },
+  {
+   "date": "2026-08-01",
+   "flaky": 755,
+   "stable": 3268,
+   "skipped": 782,
+   "total": 4805
+  },
+  {
+   "date": "2026-08-02",
+   "flaky": 640,
+   "stable": 3335,
+   "skipped": 830,
+   "total": 4805
+  },
+  {
+   "date": "2026-08-03",
+   "flaky": 819,
+   "stable": 3239,
+   "skipped": 747,
+   "total": 4805
+  },
+  {
+   "date": "2026-08-04",
+   "flaky": 1004,
+   "stable": 3059,
+   "skipped": 746,
+   "total": 4809
+  },
+  {
+   "date": "2026-08-05",
+   "flaky": 3025,
+   "stable": 1443,
+   "skipped": 342,
+   "total": 4810
+  },
+  {
+   "date": "2026-08-06",
+   "flaky": 967,
+   "stable": 3095,
+   "skipped": 749,
+   "total": 4811
+  },
+  {
+   "date": "2026-08-07",
+   "flaky": 1001,
+   "stable": 3066,
+   "skipped": 743,
+   "total": 4810
+  },
+  {
+   "date": "2026-08-08",
+   "flaky": 698,
+   "stable": 3315,
+   "skipped": 796,
+   "total": 4809
+  }
+ ]
+}

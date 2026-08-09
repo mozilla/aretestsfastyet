@@ -25,6 +25,13 @@
  * loads the 15.9 MB `-with-taskids` variant, because nothing here needs to name
  * the job behind a failure.
  *
+ * The **charts** additionally read `{harness}-flaky-backfill.json`, a committed
+ * sibling holding four integers per day for the ~250 days before the aggregate's
+ * window. It reaches only the two charts at the top: a backfill row has no tests
+ * in it, so there is nothing for a folder row or a headline tile to be built
+ * from. `chartDays` in `site/flaky.ts` is the join, and
+ * `lib/formats/flaky-backfill.ts` holds the rule.
+ *
  * ## The table's rows are a *flattened* tree
  *
  * The natural encoding of a drillable tree is nested elements, and it is the
@@ -45,6 +52,7 @@ import {
     flakyPercentage,
     folderList,
     runningAverage,
+    thinDays,
 } from '../lib/query/flakiness.ts';
 
 /**
@@ -622,50 +630,179 @@ export function formatPercent(percent: number): string {
  * and "what share of the tree is that". Splitting them lets each own its
  * y-axis and its own zero.
  *
- * **`stable` is not plotted.** It is ~80% of every day, so including it in the
- * stack fixes the y-axis around 4,800 and compresses the flaky and skipped
- * bands — the two series the page exists to show — into the bottom fifth of the
- * plot. It stays in every denominator, in the tiles and in the table; it is
- * only the *chart* that drops it, and the counts chart is labelled so that
- * absence is stated rather than implied.
+ * **`stable` is plotted once the window is long enough, and not before.** See
+ * `STABLE_CHART_DAYS`: over 21 days it is ~80% of every day and stacking it
+ * flattens the two bands the page exists to show, but over months it carries the
+ * one signal neither other series has — the tree's total test count, which grows.
  */
 export interface ChartSeries {
     labels: string[];
-    /** The counts chart: flaky and skipped, stacked. */
-    flaky: number[];
-    skipped: number[];
-    /** Kept for the tooltip's denominator, not drawn. */
-    stable: number[];
+    /**
+     * The counts chart: flaky and skipped, always stacked.
+     *
+     * **`null` on a day the tree barely ran**, which Chart.js draws as a gap.
+     * See `THIN_DAY_SHARE` — a 0% reading from 128 of 4,600 tests is a hole in
+     * the data, and plotting it as a value puts a notch to the axis in the
+     * middle of the series.
+     */
+    flaky: (number | null)[];
+    skipped: (number | null)[];
+    /**
+     * The tooltip's denominator, and the counts chart's third band when
+     * `showStable` is set.
+     */
+    stable: (number | null)[];
+    /** The population, **not** holed: it is what decides a day is a hole. */
     total: number[];
     /** The percentage chart: the flaky share per day. */
-    flakyPercent: number[];
+    flakyPercent: (number | null)[];
     /** The centred 7-day mean of `flakyPercent`, `null` where undefined. */
     average: (number | null)[];
     /** The skipped share per day, drawn alongside the flaky one. */
-    skippedPercent: number[];
+    skippedPercent: (number | null)[];
+    /** How many days were left as gaps. Reported so the caption can say so. */
+    thinDays: number;
+    /**
+     * Whether the counts chart draws the stable band as well. See
+     * `STABLE_CHART_DAYS`.
+     */
+    showStable: boolean;
 }
 
 /** The window of the running average, in days. */
 export const AVERAGE_WINDOW = 7;
 
 /**
+ * How many days the counts chart needs before it stacks the stable band.
+ *
+ * **This reverses an earlier, correct decision, because its premise changed.**
+ * While the page only had the 21-day aggregate, stable was deliberately left out
+ * of the counts chart: on the pinned window's last day it is 3,117 of 4,805
+ * tests, so stacking it pins the y-axis near 4,800 and squeezes flaky and
+ * skipped — 1,688 together — into the bottom third. Over 21 days that costs the
+ * reader the two bands they came for and buys nothing, because the population
+ * barely moves: on the pinned xpcshell window `total` runs 4,775 to 4,805, a
+ * 0.6% spread that reads as a flat line.
+ *
+ * Over months it is the opposite trade. Measured on the committed backfill,
+ * xpcshell's mean daily `total` goes 4,466 (2025-11) → 4,808 (2026-08), +7.7%,
+ * and mochitest 19,978 → 20,884, +4.5%. The stack's top edge *is* that growth,
+ * and no other series on the page shows it — the percentage chart divides it out
+ * by construction. The compression argument also weakens on its own terms: over
+ * the same span xpcshell's flaky count ranges 254 to 3,910, so the two lower
+ * bands are no longer a thin strip at the bottom of the axis.
+ *
+ * 60 days is the threshold. It is well past the 21-day artifact — so a page that
+ * failed to load its backfill keeps exactly the old chart, and the seam cannot
+ * change what the chart contains — and well short of the ~250 days the backfill
+ * provides, so the long view always gets the third band. Nothing between 22 and
+ * 59 days is a window this page actually loads: the artifact is 21 days and the
+ * backfill is 193 (mochitest) or 257 (xpcshell).
+ *
+ * The alternative designs, and why not:
+ *
+ * - **a second y-axis for stable** — the reason there are two charts rather than
+ *   one is that a dual-axis plot makes the reader work out which series belongs
+ *   to which scale before they can read either. Adding one back inside a chart
+ *   would undo that.
+ * - **a third chart for the population** — a chart whose only content is a line
+ *   rising 7.7% over nine months, when the stack's top edge already draws it.
+ * - **stable unstacked, as a line** — it would sit at 4,000 with the other two
+ *   near zero, which is the compression problem without the stack's benefit that
+ *   the top edge means something.
+ */
+export const STABLE_CHART_DAYS = 60;
+
+/**
+ * What the counts chart's caption says, derived from what it actually drew.
+ *
+ * **Written here rather than in the markup**, and that is the point. The static
+ * caption asserted "stable tests are left out of this chart on purpose"; the
+ * moment the chart started drawing them over a long window, that sentence became
+ * a page telling the reader the opposite of what the plot in front of them shows,
+ * which is worse than no caption. Deriving it from `showStable` and the day count
+ * makes the two unable to disagree.
+ */
+export function countChartNote(
+    data: Pick<ChartSeries, 'showStable' | 'labels' | 'thinDays'>
+): string {
+    const span = `${data.labels.length} days`;
+    const body = data.showStable
+        ? `All three states, stacked, over ${span}: the top of the stack is how many tests ` +
+          'ran that day, which grows as the tree does. Stable is drawn faintly because it ' +
+          'is around 80% of every day; the two bands at the bottom are the ones to read.'
+        : `Stable tests are left out over a window this short (${span}) — they are around ` +
+          '80% of every day, and stacking them flattens everything else. They are still in ' +
+          'every percentage and in the table below.';
+    if (data.thinDays === 0) {
+        return body;
+    }
+    // Said rather than left as an unexplained break in the line: a gap a reader
+    // cannot account for reads as a bug in the page.
+    const one = data.thinDays === 1;
+    return (
+        `${body} ${data.thinDays} ${one ? 'day is' : 'days are'} left blank — the tree ` +
+        `barely ran on ${one ? 'it' : 'them'}, so ${one ? 'its' : 'their'} rate would be ` +
+        'a reading of almost no tests.'
+    );
+}
+
+/**
+ * What window the charts cover, and how it relates to the table's.
+ *
+ * The charts now plot ~250 days and the table below still covers 21, because the
+ * committed backfill has counts but no tests in it — see `chartDays` in
+ * `site/flaky.ts`. Two figures on one page covering different spans is exactly
+ * the mismatch this page was already called out for once, when the tiles showed
+ * one day above a table showing three weeks with nothing saying so. So the span
+ * is stated, read off the data rather than written down.
+ *
+ * `null` when the two spans are the same, which is the no-backfill case: there is
+ * nothing to reconcile and a sentence saying so would be noise.
+ */
+export function chartScopeNote(chartDays: number, tableDays: number): string | null {
+    if (chartDays <= tableDays) {
+        return null;
+    }
+    return (
+        `These two charts cover ${chartDays} days, from committed history joined to the ` +
+        `live ${tableDays}-day window. The tiles above and the table below cover the live ` +
+        `${tableDays} days only — the history holds daily counts, not the per-test detail a ` +
+        'folder row needs.'
+    );
+}
+
+/**
  * Turns the per-day counts into the arrays the chart draws.
  *
- * The labels are `MM-DD`: the year is the same for every point in a 21-day
- * window and spending axis width on it costs a tick.
+ * The labels carry the year **only when the window spans more than one**, which
+ * over a 21-day artifact means `MM-DD` exactly as before. A year of history
+ * crosses a new year, and `12-21` followed by `01-10` with no year is ambiguous
+ * about direction in a way `MM-DD` never is inside one window.
  */
 export function chartSeries(days: readonly FlakyDay[]): ChartSeries {
+    const years = new Set(days.map((day) => day.date.slice(0, 4)));
+    // A day the tree barely ran on is a hole in the data, and plotting its 0%
+    // as a reading draws a notch to the axis that looks like a rendering fault.
+    // `null` makes Chart.js leave a gap, which is what the day is. See
+    // `THIN_DAY_SHARE`; on the committed history this is exactly one day per
+    // harness, 2026-07-11.
+    const thin = thinDays(days);
+    const hole = <T>(index: number, value: T): T | null =>
+        thin[index] === true ? null : value;
     return {
-        labels: days.map((day) => day.date.slice(5)),
-        flaky: days.map((day) => day.flaky),
-        stable: days.map((day) => day.stable),
-        skipped: days.map((day) => day.skipped),
+        labels: days.map((day) => (years.size > 1 ? day.date : day.date.slice(5))),
+        flaky: days.map((day, index) => hole(index, day.flaky)),
+        stable: days.map((day, index) => hole(index, day.stable)),
+        skipped: days.map((day, index) => hole(index, day.skipped)),
         total: days.map((day) => day.total),
-        flakyPercent: days.map((day) => flakyPercentage(day)),
-        skippedPercent: days.map((day) =>
-            day.total > 0 ? (day.skipped / day.total) * 100 : 0
+        flakyPercent: days.map((day, index) => hole(index, flakyPercentage(day))),
+        skippedPercent: days.map((day, index) =>
+            hole(index, day.total > 0 ? (day.skipped / day.total) * 100 : 0)
         ),
         average: runningAverage(days, AVERAGE_WINDOW),
+        showStable: days.length >= STABLE_CHART_DAYS,
+        thinDays: thin.filter(Boolean).length,
     };
 }
 

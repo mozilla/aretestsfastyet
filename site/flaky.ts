@@ -13,28 +13,33 @@
  *
  * ## The data it reads
  *
- * The same two files as `issues.html`, and deliberately not the third:
+ * The same two files as `issues.html`, deliberately not the third, plus one
+ * committed sibling:
  *
  * - `{harness}-issues.json` — the 2.8 MB counts-only 21-day aggregate, which is
  *   what the page opens on. Every number here is a count of runs per day, which
  *   is exactly what this page needs.
  * - `{harness}-<date>.json` — one day, when a date is selected.
+ * - `{harness}-flaky-backfill.json` — a 21-27 kB committed file holding four
+ *   integers per day for the ~250 days before the aggregate's window. It feeds
+ *   the two charts at the top and nothing else; see `chartDays` for why the
+ *   tiles and the table cannot use it, and `lib/formats/flaky-backfill.ts` for
+ *   the merge rule.
  * - **not** `{harness}-issues-with-taskids.json`. That file exists to name the
  *   job behind a failure, and nothing on this page does: a folder row is a
  *   count, not a list of runs. Skipping it saves 15.9 MB per visit.
  *
- * ## Two charts, and what is missing from the first one
+ * ## Two charts, and what the first one contains
  *
  * Counts on top, percentages below, rather than one chart with two y axes: a
  * dual-axis plot makes the reader work out which series belongs to which scale
  * before they can read either, and the two questions — how many tests are in
  * trouble, and what share of the tree that is — are separate.
  *
- * The counts chart plots **flaky and skipped only**. Stable is ~80% of every
- * day (3,117 of 4,805 on the pinned window's last day), so stacking it pins the
- * axis near 4,800 and squashes the two bands the page exists to show; without
- * it the axis autoscales to the ~1,700 they occupy. Stable stays in every
- * denominator, in the tiles and in the table, and the chart says so.
+ * The counts chart plots flaky and skipped always, and stable **once the window
+ * is long enough for its growth to be the point** — `STABLE_CHART_DAYS` holds
+ * the measurements. Over the 21-day artifact alone it stays out, which is what
+ * it did before the backfill existed.
  *
  * The percentage chart carries the raw flaky rate, its **centred** 7-day mean —
  * so a bump sits over the day that caused it — and the skip rate.
@@ -58,6 +63,11 @@ import { decodeIssues } from '../lib/formats/issues.ts';
 import type { IssuesFile } from '../lib/formats/issues.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import {
+    type FlakyBackfillFile,
+    type FlakyBackfillMerge,
+    mergeFlakyBackfill,
+} from '../lib/formats/flaky-backfill.ts';
+import {
     DEFAULT_MIN_WINDOW_FAILURES,
     MIN_FILTERABLE_DAYS,
     type FlakinessSeries,
@@ -80,7 +90,9 @@ import {
     HISTORICAL_DATE,
     INITIAL_SORT,
     ancestorPaths,
+    chartScopeNote,
     chartSeries,
+    countChartNote,
     findFolder,
     flakyBand,
     formatPercent,
@@ -133,6 +145,15 @@ let tableDay: number | null = null;
 let tableAllDays = false;
 /** The noise threshold in force. */
 let minWindowFailures = DEFAULT_MIN_WINDOW_FAILURES;
+/**
+ * The committed history for the loaded harness, or `null` if there is none.
+ *
+ * Loaded once at startup and never refetched: it is a committed sibling of the
+ * page, so switching harness reloads the page anyway.
+ */
+let backfill: FlakyBackfillFile | null = null;
+/** Whether `reportSeam` has already logged for this backfill. */
+let seamReported = false;
 
 const expanded = new Set<string>();
 let currentSort: SortState = { ...INITIAL_SORT };
@@ -315,10 +336,37 @@ const COLOURS = {
     /** The raw daily rate, under its own 7-day average. */
     flakyFaint: 'rgba(232, 131, 74, 0.35)',
     stable: '#5cb85c',
+    /**
+     * The counts chart's stable band, over months.
+     *
+     * The **same green** as the tiles and the table, at 0.30 alpha rather than a
+     * different hue: the band is 80% of the plot's area, and a saturated fill
+     * that large stops being a band and becomes the background, taking the two
+     * bands beneath it with it. Alpha keeps the colour identity — green is
+     * "stable" everywhere on this page — while letting the grid read through.
+     *
+     * A new hue was the alternative and is the worse one. Running the three
+     * plotted fills through the palette validator, the flaky↔skipped pair is
+     * already the tightest at ΔE 14.5 (normal vision); adding a fourth hue
+     * tightens it further, whereas the existing green sits at ΔE 8.6 from grey
+     * under deuteranopia, the best-separated pair of the three.
+     */
+    stableFaint: 'rgba(92, 184, 92, 0.30)',
     skipped: '#9b9b9b',
 };
 
-/** Options shared by both charts, so the two read as one figure. */
+/**
+ * Options shared by both charts, so the two read as one figure.
+ *
+ * **The x axis caps its ticks at 14.** Chart.js labels every category it can fit
+ * and rotates them to make room; over the 21-day artifact that is 21 readable
+ * `MM-DD` labels, but over the ~257-day merged series it produced 65 rotated
+ * `YYYY-MM-DD` labels that were unreadable and took a third of the plot's height
+ * for themselves — measured in the browser on the real merged data. 14 leaves a
+ * tick roughly every fortnight over a year and still labels most days of a
+ * 21-day window, so one number serves both without the chart having to know
+ * which it is drawing.
+ */
 function baseOptions(yTitle: string, asPercent: boolean): Record<string, unknown> {
     return {
         animation: false,
@@ -326,7 +374,10 @@ function baseOptions(yTitle: string, asPercent: boolean): Record<string, unknown
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
         scales: {
-            x: { grid: { display: false } },
+            x: {
+                grid: { display: false },
+                ticks: { maxTicksLimit: 14, autoSkip: true, maxRotation: 45 },
+            },
             y: {
                 stacked: !asPercent,
                 beginAtZero: true,
@@ -361,13 +412,14 @@ function baseOptions(yTitle: string, asPercent: boolean): Record<string, unknown
 /**
  * Draws the two charts: counts on top, percentages below.
  *
- * **Stable is deliberately absent from the counts chart.** It is roughly 80% of
- * every day — 3,117 of 4,805 on the pinned window's last day — so stacking it
- * pins the y-axis near 4,800 and squeezes flaky and skipped into the bottom
- * fifth, which is where the reader is actually looking. Dropping it lets the
- * axis autoscale to the ~1,700 the two remaining bands occupy. Stable is still
- * in every denominator, in the tiles and in the table; the chart's axis title
- * says which tests are plotted so the omission is stated rather than implied.
+ * **Whether the counts chart stacks stable depends on how wide the window is**,
+ * and `STABLE_CHART_DAYS` holds the reasoning with the numbers behind it. Short
+ * version: over the 21-day artifact stable is ~80% of every day and stacking it
+ * squeezes the two bands the reader came for into the bottom third, while the
+ * population it would show moves 0.6%; over the ~250 days the committed backfill
+ * adds, that population grows 7.7% and the stack's top edge is the only place on
+ * the page that growth appears. So the same chart drops it on one window and
+ * draws it on the other, and the axis title says which.
  */
 function drawCharts(data: ChartSeries): void {
     const Chart = chartJs();
@@ -380,16 +432,31 @@ function drawCharts(data: ChartSeries): void {
 
     const counts = byId('flaky-count-chart') as HTMLCanvasElement;
     Chart.getChart(counts)?.destroy();
-    const area = (label: string, values: number[], colour: string): Record<string, unknown> => ({
+    // `border` defaults to `fill` so the two-band chart is unchanged. The stable
+    // band passes both, because its fill is deliberately transparent and its
+    // *top edge* is the population line — the one thing that band is there to
+    // show — which a 30%-alpha stroke would lose.
+    const area = (
+        label: string,
+        values: (number | null)[],
+        fill: string,
+        border = fill
+    ): Record<string, unknown> => ({
         label,
         data: values,
-        backgroundColor: colour,
-        borderColor: colour,
+        backgroundColor: fill,
+        borderColor: border,
         borderWidth: 1,
         fill: true,
         stack: 'counts',
         pointRadius: 0,
         tension: 0.2,
+        // A `null` day is a hole in the data, not a zero, so the band breaks
+        // there rather than being drawn through. Without this the one thin day in
+        // the published history — 2026-07-11, 128 of ~4,600 xpcshell tests — was
+        // a spike to the axis in the middle of the plot that read as a rendering
+        // fault. See `THIN_DAY_SHARE`.
+        spanGaps: false,
     });
     new Chart(counts, {
         type: 'line',
@@ -398,10 +465,26 @@ function drawCharts(data: ChartSeries): void {
             datasets: [
                 area('Flaky', data.flaky, COLOURS.flaky),
                 area('Skipped', data.skipped, COLOURS.skipped),
+                // Stable goes on **top** of the stack, not under it. The two
+                // bands below are the ones being compared and they keep the
+                // axis's zero; putting the big one underneath would lift them
+                // both off the baseline and make their height the only readable
+                // thing about them. On top, the stack's outline is the total
+                // test count and each lower band still starts at 0.
+                ...(data.showStable
+                    ? [area('Stable', data.stable, COLOURS.stableFaint, COLOURS.stable)]
+                    : []),
             ],
         },
-        options: baseOptions('Tests (flaky + skipped)', false),
+        options: baseOptions(
+            data.showStable ? 'Tests that ran' : 'Tests (flaky + skipped)',
+            false
+        ),
     });
+    // The caption follows the chart rather than the markup, so it cannot claim
+    // stable is omitted while the plot above it draws stable. See
+    // `countChartNote`.
+    byId('count-chart-note').textContent = countChartNote(data);
 
     const percent = byId('flaky-percent-chart') as HTMLCanvasElement;
     Chart.getChart(percent)?.destroy();
@@ -422,6 +505,9 @@ function drawCharts(data: ChartSeries): void {
                     borderWidth: 1,
                     pointRadius: 0,
                     fill: false,
+                    // Same reason as the counts chart's bands: a thin day is a
+                    // gap, not a 0%.
+                    spanGaps: false,
                 },
                 {
                     label: `Flaky %, ${AVERAGE_WINDOW}-day average`,
@@ -445,11 +531,17 @@ function drawCharts(data: ChartSeries): void {
                     borderDash: [4, 3],
                     pointRadius: 0,
                     fill: false,
+                    spanGaps: false,
                 },
             ],
         },
         options: baseOptions('Share of tests', true),
     });
+
+    // Why the charts and the table below disagree about how long "the window" is.
+    // Empty when they do not, so the no-backfill page gains no sentence.
+    const scope = chartScopeNote(data.labels.length, series?.days.length ?? data.labels.length);
+    byId('chart-scope-note').textContent = scope ?? '';
 }
 
 /**
@@ -1187,6 +1279,96 @@ function rebuildTree(): void {
     });
 }
 
+/**
+ * Logs what the merge found where the two sources overlap.
+ *
+ * The overlap is the **only** place the committed file and the live artifact can
+ * be compared, so it is checked rather than silently resolved — the same
+ * reasoning `mergeBackfillStats` states for `index.html`, where the check found
+ * 446 real disagreements and told the reader which direction they went.
+ *
+ * A disagreement here is expected to be small and is not an error: the two
+ * sources classify a shared date over *different* 21 days, and the noise filter
+ * reads a test's failures over the whole window, so a test that failed once in
+ * one window can have failed twice in the other. Measured between two published
+ * xpcshell aggregates sharing 19 dates, the flaky count differs by 0–24 tests,
+ * median 2. The largest gap is logged with the count so that "a few tests" and
+ * "a few hundred" — the second of which would be a decoding bug — do not read the
+ * same in the console.
+ *
+ * Once per load, not once per redraw: the noise control and every table
+ * interaction call `recompute`, and repeating the same line on each would bury
+ * it.
+ */
+function reportSeam(merge: FlakyBackfillMerge<FlakyDay>): void {
+    if (seamReported) {
+        return;
+    }
+    seamReported = true;
+    console.log(
+        `Flaky charts: ${merge.backfilled} day(s) from the committed backfill, ` +
+            `${merge.days.length - merge.backfilled} live, ` +
+            `${merge.overlapping} date(s) in both.`
+    );
+    if (merge.disagreements.length === 0) {
+        return;
+    }
+    const worst = merge.disagreements.reduce((a, b) =>
+        Math.abs(a.backfill - a.live) >= Math.abs(b.backfill - b.live) ? a : b
+    );
+    console.warn(
+        `Flaky charts: the committed backfill disagrees with the live artifact on ` +
+            `${merge.disagreements.length} value(s) over ${merge.overlapping} overlapping ` +
+            `date(s) (live wins). Largest: ${worst.date} ${worst.key} ` +
+            `backfill=${worst.backfill} live=${worst.live}. A few tests is the noise ` +
+            `filter's window moving; hundreds would be a decoding bug.`
+    );
+}
+
+/**
+ * The days the two charts at the top plot: the live series, with the committed
+ * history joined on in front of it.
+ *
+ * **Only the charts.** The headline tiles average the last 7 days and the table
+ * rolls tests up by folder, and both need the *decoded* file — a backfill row is
+ * four integers with no tests in it, so there is nothing for a folder to be built
+ * from and nothing older than the artifact for a tile to average. Extending the
+ * charts is the whole benefit and it is the only part the four numbers support.
+ *
+ * The backfill is dropped in three cases, each of which would otherwise put a
+ * step at the seam that is an artefact rather than a fact:
+ *
+ * - **a single-day view.** A daily file is one point; there is no chart, and
+ *   splicing 250 days of a *different* classification in front of it would draw a
+ *   year of history and label it with one date.
+ * - **a noise threshold the backfill was not built with.** The filter's answer
+ *   depends on the threshold, so at threshold 3 the live days would be filtered
+ *   and the backfilled ones would not. `MIN_FILTERABLE_DAYS` measures how far
+ *   apart two thresholds can put the same day: 923 against 562.
+ * - **a window length that is not the backfill's.** Same argument, for the other
+ *   half of the filter's input.
+ */
+function chartDays(): FlakyDay[] {
+    if (series === null) {
+        return [];
+    }
+    const live = series.days;
+    if (
+        backfill === null ||
+        live.length <= 1 ||
+        series.minWindowFailures !== backfill.metadata.minWindowFailures ||
+        live.length !== backfill.metadata.windowDays
+    ) {
+        return [...live];
+    }
+    const merged = mergeFlakyBackfill(backfill.days, live, (row, index) => ({
+        ...row,
+        day: index,
+    }));
+    reportSeam(merged);
+    return merged.days;
+}
+
 /** Recomputes everything from the loaded file and repaints. */
 function recompute(): void {
     if (decoded === null) {
@@ -1205,7 +1387,7 @@ function recompute(): void {
     const hasSeries = series.days.length > 1;
     setChartsVisible(hasSeries);
     if (hasSeries) {
-        drawCharts(chartSeries(series.days));
+        drawCharts(chartSeries(chartDays()));
     }
     renderTableControls();
     renderTable();
@@ -1227,6 +1409,86 @@ function initNoiseControl(): void {
 }
 
 // --- data loading ---------------------------------------------------------
+
+/**
+ * The committed history's request, per harness, as a **literal** `fetch`.
+ *
+ * The obvious spelling is `fetch(`./${harness}-flaky-backfill.json`)`, and it is
+ * wrong here in a way that fails silently. `tools/page-assets.ts` discovers the
+ * siblings a built page needs by matching `fetch('./name.json')` in the bundle,
+ * so a computed URL is invisible to it, the file is never copied into
+ * `dist-site/`, and the page's own best-effort handling turns the resulting 404
+ * into "there is no backfill". That is precisely the bug `page-assets.ts` was
+ * written for — measured there as a chart quietly showing 68 points instead of
+ * 200 — and it reproduced here: `npm run pages` copied 7 assets for `flaky.html`
+ * and neither backfill was among them.
+ *
+ * So the two URLs are literals and the harness selects between them. Two lines
+ * of duplication buys a build that fails when a file goes missing.
+ */
+const BACKFILL_FETCHES: Record<string, () => Promise<Response>> = {
+    // build-optional: xpcshell-flaky-backfill.json — best-effort history for the
+    // charts. Optional because the *page* works without it: a deployment that
+    // has not run `tools/build-flaky-backfill.ts` should build with 21-day
+    // charts rather than fail.
+    xpcshell: () => fetch('./xpcshell-flaky-backfill.json'),
+    // build-optional: mochitest-flaky-backfill.json — the same, for the other
+    // harness.
+    mochitest: () => fetch('./mochitest-flaky-backfill.json'),
+};
+
+/**
+ * Loads the committed history, best-effort.
+ *
+ * A plain `fetch` of a sibling and not `fetchData`, because the file travels with
+ * the page rather than being published by CI — the arrangement `site/index.ts`
+ * already uses for `mochitest-stats-backfill.json`.
+ *
+ * **Best-effort by design**, matching `loadHarness` in `site/index.ts`: a 404 or
+ * an unparseable body leaves `backfill` at `null` and the charts show the 21 days
+ * they showed before. Both harnesses have a file committed today, so unlike
+ * `index.html`'s xpcshell request this is not *expected* to miss — but a page
+ * whose charts silently shorten is a far better failure than one that shows an
+ * error box over a working table.
+ *
+ * The response is validated past `ok`: a static server that answers every path
+ * with `index.html` would otherwise put an HTML parse error in the console and,
+ * worse, a body with the right keys and wrong meaning would merge. So the
+ * harness and the four counters are checked before it is used.
+ */
+async function loadBackfill(harness: string): Promise<void> {
+    const request = BACKFILL_FETCHES[harness];
+    if (request === undefined) {
+        // A third harness would reach here. Not an error: it means no history
+        // has been built for it, which is the same state as a 404.
+        console.log(`No flaky backfill is built for ${harness}.`);
+        return;
+    }
+    try {
+        const response = await request();
+        if (!response.ok) {
+            console.log(`No ${harness} flaky backfill: HTTP ${response.status}`);
+            return;
+        }
+        const file = (await response.json()) as FlakyBackfillFile;
+        if (file.metadata?.harness !== harness || !Array.isArray(file.days)) {
+            console.warn(
+                `Ignoring ${harness}-flaky-backfill.json: it says harness ` +
+                    `${String(file.metadata?.harness)} and has ${typeof file.days} days.`
+            );
+            return;
+        }
+        backfill = file;
+        console.log(
+            `Loaded ${harness} flaky backfill: ${file.days.length} days ` +
+                `${file.metadata.startDate}..${file.metadata.endDate}, ` +
+                `${file.metadata.windowDays}-day windows, noise filter ` +
+                `${file.metadata.minWindowFailures}.`
+        );
+    } catch (error) {
+        console.log(`No usable ${harness} flaky backfill:`, (error as Error).message);
+    }
+}
 
 /** Loads one day's file. */
 async function loadSelectedDate(): Promise<void> {
@@ -1390,6 +1652,12 @@ function initializeUI(): void {
 export async function start(): Promise<void> {
     initializeUI();
 
+    // The backfill request goes out **before** the date selector is awaited, so
+    // the two round trips overlap — `site/index.ts` arranges its four the same
+    // way and for the same reason. It is a 21-27 kB committed sibling against a
+    // 2.8 MB published aggregate, so it is never the request that is waited on.
+    const backfillLoaded = loadBackfill(getHarnessType());
+
     const hasData = await populateDateSelector({
         selectId: 'date-select',
         statusTextId: 'status-text',
@@ -1404,6 +1672,12 @@ export async function start(): Promise<void> {
     if (!select.value && select.options.length > 0) {
         select.selectedIndex = 0;
     }
+
+    // Awaited before anything draws, so the first paint of the charts already has
+    // the history in it. Drawing 21 days and then redrawing 250 would be a
+    // visible jump on every load for no gain — the fetch has been in flight
+    // since the top of this function.
+    await backfillLoaded;
 
     // The 21-day window is the default, as on `issues.html` since its migration.
     await loadFromUrlHash();
@@ -1427,6 +1701,11 @@ window.__flakyView = () => ({
     sort: currentSort,
     expanded: [...expanded],
     days: series?.days ?? [],
+    // The charts plot more days than the table and the tiles do — see
+    // `chartDays`. Reported separately so a test can assert the seam without
+    // having to re-derive the merge.
+    chartDays: chartDays().map((day) => day.date),
+    backfillDays: backfill?.days.length ?? 0,
     neutralisedTests: series?.neutralisedTests ?? 0,
     rows: renderedRows.map((row) => ({
         path: row.node.path,

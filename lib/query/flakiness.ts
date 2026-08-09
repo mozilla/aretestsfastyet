@@ -469,6 +469,61 @@ export function flakinessOverTime(
 }
 
 /**
+ * The share of a typical day's population below which a day is a data gap
+ * rather than a quiet day.
+ *
+ * A day with `total: 0` is unambiguous and was always skipped. A day with *some*
+ * tests is the hard case, and the published data has one: **2026-07-11**, where
+ * an aggregation gap left 128 of ~4,600 xpcshell tests and 45 of ~20,400
+ * mochitest ones. Classified normally that day reads 0% flaky, which plotted
+ * against its neighbours' 18% is a notch to the axis that looks like a rendering
+ * fault and drags the 7-day mean down through a week either side of it.
+ *
+ * 10% of the median is the threshold, and the data says the choice is not
+ * delicate. Over the ~250 committed days per harness, sorted by population as a
+ * share of that harness's median:
+ *
+ * | | xpcshell | mochitest |
+ * | --- | --- | --- |
+ * | thinnest day (2026-07-11) | **2.8%** | **0.2%** |
+ * | next thinnest | 96.9% | 97.9% |
+ *
+ * There is nothing between 3% and 97%: a day either ran the tree or did not.
+ * Any threshold in that gap picks out the same single day, so 10% is a round
+ * number in the middle of a chasm rather than a tuned parameter.
+ *
+ * The median, not the mean, because the mean is what the outlier moves.
+ */
+export const THIN_DAY_SHARE = 0.1;
+
+/**
+ * Which days ran so few tests that their rate is not a measurement.
+ *
+ * Returns a parallel array of booleans rather than filtering, because the *date*
+ * axis has to keep the day — dropping 2026-07-11 from the series would draw
+ * 07-10 next to 07-12 and silently compress the calendar. The caller plots a gap
+ * instead. See `THIN_DAY_SHARE`.
+ *
+ * **A day with no tests at all is not "thin" here.** It is `total === 0`, which
+ * every caller already handles and which `runningAverage` has always given its
+ * neighbours' mean rather than `null` — a documented choice, so that a day CI did
+ * not run does not punch a hole through a smoothed line. This function is about
+ * the harder case that choice does not cover: a day with *some* tests, few enough
+ * that its rate is noise. Folding the two together would reverse the older
+ * decision as a side effect, which is how a fix becomes a regression.
+ */
+export function thinDays(days: readonly FlakyDay[]): boolean[] {
+    const populations = days.map((day) => day.total).filter((total) => total > 0);
+    if (populations.length === 0) {
+        return days.map(() => false);
+    }
+    populations.sort((a, b) => a - b);
+    const median = populations[Math.floor(populations.length / 2)]!;
+    const floor = median * THIN_DAY_SHARE;
+    return days.map((day) => day.total > 0 && day.total < floor);
+}
+
+/**
  * A centred running mean of the flaky percentage.
  *
  * Centred rather than trailing: this is a fixed historical window being read as
@@ -482,16 +537,24 @@ export function flakinessOverTime(
  * series too rather than the average alone.
  *
  * Days with no tests at all contribute nothing and are skipped, so a gap in the
- * data does not pull the mean toward zero.
+ * data does not pull the mean toward zero — and so do days that ran so few that
+ * their rate is not a measurement, which is the case `THIN_DAY_SHARE` exists for
+ * and the reason this takes a second pass over `days` before averaging. A day
+ * that is itself thin gets `null` rather than its neighbours' mean: the average
+ * is a statement about that day, and it has no data to make one from.
  */
 export function runningAverage(days: readonly FlakyDay[], window = 7): (number | null)[] {
     const half = Math.floor(window / 2);
+    const thin = thinDays(days);
     return days.map((_unused, index) => {
+        if (thin[index] === true) {
+            return null;
+        }
         let flaky = 0;
         let total = 0;
         for (let offset = -half; offset <= half; offset++) {
             const day = days[index + offset];
-            if (day === undefined || day.total === 0) {
+            if (day === undefined || day.total === 0 || thin[index + offset] === true) {
                 continue;
             }
             flaky += day.flaky;
