@@ -136,10 +136,18 @@
 import { bucketFileSuffix, bucketIndexForPath, decodeBucket } from '../lib/formats/buckets.ts';
 import type { BucketFile } from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
-import { joinTestPath, parseTaskId } from '../lib/formats/tables.ts';
-import { detectHarness, otherHarness } from '../lib/model/harness.ts';
+import { parseTaskId } from '../lib/formats/tables.ts';
+import { detectHarness } from '../lib/model/harness.ts';
 import { classifyStatus } from '../lib/model/status.ts';
 import { displaySkipMessage } from '../lib/model/skips.ts';
+import {
+    type TestPathsSource,
+    CANDIDATE_LIMIT,
+    collectTestPaths,
+    matchTestPaths,
+    resolveTest,
+    searchTerms,
+} from '../lib/query/test-lookup.ts';
 import { computeTestStats } from '../lib/query/test-stats.ts';
 import { el } from './drilldown-render.ts';
 import {
@@ -2125,36 +2133,12 @@ function updateRuntimeForSelection(s: PageState): void {
  * has a fallback.
  */
 async function loadAllTestPaths(): Promise<string[]> {
-    const [xpcshellData, mochitestData] = await Promise.all([
-        fetchData('xpcshell-issues.json').then((r) => (r.ok ? r.json() : null)),
-        fetchData('mochitest-issues.json').then((r) => (r.ok ? r.json() : null)),
-    ]);
-    const testSet = new Set<string>();
-    for (const data of [xpcshellData, mochitestData] as (IssuesPathsFile | null)[]) {
-        if (data === null || !data.tables || !data.testInfo) {
-            continue;
-        }
-        const { testPaths, testNames } = data.tables;
-        const { testPathIds, testNameIds } = data.testInfo;
-        for (let i = 0; i < testPathIds.length; i++) {
-            const dir = testPaths[testPathIds[i]!];
-            const name = testNames[testNameIds[i]!];
-            if (name === undefined) {
-                continue;
-            }
-            // `dir ?? ''`: an out-of-range path id and an empty directory both
-            // mean "no directory", and `joinTestPath` gives the bare name for
-            // an empty one — the same answer the inline form gave for either.
-            testSet.add(joinTestPath(dir ?? '', name));
-        }
-    }
-    return [...testSet].sort();
-}
-
-/** The slice of `{harness}-issues.json` the autocomplete reads. */
-interface IssuesPathsFile {
-    tables: { testPaths: string[]; testNames: string[] };
-    testInfo: { testPathIds: number[]; testNameIds: number[] };
+    const files = await Promise.all(
+        ['xpcshell-issues.json', 'mochitest-issues.json'].map((name) =>
+            fetchData(name).then((r) => (r.ok ? (r.json() as Promise<TestPathsSource>) : null))
+        )
+    );
+    return collectTestPaths(files);
 }
 
 /**
@@ -2316,17 +2300,8 @@ function showSearchForm(options: { initialValue?: string; preloadedTests?: strin
         }
         // Every whitespace-separated term must appear somewhere in the path, in
         // any order — so `cookies async` finds `test_cookies_async_failure.js`.
-        const terms = query.split(/\s+/).filter((t) => t !== '');
-        const matches: string[] = [];
-        for (const t of allTests) {
-            const lower = t.toLowerCase();
-            if (terms.every((term) => lower.includes(term))) {
-                matches.push(t);
-                if (matches.length >= 50) {
-                    break;
-                }
-            }
-        }
+        const terms = searchTerms(query);
+        const { matches } = matchTestPaths(allTests, query, CANDIDATE_LIMIT);
         if (matches.length === 0) {
             dropdown.style.display = 'none';
             selectedIdx = -1;
@@ -2460,6 +2435,8 @@ function showSearchForm(options: { initialValue?: string; preloadedTests?: strin
  * 5. **A unique substring match** → redirect to it. A path typed into the URL
  *    bar is often a fragment, and one match is not ambiguous.
  * 6. **Otherwise the search form**, seeded with what was typed.
+ *
+ * Steps 3-5 are `resolveTest` in `lib/query/test-lookup.ts`.
  */
 async function loadTestData(): Promise<void> {
     const testPath = new URLSearchParams(window.location.search).get('test');
@@ -2495,79 +2472,54 @@ async function loadTestData(): Promise<void> {
     );
     contentEl.style.display = 'block';
 
-    const chunkHex = bucketFileSuffix(bucketIndexForPath(testPath));
-
     try {
-        let raw: BucketFile | null = null;
-        let decoded: DecodedTimingFile | null = null;
-        let identity: ReturnType<DecodedTimingFile['findTest']> = null;
-        let usedHarness: string = harness;
-
-        const response = await fetchData(`${harness}-${chunkHex}.json`);
-        if (response.ok) {
-            raw = (await response.json()) as BucketFile;
-            decoded = decodeBucket(raw);
-            identity = decoded.findTest(testPath);
-        }
-
-        if (identity === null) {
-            const other = otherHarness(harness);
-            statusLine.textContent = `Not found in ${harness}, trying ${other}...`;
-            const otherResponse = await fetchData(`${other}-${chunkHex}.json`);
-            if (otherResponse.ok) {
-                const otherRaw = (await otherResponse.json()) as BucketFile;
-                const otherDecoded = decodeBucket(otherRaw);
-                const otherIdentity = otherDecoded.findTest(testPath);
-                if (otherIdentity !== null) {
-                    raw = otherRaw;
-                    decoded = otherDecoded;
-                    identity = otherIdentity;
-                    usedHarness = other;
+        const resolution = await resolveTest<BucketFile>(testPath, undefined, {
+            async loadBucket(bucketHarness, path) {
+                const chunkHex = bucketFileSuffix(bucketIndexForPath(path));
+                const response = await fetchData(`${bucketHarness}-${chunkHex}.json`);
+                if (!response.ok) {
+                    return null;
                 }
-            }
-        }
+                const raw = (await response.json()) as BucketFile;
+                return { raw, decoded: decodeBucket(raw) };
+            },
+            loadAllTestPaths,
+            onStep: (message) => {
+                statusLine.textContent = message;
+            },
+        });
 
-        if (identity === null || decoded === null || raw === null) {
-            statusLine.textContent = 'Test not found, looking for a unique match...';
-            let allTests: string[] | null = null;
-            try {
-                allTests = await loadAllTestPaths();
-                const terms = testPath.toLowerCase().split(/\s+/).filter((t) => t !== '');
-                let match: string | null = null;
-                let count = 0;
-                for (const t of allTests) {
-                    if (terms.every((term) => t.toLowerCase().includes(term))) {
-                        match = t;
-                        if (++count > 1) {
-                            break;
-                        }
-                    }
-                }
-                if (count === 1 && match !== null && match !== testPath) {
-                    // `replace`, not `assign`: the fragment the user typed is
-                    // not a page worth having in the back stack.
-                    window.location.replace(
-                        withDevParams(`test.html?test=${encodeURIComponent(match)}`)
-                    );
-                    return;
-                }
-            } catch {
-                // The test list is a nicety; failing to load it just means the
-                // message below rather than a search form.
-            }
-            if (allTests !== null) {
-                document.title = 'Test Info';
-                showSearchForm({ initialValue: testPath, preloadedTests: allTests });
+        if (resolution.kind === 'found') {
+            if (resolution.resolvedFrom !== null) {
+                // `replace`, not `assign`: the fragment the user typed is not a
+                // page worth having in the back stack. `resolvedFrom` is null
+                // when the match is what is already in the URL, which is what
+                // stops this redirecting to the page it is on.
+                window.location.replace(
+                    withDevParams(`test.html?test=${encodeURIComponent(resolution.testPath)}`)
+                );
                 return;
             }
-            statusLine.textContent =
-                `Test not found: ${testPath}. It may not have been run in the last 21 days, ` +
-                'or the path may be incorrect.';
-            statusLine.style.color = '#dc3545';
+            render(
+                resolution.file.raw,
+                resolution.file.decoded,
+                resolution.identity.testId,
+                resolution.testPath,
+                resolution.identity.component,
+                resolution.harness
+            );
             return;
         }
 
-        render(raw, decoded, identity.testId, testPath, identity.component, usedHarness);
+        if (resolution.allTests !== null) {
+            document.title = 'Test Info';
+            showSearchForm({ initialValue: testPath, preloadedTests: resolution.allTests });
+            return;
+        }
+        statusLine.textContent =
+            `Test not found: ${testPath}. It may not have been run in the last 21 days, ` +
+            'or the path may be incorrect.';
+        statusLine.style.color = '#dc3545';
     } catch (error) {
         console.error('Error loading test data:', error);
         const message = error instanceof Error ? error.message : String(error);

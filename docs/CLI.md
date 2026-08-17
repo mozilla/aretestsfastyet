@@ -98,16 +98,50 @@ which the CLI should reuse rather than reimplement. Its rules: `browser_*.js` an
 `test_*.html` are mochitest, everything else — including `test_*.js` — is xpcshell.
 
 That misclassifies a mochitest-plain `test_foo.js`, and the symptom is
-indistinguishable from a typo: the CLI reads xpcshell data, does not find the test,
-and reports "no such test". So on a lookup miss, commands must exit 2 with the
-inference made explicit:
+indistinguishable from a typo: the CLI reads xpcshell data and does not find the
+test. Telling the caller to retry with the other harness is not enough — the tool
+knows which harness holds it and should just look.
+
+### A test path is resolved, not required
+
+`test <path>` walks the same ladder `test.html` does, from `resolveTest()`
+(`lib/query/test-lookup.ts`), which both front-ends call:
+
+1. the bucket file for the inferred or given harness;
+2. **the other harness at the same bucket index**, unless `--harness` was given —
+   which is what covers the `test_*.js` hole above;
+3. a **unique** substring match over every test path in both 21-day aggregates,
+   which is resolved and reported on;
+4. **several matches** → the candidates are listed and nothing is measured;
+5. nothing matched → exit 2.
+
+A basename or a fragment is therefore a valid argument. `browser_tab_preview.js`
+resolves, and stderr says what it resolved to so the answer can never be about a
+test the caller did not name:
 
 ```
-No such test in xpcshell data (harness inferred from filename).
-If this is a mochitest, retry with --harness mochitest.
+Resolved "browser_tab_preview.js" to the one test matching it: browser/components/tabbrowser/test/browser/tabs/browser_tab_preview.js
 ```
 
-Cheap to do, and it turns a dead end into a next step.
+That line, and the `Found in mochitest data, not the xpcshell the filename
+suggests.` one, go to **stderr** and print under `--quiet`: they change the
+meaning of the output rather than reporting progress. `result.path` in `--json`
+always carries the resolved path.
+
+**A miss says what was searched, never what is true.** `No such test in mochitest
+data` is a sentence about a file that reads as a verdict on the test, and it was
+read that way — a reviewer checked four tests by basename, believed all four
+clean, and one was a perma-fail on every configuration it ran. What is emitted
+instead names the harnesses read and scopes the claim to the lookup:
+
+```
+No test path in the mochitest and xpcshell 21-day data contains "browser_zzz.js",
+so this reports nothing about the test itself.
+```
+
+with three separate cases kept apart, because they need different next steps: the
+test list could not be read (so no search happened), the path exists tree-wide but
+the harness file does not hold it, and nothing matches at all.
 | `--day <date>` | the whole window | Restrict to one day (`YYYY-MM-DD`), or `--day today`/`yesterday`. A filter on the same file the command already reads. Outside the 21-day window: exit 2. |
 | `--since <n>` | | Restrict to the last `n` days of the window. Mutually exclusive with `--day`. |
 | `--data-source <central\|try\|local>` | `central` | Where to read data from. `local` reads `./data/`, mirroring the dashboards' `?data-source=` parameter. |

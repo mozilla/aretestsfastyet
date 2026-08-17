@@ -8,7 +8,8 @@
  * - **`--json` with `--markdown` is a usage error**, not one silently winning.
  *   A script that passes both has a bug, and picking a winner hides it.
  * - **Harness detection is a heuristic that fails quietly**, so the inference
- *   is recorded (`inferred: true`) and the not-found message says so.
+ *   is recorded (`inferred: true`) and a lookup only searches the other harness
+ *   when it was a guess.
  * - **`--day` and `--since` are filters on the file the command already
  *   reads**, not a reason to fetch a different one, and they are mutually
  *   exclusive.
@@ -166,8 +167,8 @@ export function readGlobalOptions(args: ParsedArgs): GlobalOptions {
  * `test.html` was migrated: the page needs the same rule to pick its bucket
  * file and cannot import this module, so the rule had to live somewhere both
  * could reach. That module's comment carries the rules and the hole in them —
- * `test_*.js` is classified xpcshell whether or not it is one, and
- * `harnessMissHint()` is what turns the resulting dead end into a next step.
+ * `test_*.js` is classified xpcshell whether or not it is one. Step 2 of the
+ * resolution ladder (`lib/query/test-lookup.ts`) is what covers that hole.
  */
 export { detectHarness } from '../lib/model/harness.ts';
 
@@ -180,35 +181,4 @@ export function resolveHarness(
         return { harness: explicit, inferred: false };
     }
     return { harness: detectHarness(testPath), inferred: true };
-}
-
-/**
- * The message a lookup miss produces, with the inference made explicit.
- *
- * `CLI.md` gives the wording, and the reason for it: the symptom of a
- * misclassified `test_foo.js` is indistinguishable from a typo, so the message
- * has to name the harness it searched and offer the other one. Only when the
- * harness was *inferred* — if the user asked for xpcshell explicitly, telling
- * them the harness was inferred would be a lie.
- */
-export function harnessMissHint(harness: Harness, inferred: boolean): string | undefined {
-    if (!inferred) {
-        return undefined;
-    }
-    const other: Harness = harness === 'xpcshell' ? 'mochitest' : 'xpcshell';
-    const article = other === 'xpcshell' ? 'an' : 'a';
-    return `If this is ${article} ${other} test, retry with --harness ${other}.`;
-}
-
-/** The "No such test in X data" line, with the inference noted. */
-export function harnessMissMessage(
-    testPath: string,
-    harness: Harness,
-    inferred: boolean
-): string {
-    return (
-        `No such test in ${harness} data` +
-        (inferred ? ' (harness inferred from filename)' : '') +
-        `: ${testPath}`
-    );
 }

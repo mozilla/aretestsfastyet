@@ -40,6 +40,7 @@ import assert from 'node:assert/strict';
 
 import { type DataFileName, type DataSource, DataFetchError, DataFileNotFoundError } from '../lib/sources/source.ts';
 import type { TreeherderClient, TreeherderJob } from '../lib/sources/treeherder.ts';
+import { CANDIDATE_LIMIT } from '../lib/query/test-lookup.ts';
 import { ExitCode } from '../cli/errors.ts';
 import { type CommandContext, captureStreams } from '../cli/context.ts';
 import { diskCache } from '../cli/cache.ts';
@@ -93,6 +94,16 @@ function fixtureSource(): DataSource & { requested: string[] } {
         'xpcshell-timings/index.json': 'index.json',
         'mochitest-timings/index.json': 'index.json',
         'xpcshell-timings/xpcshell-2026-08-03.json': 'xpcshell-2026-08-03.json',
+        // The path list `resolveTest` searches, served from the bucket fixtures
+        // rather than `xpcshell-issues.json`. `collectTestPaths` reads only
+        // `tables.testPaths` / `tables.testNames` / `testInfo`, which both
+        // families carry identically — and it has to be the *bucket* fixtures'
+        // 20 tests, because a path the list offers and the bucket does not hold
+        // is the one case the resolution cannot complete. The real
+        // `xpcshell-issues.json` fixture names ten tests that hash into buckets
+        // 02, 08, 12 and 1c, none of them published here.
+        'xpcshell-timings/xpcshell-issues.json': 'xpcshell-00.json',
+        'mochitest-timings/mochitest-issues.json': 'mochitest-00.json',
     };
     return {
         name: 'fixtures',
@@ -299,33 +310,177 @@ test('test with no path exits 1', async () => {
     assert.match(stderr, /requires a path/);
 });
 
-// --- the harness-miss message --------------------------------------------
+// --- the resolution ladder -----------------------------------------------
+//
+// `resolveTest` (`lib/query/test-lookup.ts`) is shared with `test.html`, and
+// what is pinned here is the CLI's half: which of the five outcomes a given
+// input produces, and that a message about the *lookup* is never phrased as a
+// finding about the test. `fx-tests test browser_tab_preview.js` used to say
+// `No such test in mochitest data` while the page said `perma-fail` on the same
+// data, and a reviewer read four such messages as four clean tests.
 
-test('a lookup miss exits 2 and makes the inference explicit', async () => {
-    const { code, stderr } = await invoke(['test', 'dom/base/test/test_nonexistent90.js']);
-    assert.equal(code, ExitCode.NotFound);
-    // Both halves matter: which harness was searched, and that it was a guess.
-    assert.match(stderr, /No such test in xpcshell data \(harness inferred from filename\)/);
-    assert.match(stderr, /retry with --harness mochitest/);
+test('a basename resolves to the one test that matches it', async () => {
+    const { code, stdout, stderr } = await invoke([
+        'test',
+        'test_rename_objectStore_errors.js',
+        '--json',
+    ]);
+    assert.equal(code, ExitCode.Success);
+    // The answer is about the full path, and `path` says which — a resolution
+    // that did not surface what it resolved to would be the same trap in a
+    // different place.
+    assert.equal(json(stdout)['path'], TEST_PATH);
+    assert.match(stderr, /Resolved "test_rename_objectStore_errors\.js" to the one test matching it/);
+    assert.match(stderr, new RegExp(TEST_PATH.replace(/[.]/g, '\\.')));
 });
 
-test('an explicit --harness does not claim the harness was inferred', async () => {
-    const { code, stderr } = await invoke([
+test('a fragment several tests match lists them and measures nothing', async () => {
+    // Exactly four of the fixtures' 20 tests are under `components/extensions`.
+    const { code, stdout, stderr } = await invoke(['test', 'components/extensions']);
+    assert.equal(code, ExitCode.NotFound);
+    assert.equal(stdout, '', 'an ambiguous query produces no report');
+    assert.match(stderr, /and 4 tests match it\. Nothing was measured; pick one:/);
+    assert.match(stderr, /test_ext_shadowdom\.js/);
+    assert.match(stderr, /test_ext_proxy_speculative\.js/);
+    // All four fit under the default limit, so nothing is withheld and no
+    // marker is printed — the negative half of the assertion below.
+    assert.doesNotMatch(stderr, /more not shown/);
+});
+
+test('a candidate list cut by --limit says so, and by how much', async () => {
+    // Asserted on the **rendered message**, not on the resolution object. The
+    // first version of this change carried a correct `truncated` flag and a
+    // renderer that could never act on it, and a unit test on the object passed
+    // over a 50-line list that ended without a word.
+    const { code, stderr } = await invoke(['test', 'components/extensions', '--limit', '2']);
+    assert.equal(code, ExitCode.NotFound);
+    // The count is the true total, and the tail accounts for every one of the
+    // four: 2 listed + "2 more".
+    assert.match(stderr, /and 4 tests match it/);
+    assert.match(stderr, /… and 2 more not shown \(--limit 0 for all\)/);
+    const listed = stderr.split('\n').filter((line) => /^ {2}\w/.test(line));
+    assert.equal(listed.length, 2, `two candidate lines, got: ${listed.join(' | ')}`);
+});
+
+test('past the ladder\'s own cap, the message stops promising --limit 0', async () => {
+    // More matches than `CANDIDATE_LIMIT`, which the fixtures' 20 tests cannot
+    // produce, so the test list is synthesised. This is the case the reviewer
+    // reproduced: 50 lines, "more than 50 tests match", and no tail at all.
+    const count = 60;
+    const names = Array.from({ length: count }, (_, i) => `test_generated_${i}.js`);
+    const issues = {
+        metadata: { days: 21, endDate: '2026-08-16', generatedAt: '2026-08-17T00:00:00Z' },
+        tables: {
+            testPaths: ['dom/generated/test'],
+            testNames: names,
+            statuses: [],
+            messages: [],
+            crashSignatures: [],
+            components: [],
+        },
+        testInfo: {
+            testPathIds: names.map(() => 0),
+            testNameIds: names.map((_, i) => i),
+            componentIds: names.map(() => null),
+        },
+        testRuns: names.map(() => []),
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(issues));
+    const { code, stderr } = await invoke(['test', 'dom/generated', '--limit', '0'], {
+        source: {
+            name: 'generated',
+            requested: [],
+            async fetch(fileName: DataFileName): Promise<Uint8Array> {
+                if (fileName.filename === 'xpcshell-issues.json') {
+                    return bytes;
+                }
+                // No buckets and no mochitest list: steps 1–2 miss, step 3 runs.
+                throw new DataFileNotFoundError(fileName);
+            },
+        } as DataSource & { requested: string[] },
+    });
+    assert.equal(code, ExitCode.NotFound);
+
+    // The true count, not "more than 50" — the scan counts past the cap.
+    assert.match(stderr, new RegExp(`and ${count} tests match it`));
+    const listed = stderr.split('\n').filter((line) => /^ {2}dom\/generated/.test(line));
+    assert.equal(listed.length, CANDIDATE_LIMIT, 'the ladder caps the candidates it collects');
+    // The tail accounts for the other 10 and does **not** offer `--limit 0`,
+    // which is already in effect and cannot lift the ladder's cap.
+    assert.match(stderr, new RegExp(`… and ${count - CANDIDATE_LIMIT} more not shown`));
+    assert.match(stderr, /narrow the fragment to see the rest/);
+    assert.doesNotMatch(stderr, /--limit 0 for all/);
+});
+
+test('--limit 0 lists every candidate the ladder collected', async () => {
+    const { stderr } = await invoke(['test', 'components/extensions', '--limit', '0']);
+    assert.match(stderr, /and 4 tests match it/);
+    // Four listed, so no shortfall to mark. `--limit 0` promised all of them
+    // above, and here it delivers them.
+    assert.doesNotMatch(stderr, /more not shown/);
+    for (const name of [
+        'test_ext_proxy_speculative.js',
+        'test_ext_manifest_omnibox.js',
+        'test_ext_contentscript_scriptCreated.js',
+        'test_ext_shadowdom.js',
+    ]) {
+        assert.ok(stderr.includes(name), `${name} is missing from --limit 0`);
+    }
+});
+
+// Step 2 — the other harness at the same bucket index — needs a test whose
+// filename `detectHarness` misclassifies, and neither bucket fixture holds one:
+// every mochitest in `mochitest-00.json` is `browser_*.js` or `test_*.html`,
+// both of which it gets right. `test/query.test.ts` covers that step over
+// synthetic loaders, where the misclassified path can be constructed.
+
+test('a genuinely unknown test says so about the lookup, not about the test', async () => {
+    const { code, stdout, stderr } = await invoke([
         'test',
         'dom/base/test/test_nonexistent90.js',
-        '--harness',
-        'xpcshell',
     ]);
     assert.equal(code, ExitCode.NotFound);
-    assert.doesNotMatch(stderr, /inferred/);
-    // And no suggestion to switch, since the user chose deliberately.
-    assert.doesNotMatch(stderr, /retry with --harness/);
+    assert.equal(stdout, '');
+    // Which harnesses were read, and that the sentence is about the data the
+    // tool holds. The wording it replaced — `No such test in xpcshell data` —
+    // was read six times as "this test is fine".
+    assert.match(stderr, /No test path in the xpcshell and mochitest 21-day data contains/);
+    assert.match(stderr, /reports nothing about the test itself/);
 });
 
-test('browser_*.js infers mochitest, test_*.js infers xpcshell', async () => {
-    const miss = await invoke(['test', 'dom/base/test/browser_nonexistent70.js']);
-    assert.match(miss.stderr, /No such test in mochitest data/);
-    assert.match(miss.stderr, /retry with --harness xpcshell/);
+test('an explicit --harness searches only that harness, and says why it missed', async () => {
+    const path = 'dom/canvas/test/webgl-mochitest/test_webgl_high_power.html';
+    const found = await invoke(['test', path, '--json']);
+    assert.equal(found.code, ExitCode.Success, 'found under the inferred harness');
+
+    const { code, stderr } = await invoke(['test', path, '--harness', 'xpcshell']);
+    // A caller who named a harness asked about that harness — but the path is
+    // known to exist, so the message says the xpcshell file does not hold it
+    // rather than that there is no such test.
+    assert.equal(code, ExitCode.NotFound);
+    assert.match(stderr, /is a test in the tree-wide data, but it is not in the xpcshell file/);
+    assert.match(stderr, /Drop --harness xpcshell/);
+});
+
+test('a missing test list is not reported as "no test matches"', async () => {
+    const source = fixtureSource();
+    const { code, stderr } = await invoke(['test', 'dom/base/test/test_nonexistent90.js'], {
+        source: {
+            name: 'no-list',
+            requested: source.requested,
+            async fetch(fileName: DataFileName): Promise<Uint8Array> {
+                if (fileName.filename.endsWith('-issues.json')) {
+                    throw new DataFileNotFoundError(fileName);
+                }
+                return source.fetch(fileName);
+            },
+        } as DataSource & { requested: string[] },
+    });
+    assert.equal(code, ExitCode.NotFound);
+    // The distinction the old message could not make: "searched and found
+    // nothing" against "could not search".
+    assert.match(stderr, /the test list could not be read, so no search was made/);
+    assert.match(stderr, /This says nothing about the test/);
 });
 
 // --- fx-tests test -------------------------------------------------------
@@ -1311,7 +1466,7 @@ test('progress goes to stderr so stdout stays pipeable', async () => {
     const { stdout, stderr } = await invoke(['test', TEST_PATH, '--json']);
     // stdout must parse as JSON on its own — this is the `| jq` contract.
     assert.doesNotThrow(() => JSON.parse(stdout));
-    assert.match(stderr, /Reading xpcshell bucket/);
+    assert.match(stderr, /Looking up dom\/indexedDB/);
 });
 
 test('--quiet suppresses progress but keeps the data', async () => {
@@ -1592,7 +1747,7 @@ test('harness inference follows detectHarness for every rule, including the hole
         // The documented hole: a mochitest-plain `test_foo.js` is
         // misclassified as xpcshell. Asserted deliberately — the CLI must
         // agree with common-test-data.js:9 rather than improve on it, and
-        // this is the case harnessMissHint() exists for.
+        // step 2 of the resolution ladder is what covers it.
         ['dom/base/test/test_foo.js', 'xpcshell'],
         ['netwerk/test/unit/test_bug1195415.js', 'xpcshell'],
         ['some/dir/browser_foo.html', 'xpcshell'],

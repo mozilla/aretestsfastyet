@@ -72,6 +72,14 @@ import { findIssues, findSkips, groupIssues } from '../lib/query/issues.ts';
 import { groupFailuresByMessage } from '../lib/query/failures.ts';
 import { groupCrashesBySignature } from '../lib/query/crashes.ts';
 import { computeSummary, markerTotals } from '../lib/query/summary.ts';
+import {
+    type TestLookupLoaders,
+    type TestPathsSource,
+    CANDIDATE_LIMIT,
+    collectTestPaths,
+    matchTestPaths,
+    resolveTest,
+} from '../lib/query/test-lookup.ts';
 
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
@@ -1620,6 +1628,265 @@ test('marker totals come from the file, and the kinds differ by harness', () => 
     for (let i = 1; i < counts.length; i++) {
         assert.ok(counts[i - 1]! >= counts[i]!);
     }
+});
+
+// --- the resolution ladder -----------------------------------------------
+//
+// `resolveTest` is what `fx-tests test` and `test.html` both walk, and the two
+// steps under test here are the ones the CLI used to lack: the other harness at
+// the same bucket index, and a unique substring match. The loaders are synthetic
+// rather than the fixtures because the fixtures cannot supply the case the hole
+// is about — a mochitest whose filename `detectHarness` calls xpcshell — and
+// because what the fetching does on a miss is half of what is being asserted.
+
+/**
+ * Loaders over a hand-built two-harness world.
+ *
+ * `served` records every (harness, path) the ladder asked for, in order, which
+ * is how "step 2 was not taken" is distinguished from "step 2 found nothing".
+ */
+function fakeLoaders(world: Record<'xpcshell' | 'mochitest', string[]>): TestLookupLoaders<null> & {
+    served: string[];
+    listReads: number;
+} {
+    const served: string[] = [];
+    const state = { served, listReads: 0 };
+    return {
+        ...state,
+        async loadBucket(harness, testPath) {
+            served.push(`${harness}:${testPath}`);
+            const paths = world[harness];
+            const testId = paths.indexOf(testPath);
+            if (testId === -1) {
+                return null;
+            }
+            const name = testPath.split('/').pop()!;
+            return {
+                raw: null,
+                decoded: {
+                    findTest: (fullPath: string) =>
+                        fullPath === testPath
+                            ? {
+                                  testId,
+                                  fullPath: testPath,
+                                  directory: testPath.slice(0, -name.length - 1),
+                                  name,
+                                  component: null,
+                              }
+                            : null,
+                } as unknown as DecodedTimingFile,
+            };
+        },
+        async loadAllTestPaths() {
+            state.listReads++;
+            return [...world.xpcshell, ...world.mochitest].sort();
+        },
+    };
+}
+
+/** A mochitest whose name `detectHarness` classifies as xpcshell. */
+const MISCLASSIFIED = 'dom/base/test/test_bug1013412.js';
+/** An unremarkable xpcshell path, for the steps that are about the ladder. */
+const LADDER_PATH = 'dom/indexedDB/test/unit/test_rename_objectStore_errors.js';
+
+test('a path found in the first harness reads no other file', async () => {
+    const loaders = fakeLoaders({ xpcshell: [LADDER_PATH], mochitest: [] });
+    const resolution = await resolveTest(LADDER_PATH, undefined, loaders);
+    assert.equal(resolution.kind, 'found');
+    assert.equal(loaders.served.length, 1, 'no second harness, no test list');
+    assert.equal(loaders.listReads, 0);
+    if (resolution.kind === 'found') {
+        assert.equal(resolution.viaOtherHarness, false);
+        assert.equal(resolution.resolvedFrom, null);
+    }
+});
+
+test('the other harness at the same index covers detectHarness\'s hole', async () => {
+    const loaders = fakeLoaders({ xpcshell: [], mochitest: [MISCLASSIFIED] });
+    const resolution = await resolveTest(MISCLASSIFIED, undefined, loaders);
+    assert.equal(resolution.kind, 'found');
+    if (resolution.kind === 'found') {
+        // The filename says xpcshell; the data says mochitest, and the flag is
+        // what lets a front-end say the badge is not what was asked for.
+        assert.equal(resolution.harness, 'mochitest');
+        assert.equal(resolution.viaOtherHarness, true);
+    }
+    assert.deepEqual(loaders.served, [
+        `xpcshell:${MISCLASSIFIED}`,
+        `mochitest:${MISCLASSIFIED}`,
+    ]);
+    // Found in a bucket, so the multi-megabyte test list was never read.
+    assert.equal(loaders.listReads, 0);
+});
+
+test('an explicit harness stops at that harness', async () => {
+    const loaders = fakeLoaders({ xpcshell: [], mochitest: [MISCLASSIFIED] });
+    const resolution = await resolveTest(MISCLASSIFIED, 'xpcshell', loaders);
+    // A caller who named a harness asked about that harness: answering about
+    // the other one would be the same class of wrong the ladder exists to fix.
+    assert.notEqual(resolution.kind, 'found');
+    assert.ok(!loaders.served.includes(`mochitest:${MISCLASSIFIED}`));
+});
+
+test('a basename with one match resolves, and says what it resolved from', async () => {
+    const loaders = fakeLoaders({ xpcshell: [LADDER_PATH], mochitest: [] });
+    const resolution = await resolveTest('test_rename_objectStore_errors.js', undefined, loaders);
+    assert.equal(resolution.kind, 'found');
+    if (resolution.kind === 'found') {
+        assert.equal(resolution.testPath, LADDER_PATH);
+        assert.equal(resolution.resolvedFrom, 'test_rename_objectStore_errors.js');
+    }
+});
+
+test('several matches are candidates, not a resolution', async () => {
+    const loaders = fakeLoaders({
+        xpcshell: ['dom/a/test_one.js', 'dom/b/test_two.js'],
+        mochitest: [],
+    });
+    const resolution = await resolveTest('dom', undefined, loaders);
+    assert.equal(resolution.kind, 'ambiguous');
+    if (resolution.kind === 'ambiguous') {
+        assert.deepEqual(resolution.candidates, ['dom/a/test_one.js', 'dom/b/test_two.js']);
+        assert.equal(resolution.total, 2);
+        assert.equal(resolution.truncated, false);
+    }
+});
+
+test('the candidate list is capped but the count is not', async () => {
+    const many = Array.from({ length: CANDIDATE_LIMIT + 5 }, (_, i) => `dom/test_${i}.js`);
+    const loaders = fakeLoaders({ xpcshell: many, mochitest: [] });
+    const resolution = await resolveTest('dom/test_', undefined, loaders);
+    assert.equal(resolution.kind, 'ambiguous');
+    if (resolution.kind === 'ambiguous') {
+        assert.equal(resolution.candidates.length, CANDIDATE_LIMIT);
+        // The count is the whole point: a renderer deriving "how many more" from
+        // the capped array gets zero and prints a complete-looking list. The
+        // first version of this shipped with exactly that bug, because this
+        // assertion was on `truncated` alone.
+        assert.equal(resolution.total, CANDIDATE_LIMIT + 5);
+        assert.equal(resolution.truncated, true);
+    }
+});
+
+test('a unique match equal to what was typed does not claim to be a resolution', async () => {
+    // Steps 1–2 miss and step 3's re-lookup hits: the stale-then-fresh shape a
+    // CDN produces for real. `resolvedFrom` must stay null, or a front-end that
+    // redirects on it redirects to the page it is already on.
+    let firstPass = true;
+    const loaders = fakeLoaders({ xpcshell: [LADDER_PATH], mochitest: [] });
+    const inner = loaders.loadBucket.bind(loaders);
+    loaders.loadBucket = async (harness, path) => {
+        if (firstPass) {
+            firstPass = false;
+            return null;
+        }
+        return inner(harness, path);
+    };
+    const resolution = await resolveTest(LADDER_PATH, 'xpcshell', loaders);
+    assert.equal(resolution.kind, 'found');
+    if (resolution.kind === 'found') {
+        assert.equal(resolution.testPath, LADDER_PATH);
+        assert.equal(resolution.resolvedFrom, null);
+    }
+});
+
+test('an unmatched query is unknown, and names what was searched', async () => {
+    const loaders = fakeLoaders({ xpcshell: [LADDER_PATH], mochitest: [] });
+    const resolution = await resolveTest('test_no_such_thing.js', undefined, loaders);
+    assert.equal(resolution.kind, 'unknown');
+    if (resolution.kind === 'unknown') {
+        assert.deepEqual(resolution.searched, ['xpcshell', 'mochitest']);
+        // Non-null: the list was read, so "nothing matches" is a checked claim.
+        assert.notEqual(resolution.allTests, null);
+    }
+});
+
+test('a list that cannot be read is not reported as "nothing matches"', async () => {
+    const loaders = fakeLoaders({ xpcshell: [LADDER_PATH], mochitest: [] });
+    loaders.loadAllTestPaths = async (): Promise<string[]> => {
+        throw new Error('no list');
+    };
+    const resolution = await resolveTest('test_no_such_thing.js', undefined, loaders);
+    assert.equal(resolution.kind, 'unknown');
+    if (resolution.kind === 'unknown') {
+        assert.equal(resolution.allTests, null);
+    }
+});
+
+test('a path in the list but not in its bucket is neither found nor unknown', async () => {
+    const loaders = fakeLoaders({ xpcshell: [], mochitest: [] });
+    loaders.loadAllTestPaths = async (): Promise<string[]> => [LADDER_PATH];
+    const resolution = await resolveTest(LADDER_PATH, undefined, loaders);
+    // The path is real. Calling it unknown would be the false conclusion the
+    // ladder exists to remove, in a rarer case.
+    assert.equal(resolution.kind, 'not-in-file');
+    if (resolution.kind === 'not-in-file') {
+        assert.equal(resolution.testPath, LADDER_PATH);
+    }
+});
+
+test('every space-separated term has to appear, in any order', () => {
+    const paths = [
+        'netwerk/test/unit/test_cookies_async_failure.js',
+        'netwerk/test/unit/test_cookies.js',
+        'dom/tests/test_async.js',
+    ];
+    // The rule `test.html`'s dropdown documents, and the reason a two-word
+    // query is useful at all.
+    assert.deepEqual(matchTestPaths(paths, 'cookies async', 50).matches, [
+        'netwerk/test/unit/test_cookies_async_failure.js',
+    ]);
+    assert.deepEqual(matchTestPaths(paths, 'ASYNC COOKIES', 50).matches, [
+        'netwerk/test/unit/test_cookies_async_failure.js',
+    ]);
+    // An empty query matches nothing rather than everything: `[].every()` is
+    // true for every path, which would offer the whole tree.
+    assert.deepEqual(matchTestPaths(paths, '   ', 50).matches, []);
+});
+
+test('the cap bounds the array without bounding the count', () => {
+    const paths = ['a/test_1.js', 'a/test_2.js', 'a/test_3.js'];
+    const capped = matchTestPaths(paths, 'a/test_', 2);
+    assert.deepEqual(capped.matches, ['a/test_1.js', 'a/test_2.js']);
+    assert.equal(capped.total, 3, 'the scan continues past the cap to count');
+    assert.equal(capped.truncated, true);
+
+    // At exactly the cap, nothing is hidden and `truncated` must not fire — an
+    // off-by-one here prints "and 0 more".
+    const exact = matchTestPaths(paths, 'a/test_', 3);
+    assert.equal(exact.total, 3);
+    assert.equal(exact.matches.length, 3);
+    assert.equal(exact.truncated, false);
+});
+
+test('the path list is the union of both harnesses, sorted and deduplicated', () => {
+    const source = (dirs: string[], names: string[]): TestPathsSource => ({
+        tables: { testPaths: dirs, testNames: names },
+        testInfo: {
+            testPathIds: names.map((_, i) => Math.min(i, dirs.length - 1)),
+            testNameIds: names.map((_, i) => i),
+        },
+    });
+    const paths = collectTestPaths([
+        source(['b/test'], ['test_two.js']),
+        source(['a/test'], ['test_one.js']),
+        // A test both harnesses record — one entry, not two.
+        source(['b/test'], ['test_two.js']),
+        null,
+    ]);
+    assert.deepEqual(paths, ['a/test/test_one.js', 'b/test/test_two.js']);
+});
+
+test('a test at the root of the tree keeps its bare name', () => {
+    // `joinTestPath` gives the bare name for an empty directory, and an
+    // out-of-range path id means the same thing.
+    const paths = collectTestPaths([
+        {
+            tables: { testPaths: [''], testNames: ['test_root.js', 'test_missing_dir.js'] },
+            testInfo: { testPathIds: [0, 99], testNameIds: [0, 1] },
+        },
+    ]);
+    assert.deepEqual(paths, ['test_missing_dir.js', 'test_root.js']);
 });
 
 /** Escapes a string for use inside a RegExp. */

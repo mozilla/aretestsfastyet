@@ -33,62 +33,81 @@ import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import { type IssuesFile, decodeIssues } from '../lib/formats/issues.ts';
 import type { IndexFile } from '../lib/formats/stats.ts';
 import {
+    type LoadedTestFile,
+    type TestLookupLoaders,
+    collectTestPaths,
+} from '../lib/query/test-lookup.ts';
+import {
     type DataFileName,
     DataFileNotFoundError,
     fetchJson,
     timingsIndex,
 } from '../lib/sources/source.ts';
-import type { CommandContext } from './context.ts';
+import { type CommandContext, progress } from './context.ts';
 import { notFoundError, usageError } from './errors.ts';
 import type { GlobalOptions, Harness } from './options.ts';
 
-/** The bucket file holding a test, and the decoded view of it. */
-export interface LoadedBucket {
-    file: BucketFile;
-    decoded: DecodedTimingFile;
-    /** The name it was fetched under, for diagnostics. */
-    name: DataFileName;
-}
-
 /**
- * Loads the 64-bucket file that holds a test path.
+ * The loaders `resolveTest` needs, over a command's source: the fetching half,
+ * which the two front-ends cannot share.
  *
- * A 404 on the bucket file is translated rather than propagated. The raw
- * message — `no such data file: xpcshell-37.json` — names a file the user
- * never asked for and cannot act on: which of the 64 buckets a test lands in
- * is an implementation detail of the generator's hash. What they need to know
- * is that the harness's data could not be read at all, and that the harness
- * may have been guessed wrong.
+ * `missingFiles` exists because a 404 is swallowed to `null` here but is not the
+ * same problem as a typo — an unpublished bucket has to be nameable in the
+ * not-found message rather than reported as a missing test.
  */
-export async function loadBucketForTest(
-    context: CommandContext,
-    harness: Harness,
-    testPath: string,
-    inferredHarness = false
-): Promise<LoadedBucket> {
-    const suffix = bucketFileSuffix(bucketIndexForPath(testPath));
-    const name: DataFileName = {
-        index: timingsIndex(harness),
-        filename: `${harness}-${suffix}.json`,
-    };
-    let file: BucketFile;
-    try {
-        file = await fetchJson<BucketFile>(context.source, name);
-    } catch (error) {
-        if (error instanceof DataFileNotFoundError) {
-            throw notFoundError(
-                `No ${harness} data available for ${testPath}` +
-                    (inferredHarness ? ' (harness inferred from filename)' : '') +
-                    `: ${name.filename} is not published.`,
-                inferredHarness
-                    ? `If this is ${harness === 'xpcshell' ? 'a mochitest' : 'an xpcshell test'}, ` +
-                      `retry with --harness ${harness === 'xpcshell' ? 'mochitest' : 'xpcshell'}.`
-                    : 'Run `fx-tests dates` to check whether the data was published.'
+export function testLookupLoaders(context: CommandContext): TestLookupLoaders<BucketFile> & {
+    readonly missingFiles: string[];
+} {
+    const missingFiles: string[] = [];
+    return {
+        missingFiles,
+        async loadBucket(harness: Harness, testPath: string): Promise<LoadedTestFile<BucketFile> | null> {
+            const suffix = bucketFileSuffix(bucketIndexForPath(testPath));
+            const name: DataFileName = {
+                index: timingsIndex(harness),
+                filename: `${harness}-${suffix}.json`,
+            };
+            try {
+                const raw = await fetchJson<BucketFile>(context.source, name);
+                return { raw, decoded: decodeBucket(raw) };
+            } catch (error) {
+                if (error instanceof DataFileNotFoundError) {
+                    missingFiles.push(name.filename);
+                    return null;
+                }
+                throw error;
+            }
+        },
+        async loadAllTestPaths(): Promise<string[]> {
+            const files = await Promise.all(
+                (['xpcshell', 'mochitest'] as Harness[]).map(async (harness) => {
+                    try {
+                        return await fetchJson<IssuesFile>(context.source, {
+                            index: timingsIndex(harness),
+                            filename: `${harness}-issues.json`,
+                        });
+                    } catch (error) {
+                        if (error instanceof DataFileNotFoundError) {
+                            return null;
+                        }
+                        throw error;
+                    }
+                })
             );
-        }
-        throw error;
-    }
-    return { file, decoded: decodeBucket(file), name };
+            if (files.every((file) => file === null)) {
+                // `collectTestPaths` would return `[]`, which the ladder reads
+                // as "no test matches" — a claim nothing checked.
+                throw new DataFileNotFoundError({
+                    index: timingsIndex('xpcshell'),
+                    filename: 'xpcshell-issues.json',
+                });
+            }
+            return collectTestPaths(files);
+        },
+        onStep: (message) => {
+            progress(context, message);
+        },
+    };
 }
 
 /** The 21-day aggregate, and the decoded view of it. */

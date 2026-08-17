@@ -170,6 +170,9 @@ function detectHarness(testPath) {
   }
   return "xpcshell";
 }
+function otherHarness(harness) {
+  return harness === "xpcshell" ? "mochitest" : "xpcshell";
+}
 
 // cli/options.ts
 var GLOBAL_OPTION_SPECS = {
@@ -266,17 +269,6 @@ function resolveHarness(testPath, explicit) {
     return { harness: explicit, inferred: false };
   }
   return { harness: detectHarness(testPath), inferred: true };
-}
-function harnessMissHint(harness, inferred) {
-  if (!inferred) {
-    return void 0;
-  }
-  const other = harness === "xpcshell" ? "mochitest" : "xpcshell";
-  const article = other === "xpcshell" ? "an" : "a";
-  return `If this is ${article} ${other} test, retry with --harness ${other}.`;
-}
-function harnessMissMessage(testPath, harness, inferred) {
-  return `No such test in ${harness} data` + (inferred ? " (harness inferred from filename)" : "") + `: ${testPath}`;
 }
 
 // cli/cache.ts
@@ -2502,26 +2494,167 @@ function decodeIssues(file) {
   });
 }
 
-// cli/data.ts
-async function loadBucketForTest(context, harness, testPath, inferredHarness = false) {
-  const suffix = bucketFileSuffix(bucketIndexForPath(testPath));
-  const name = {
-    index: timingsIndex(harness),
-    filename: `${harness}-${suffix}.json`
-  };
-  let file;
-  try {
-    file = await fetchJson(context.source, name);
-  } catch (error) {
-    if (error instanceof DataFileNotFoundError) {
-      throw notFoundError(
-        `No ${harness} data available for ${testPath}` + (inferredHarness ? " (harness inferred from filename)" : "") + `: ${name.filename} is not published.`,
-        inferredHarness ? `If this is ${harness === "xpcshell" ? "a mochitest" : "an xpcshell test"}, retry with --harness ${harness === "xpcshell" ? "mochitest" : "xpcshell"}.` : "Run `fx-tests dates` to check whether the data was published."
-      );
-    }
-    throw error;
+// lib/query/test-lookup.ts
+function searchTerms(query) {
+  return query.toLowerCase().split(/\s+/).filter((term) => term !== "");
+}
+function matchesTerms(path, terms) {
+  const lower = path.toLowerCase();
+  return terms.every((term) => lower.includes(term));
+}
+function matchTestPaths(allTests, query, limit) {
+  const terms = searchTerms(query);
+  if (terms.length === 0) {
+    return { matches: [], total: 0, truncated: false };
   }
-  return { file, decoded: decodeBucket(file), name };
+  const matches = [];
+  let total = 0;
+  for (const path of allTests) {
+    if (!matchesTerms(path, terms)) {
+      continue;
+    }
+    total++;
+    if (matches.length < limit) {
+      matches.push(path);
+    }
+  }
+  return { matches, total, truncated: total > matches.length };
+}
+var CANDIDATE_LIMIT = 50;
+function collectTestPaths(files) {
+  const paths = /* @__PURE__ */ new Set();
+  for (const file of files) {
+    if (file === null) {
+      continue;
+    }
+    const { testPaths, testNames } = file.tables;
+    const { testPathIds, testNameIds } = file.testInfo;
+    for (let i = 0; i < testPathIds.length; i++) {
+      const name = testNames[testNameIds[i]];
+      if (name === void 0) {
+        continue;
+      }
+      paths.add(joinTestPath(testPaths[testPathIds[i]] ?? "", name));
+    }
+  }
+  return [...paths].sort();
+}
+async function findInEitherHarness(testPath, explicitHarness, loaders) {
+  const first = explicitHarness ?? detectHarness(testPath);
+  const attempts = explicitHarness === void 0 ? [first, otherHarness(first)] : [first];
+  for (const harness of attempts) {
+    if (harness !== first) {
+      loaders.onStep?.(`Not found in ${first}, trying ${harness}\u2026`);
+    }
+    const file = await loaders.loadBucket(harness, testPath);
+    const identity = file === null ? null : file.decoded.findTest(testPath);
+    if (file !== null && identity !== null) {
+      return { file, identity, harness, viaOtherHarness: harness !== first };
+    }
+  }
+  return null;
+}
+async function resolveTest(query, explicitHarness, loaders) {
+  const inferredHarness = explicitHarness === void 0;
+  const first = explicitHarness ?? detectHarness(query);
+  const searched = inferredHarness ? [first, otherHarness(first)] : [first];
+  const direct = await findInEitherHarness(query, explicitHarness, loaders);
+  if (direct !== null) {
+    return {
+      kind: "found",
+      testPath: query,
+      harness: direct.harness,
+      inferredHarness,
+      viaOtherHarness: direct.viaOtherHarness,
+      resolvedFrom: null,
+      file: direct.file,
+      identity: direct.identity
+    };
+  }
+  loaders.onStep?.("Test not found, looking for a unique match\u2026");
+  let allTests;
+  try {
+    allTests = await loaders.loadAllTestPaths();
+  } catch {
+    return { kind: "unknown", query, searched, allTests: null };
+  }
+  const { matches, total, truncated } = matchTestPaths(allTests, query, CANDIDATE_LIMIT);
+  if (matches.length === 0) {
+    return { kind: "unknown", query, searched, allTests };
+  }
+  if (total === 1) {
+    const match = matches[0];
+    const resolved = await findInEitherHarness(match, explicitHarness, loaders);
+    if (resolved !== null) {
+      return {
+        kind: "found",
+        testPath: match,
+        harness: resolved.harness,
+        inferredHarness,
+        viaOtherHarness: resolved.viaOtherHarness,
+        // Null when the match is what was typed, which steps 1-2 can
+        // still miss on a stale bucket the re-lookup then finds. Without
+        // this, the page redirects to the URL it is already on.
+        resolvedFrom: match === query ? null : query,
+        file: resolved.file,
+        identity: resolved.identity
+      };
+    }
+    return { kind: "not-in-file", query, testPath: match, searched, allTests };
+  }
+  return { kind: "ambiguous", query, candidates: matches, total, truncated, allTests };
+}
+
+// cli/data.ts
+function testLookupLoaders(context) {
+  const missingFiles = [];
+  return {
+    missingFiles,
+    async loadBucket(harness, testPath) {
+      const suffix = bucketFileSuffix(bucketIndexForPath(testPath));
+      const name = {
+        index: timingsIndex(harness),
+        filename: `${harness}-${suffix}.json`
+      };
+      try {
+        const raw = await fetchJson(context.source, name);
+        return { raw, decoded: decodeBucket(raw) };
+      } catch (error) {
+        if (error instanceof DataFileNotFoundError) {
+          missingFiles.push(name.filename);
+          return null;
+        }
+        throw error;
+      }
+    },
+    async loadAllTestPaths() {
+      const files = await Promise.all(
+        ["xpcshell", "mochitest"].map(async (harness) => {
+          try {
+            return await fetchJson(context.source, {
+              index: timingsIndex(harness),
+              filename: `${harness}-issues.json`
+            });
+          } catch (error) {
+            if (error instanceof DataFileNotFoundError) {
+              return null;
+            }
+            throw error;
+          }
+        })
+      );
+      if (files.every((file) => file === null)) {
+        throw new DataFileNotFoundError({
+          index: timingsIndex("xpcshell"),
+          filename: "xpcshell-issues.json"
+        });
+      }
+      return collectTestPaths(files);
+    },
+    onStep: (message) => {
+      progress(context, message);
+    }
+  };
 }
 async function loadIssues(context, harness) {
   const name = {
@@ -7260,6 +7393,70 @@ var TEST_OPTIONS = {
   history: { type: "boolean", describe: "A per-day sparkline of pass/fail counts." }
 };
 var DEFAULT_LIMIT5 = 10;
+async function lookUpTest(context, testPath) {
+  if (context.loadTimingFile !== void 0) {
+    const { harness } = resolveHarness(testPath, context.globals.harness);
+    const loaded = await context.loadTimingFile(harness, testPath);
+    const identity = loaded.decoded.findTest(testPath);
+    if (identity === null) {
+      throw notFoundError(
+        `the injected ${harness} file does not hold ${testPath}`,
+        "This is the test-only loadTimingFile seam; production walks the resolution ladder."
+      );
+    }
+    return { harness, decoded: loaded.decoded, file: loaded.raw, identity };
+  }
+  const loaders = testLookupLoaders(context);
+  progress(context, `Looking up ${testPath}\u2026`);
+  const resolution = await resolveTest(testPath, context.globals.harness, loaders);
+  if (resolution.kind === "found") {
+    if (resolution.resolvedFrom !== null) {
+      context.streams.err(
+        `Resolved "${resolution.resolvedFrom}" to the one test matching it: ${resolution.testPath}
+`
+      );
+    }
+    if (resolution.viaOtherHarness) {
+      context.streams.err(
+        `Found in ${resolution.harness} data, not the ${otherHarness(resolution.harness)} the filename suggests.
+`
+      );
+    }
+    return {
+      harness: resolution.harness,
+      decoded: resolution.file.decoded,
+      file: resolution.file.raw,
+      identity: resolution.identity
+    };
+  }
+  if (resolution.kind === "not-in-file") {
+    throw notFoundError(
+      `${resolution.testPath} is a test in the tree-wide data, but it is not in the ${resolution.searched.join(" or ")} file that should describe it` + (loaders.missingFiles.length === 0 ? "." : ` (${loaders.missingFiles.join(", ")} not published).`),
+      context.globals.harness === void 0 ? "The two families are published separately, so this is usually a window they disagree on. Retry later." : `Drop --harness ${context.globals.harness}: the test may not run under it.`
+    );
+  }
+  if (resolution.kind === "ambiguous") {
+    const shown = applyLimit(resolution.candidates, context.globals.limit ?? DEFAULT_LIMIT5);
+    const hidden = resolution.total - shown.length;
+    throw notFoundError(
+      `"${resolution.query}" is not a test path, and ${resolution.total} tests match it. Nothing was measured; pick one:
+` + shown.map((candidate) => `  ${candidate}`).join("\n") + (hidden === 0 ? "" : `
+  \u2026 and ${hidden} more not shown` + (resolution.truncated ? ` (${CANDIDATE_LIMIT} candidates is the most this message collects; narrow the fragment to see the rest)` : " (--limit 0 for all)")),
+      "Add more of the path to narrow it \u2014 every space-separated word has to appear somewhere in it."
+    );
+  }
+  const searched = resolution.searched.join(" and ");
+  if (resolution.allTests === null) {
+    throw notFoundError(
+      `Not in the ${searched} bucket files for this path` + (loaders.missingFiles.length === 0 ? "" : ` (${loaders.missingFiles.join(", ")} not published)`) + `, and the test list could not be read, so no search was made: ${resolution.query}`,
+      "This says nothing about the test \u2014 retry to search the full test list, or pass the path exactly as it appears in the tree."
+    );
+  }
+  throw notFoundError(
+    `No test path in the ${searched} 21-day data contains "${resolution.query}", so this reports nothing about the test itself.`,
+    "It may have been renamed, added after the window started, or never run in CI. Check the spelling, or pass a longer fragment of the path."
+  );
+}
 async function runTest(context, args) {
   const testPath = args.positionals[0];
   if (testPath === void 0) {
@@ -7273,18 +7470,7 @@ async function runTest(context, args) {
       `test takes one path, got ${args.positionals.length}: ${args.positionals.join(", ")}`
     );
   }
-  const { harness, inferred } = resolveHarness(testPath, context.globals.harness);
-  progress(context, `Reading ${harness} bucket for ${testPath}\u2026`);
-  const loaded = context.loadTimingFile === void 0 ? await loadBucketForTest(context, harness, testPath, inferred) : await context.loadTimingFile(harness, testPath);
-  const decoded = loaded.decoded;
-  const file = "file" in loaded ? loaded.file : loaded.raw;
-  const identity = decoded.findTest(testPath);
-  if (identity === null) {
-    throw notFoundError(
-      harnessMissMessage(testPath, harness, inferred),
-      harnessMissHint(harness, inferred)
-    );
-  }
+  const { harness, decoded, file, identity } = await lookUpTest(context, testPath);
   const window = resolveDayWindow(context.globals, decoded);
   const jobFilter = configFilter(context.globals.config, context.globals.excludeConfig);
   const hasConfigFilter = context.globals.config.length > 0 || context.globals.excludeConfig.length > 0;

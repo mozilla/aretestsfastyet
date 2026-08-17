@@ -28,7 +28,9 @@
 
 import { chunkOfTask } from '../../lib/formats/buckets.ts';
 import type { DecodedTimingFile, RunEntry } from '../../lib/formats/decode.ts';
-import { parseTaskId } from '../../lib/formats/tables.ts';
+import { type TestIdentity, parseTaskId } from '../../lib/formats/tables.ts';
+import { otherHarness } from '../../lib/model/harness.ts';
+import { CANDIDATE_LIMIT, resolveTest } from '../../lib/query/test-lookup.ts';
 import {
     type ModeBreakdown,
     addToModeBreakdown,
@@ -76,8 +78,13 @@ import {
     table,
     truncate,
 } from '../format/text.ts';
-import { harnessMissHint, harnessMissMessage, resolveHarness } from '../options.ts';
-import { type DayWindow, dateOfDayIndex, loadBucketForTest, resolveDayWindow } from '../data.ts';
+import { resolveHarness } from '../options.ts';
+import {
+    type DayWindow,
+    dateOfDayIndex,
+    resolveDayWindow,
+    testLookupLoaders,
+} from '../data.ts';
 
 /** Options `test` adds to the globals. */
 export const TEST_OPTIONS: OptionSpecs = {
@@ -271,6 +278,116 @@ interface ProfileJson {
     testProfile?: string;
 }
 
+interface LookedUpTest {
+    harness: string;
+    decoded: DecodedTimingFile;
+    file: { metadata: { generatedAt: string }; taskInfo?: { chunks?: (number | null)[] } };
+    identity: TestIdentity;
+}
+
+/**
+ * Turns what was typed into a test, walking `resolveTest`'s shared ladder.
+ *
+ * Every message below is scoped to the lookup, not to the test: a sentence about
+ * which file was read is read as a verdict on the test's health.
+ */
+async function lookUpTest(context: CommandContext, testPath: string): Promise<LookedUpTest> {
+    if (context.loadTimingFile !== undefined) {
+        // The test-only seam (`LoadedTimingFile` in `cli/context.ts`) hands
+        // back one injected file, so there is no ladder to walk here.
+        const { harness } = resolveHarness(testPath, context.globals.harness);
+        const loaded = await context.loadTimingFile(harness, testPath);
+        const identity = loaded.decoded.findTest(testPath);
+        if (identity === null) {
+            throw notFoundError(
+                `the injected ${harness} file does not hold ${testPath}`,
+                'This is the test-only loadTimingFile seam; production walks the resolution ladder.'
+            );
+        }
+        return { harness, decoded: loaded.decoded, file: loaded.raw, identity };
+    }
+
+    const loaders = testLookupLoaders(context);
+    progress(context, `Looking up ${testPath}…`);
+    const resolution = await resolveTest(testPath, context.globals.harness, loaders);
+
+    if (resolution.kind === 'found') {
+        if (resolution.resolvedFrom !== null) {
+            // Bypasses `progress()`: this says the answer is about a different
+            // string from the one asked for, so it must survive `--quiet`.
+            context.streams.err(
+                `Resolved "${resolution.resolvedFrom}" to the one test matching it: ` +
+                    `${resolution.testPath}\n`
+            );
+        }
+        if (resolution.viaOtherHarness) {
+            context.streams.err(
+                `Found in ${resolution.harness} data, not the ${otherHarness(resolution.harness)} ` +
+                    'the filename suggests.\n'
+            );
+        }
+        return {
+            harness: resolution.harness,
+            decoded: resolution.file.decoded,
+            file: resolution.file.raw,
+            identity: resolution.identity,
+        };
+    }
+
+    if (resolution.kind === 'not-in-file') {
+        throw notFoundError(
+            `${resolution.testPath} is a test in the tree-wide data, but it is not in ` +
+                `the ${resolution.searched.join(' or ')} file that should describe it` +
+                (loaders.missingFiles.length === 0
+                    ? '.'
+                    : ` (${loaders.missingFiles.join(', ')} not published).`),
+            context.globals.harness === undefined
+                ? 'The two families are published separately, so this is usually a window they disagree on. Retry later.'
+                : `Drop --harness ${context.globals.harness}: the test may not run under it.`
+        );
+    }
+
+    if (resolution.kind === 'ambiguous') {
+        const shown = applyLimit(resolution.candidates, context.globals.limit ?? DEFAULT_LIMIT);
+        // Two shortfalls to account for: `--limit` cut what is shown, and
+        // `CANDIDATE_LIMIT` cut what the ladder collected. `--limit 0` lifts
+        // only the first, so it is offered only when it would deliver.
+        const hidden = resolution.total - shown.length;
+        throw notFoundError(
+            `"${resolution.query}" is not a test path, and ${resolution.total} tests ` +
+                `match it. Nothing was measured; pick one:\n` +
+                shown.map((candidate) => `  ${candidate}`).join('\n') +
+                (hidden === 0
+                    ? ''
+                    : `\n  … and ${hidden} more not shown` +
+                      (resolution.truncated
+                          ? ` (${CANDIDATE_LIMIT} candidates is the most this message collects;` +
+                            ' narrow the fragment to see the rest)'
+                          : ' (--limit 0 for all)')),
+            'Add more of the path to narrow it — every space-separated word has to appear somewhere in it.'
+        );
+    }
+
+    const searched = resolution.searched.join(' and ');
+    if (resolution.allTests === null) {
+        throw notFoundError(
+            `Not in the ${searched} bucket files for this path` +
+                (loaders.missingFiles.length === 0
+                    ? ''
+                    : ` (${loaders.missingFiles.join(', ')} not published)`) +
+                `, and the test list could not be read, so no search was made: ${resolution.query}`,
+            'This says nothing about the test — retry to search the full test list, ' +
+                'or pass the path exactly as it appears in the tree.'
+        );
+    }
+    throw notFoundError(
+        `No test path in the ${searched} 21-day data contains "${resolution.query}", ` +
+            `so this reports nothing about the test itself.`,
+        'It may have been renamed, added after the window started, or never run in CI. ' +
+            'Check the spelling, or pass a longer fragment of the path.'
+    );
+}
+
 /** Runs the command. */
 export async function runTest(context: CommandContext, args: ParsedArgs): Promise<void> {
     const testPath = args.positionals[0];
@@ -286,29 +403,7 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
         );
     }
 
-    const { harness, inferred } = resolveHarness(testPath, context.globals.harness);
-    progress(context, `Reading ${harness} bucket for ${testPath}…`);
-    // `context.loadTimingFile` is a test-only seam; production always takes
-    // the bucket path. See `LoadedTimingFile` in `cli/context.ts` for why it
-    // exists — the branches for a file that cannot attribute configs are
-    // unreachable through the bucket loader, and they go live in step 5.
-    const loaded =
-        context.loadTimingFile === undefined
-            ? await loadBucketForTest(context, harness, testPath, inferred)
-            : await context.loadTimingFile(harness, testPath);
-    const decoded = loaded.decoded;
-    const file = 'file' in loaded ? loaded.file : loaded.raw;
-
-    const identity = decoded.findTest(testPath);
-    if (identity === null) {
-        // The message names the harness and says it was inferred, because the
-        // symptom of a misclassified `test_foo.js` is identical to a typo.
-        // `CLI.md` specifies this wording for exactly that reason.
-        throw notFoundError(
-            harnessMissMessage(testPath, harness, inferred),
-            harnessMissHint(harness, inferred)
-        );
-    }
+    const { harness, decoded, file, identity } = await lookUpTest(context, testPath);
 
     const window = resolveDayWindow(context.globals, decoded);
     const jobFilter = configFilter(context.globals.config, context.globals.excludeConfig);
