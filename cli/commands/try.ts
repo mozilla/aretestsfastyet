@@ -357,6 +357,20 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         throw new Error('try needs a URL fetcher but none was supplied');
     }
 
+    // Refused, not ignored: these sections are cross-configuration verdicts — a
+    // perma-fail is "failed in every run of at least one configuration here" — so
+    // filtering the job set redefines each heading rather than shortening it.
+    if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
+        throw usageError(
+            '--config cannot be applied to try: this command classifies a test across the ' +
+                'configurations a push ran, so filtering the job set would change what each ' +
+                'section means rather than narrow it',
+            'The per-row config names and central comparison are already per configuration. ' +
+                'For one test on one configuration over central, use ' +
+                '`fx-tests test <path> --config <substring>`.'
+        );
+    }
+
     const project = stringOption(args, 'project') ?? 'try';
 
     progress(context, `Looking up ${revision} on ${project}…`);

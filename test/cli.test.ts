@@ -598,6 +598,26 @@ test('the text output distinguishes "cannot attribute" from "no config failed"',
     assert.doesNotMatch(stdout, /^Runs on /m);
 });
 
+test('test refuses --config on a file that cannot attribute configs', async () => {
+    // Same seam and same reason as the three tests above: production `test`
+    // always reads a bucket file. The difference from `--coverage`, which
+    // prints a refusal inside its section, is that `--config` shapes *every*
+    // number in the report, so it has to fail before any of them are printed —
+    // a page of zeros under a filter reads as "clean on that configuration".
+    const path = await failingTestInIssues();
+    const { code, stderr } = await invoke(['test', path, '--config', 'linux'], {
+        loadTimingFile: await issuesLoader(),
+    });
+    assert.equal(code, ExitCode.Usage);
+    assert.match(stderr, /--config cannot be applied to this xpcshell file/);
+    assert.match(stderr, /records no job names/);
+
+    const excluded = await invoke(['test', path, '--exclude-config', 'debug'], {
+        loadTimingFile: await issuesLoader(),
+    });
+    assert.equal(excluded.code, ExitCode.Usage);
+});
+
 test('--coverage refuses on a file without attributed passes', async () => {
     const path = await failingTestInIssues();
     const { stdout } = await invoke(['test', path, '--coverage'], {
@@ -966,6 +986,194 @@ test('--exclude-config is applied after --config', async () => {
     // The only failing config is windows *and* shippable, so excluding
     // shippable must leave nothing.
     assert.equal(configs.length, 0);
+});
+
+/**
+ * The test whose failing entries hold tasks from two configurations each.
+ *
+ * `test/query.test.ts` covers the arithmetic; this covers the report. One of its
+ * configs is reachable only as the *second* task in its entry, which is the case
+ * an entry-level filter drops — and dropping it is what printed `0 fail` in the
+ * header beside a non-zero per-config table.
+ */
+const MULTI_CONFIG_TEST =
+    'toolkit/components/extensions/test/xpcshell/test_ext_contentscript_scriptCreated.js';
+const LATE_TASK_CONFIG =
+    'test-android-em-14-x86_64-shippable-lite/opt-geckoview-xpcshell-nofis';
+
+test('--config makes the header totals and the per-config table agree', async () => {
+    const { stdout } = await invoke([
+        'test',
+        MULTI_CONFIG_TEST,
+        '--config',
+        LATE_TASK_CONFIG,
+        '--json',
+    ]);
+    const result = json(stdout);
+    const totals = result['totals'] as Record<string, number>;
+    const configs = result['configs'] as { jobName: string; failCount: number }[];
+
+    assert.equal(configs.length, 1);
+    assert.equal(configs[0]!.jobName, LATE_TASK_CONFIG);
+    // The invariant the item is about: one report, one filtered population.
+    assert.equal(
+        totals['failCount']! + totals['timeoutCount']! + totals['crashCount']!,
+        configs.reduce((sum, row) => sum + row.failCount, 0),
+        'header totals must come from the same filtered population as the table'
+    );
+    assert.equal(totals['failCount'], 1, 'the failure at task index 1 must be counted');
+
+    // The section that used to disappear — it is the one a `--config` caller is
+    // filtering for, and it must cover every failure the header counted.
+    const messages = result['messages'] as { count: number }[];
+    assert.equal(
+        messages.reduce((sum, row) => sum + row.count, 0),
+        totals['failCount']
+    );
+});
+
+test('--config narrows --task-ids and --profiles to the matching configs', async () => {
+    const { stdout } = await invoke([
+        'test',
+        MULTI_CONFIG_TEST,
+        '--config',
+        LATE_TASK_CONFIG,
+        '--task-ids',
+        '--profiles',
+        '--json',
+    ]);
+    const result = json(stdout);
+    const taskIds = result['taskIds'] as { jobName: string | null }[];
+    const profiles = result['profiles'] as { jobName: string | null }[];
+
+    // Both used to be built from whole entries kept on their first task, so
+    // they listed every other config's tasks alongside the requested one.
+    assert.ok(taskIds.length > 0, '--task-ids must not be empty under a filter that matches');
+    for (const row of taskIds) {
+        assert.equal(row.jobName, LATE_TASK_CONFIG, '--task-ids leaked another config');
+    }
+    assert.ok(profiles.length > 0);
+    for (const row of profiles) {
+        assert.equal(row.jobName, LATE_TASK_CONFIG, '--profiles leaked another config');
+    }
+});
+
+test('the text report names the --config filter its numbers were measured under', async () => {
+    const { stdout } = await invoke(['test', MULTI_CONFIG_TEST, '--config', LATE_TASK_CONFIG]);
+    // Without this line a filtered report is indistinguishable from an
+    // unfiltered one with different numbers.
+    assert.match(stdout, /^Filtered: every count below covers only configurations matching /m);
+    assert.match(stdout, new RegExp(LATE_TASK_CONFIG.replace(/[/.]/g, '\\$&')));
+
+    const unfiltered = await invoke(['test', MULTI_CONFIG_TEST]);
+    assert.doesNotMatch(unfiltered.stdout, /^Filtered:/m);
+    assert.equal(json((await invoke(['test', MULTI_CONFIG_TEST, '--json'])).stdout)['configFilter'], null);
+});
+
+/** A config `MULTI_CONFIG_TEST` ran 937 times on and never failed on. */
+const CLEAN_CONFIG = 'test-linux2404-64/opt-xpcshell';
+
+test('--config keeps the Failure messages section in text AND in markdown', async () => {
+    // A filter matching a config the test never failed on. The header says 0
+    // fail, so the section has nothing to list — but it must still appear and
+    // say so, because its absence is what made a filtered report read as an
+    // unfiltered clean one.
+    //
+    // Asserted against **both** renderers. The first version of this test
+    // checked text only, and `renderMarkdown` had no such branch: the section
+    // vanished in the one format `CLI.md` documents for pasting into a bug,
+    // where a reader has nothing to cross-check it against.
+    const text = await invoke(['test', MULTI_CONFIG_TEST, '--config', CLEAN_CONFIG]);
+    assert.match(text.stdout, /^Failure messages$/m);
+    assert.match(text.stdout, /no failures on the configurations this filter matched/);
+
+    const markdown = await invoke([
+        'test',
+        MULTI_CONFIG_TEST,
+        '--config',
+        CLEAN_CONFIG,
+        '--markdown',
+    ]);
+    assert.match(markdown.stdout, /^#+ Failure messages$/m, 'markdown dropped the section');
+    assert.match(markdown.stdout, /no failures on the configurations this filter matched/);
+
+    // Same wording in both, so the two renderers cannot drift into describing
+    // the same state differently.
+    const sentence = /\(no failures on the configurations this filter matched\)/;
+    assert.match(text.stdout, sentence);
+    assert.match(markdown.stdout, sentence);
+});
+
+test('every section a filter empties reconciles with the totals above it', async () => {
+    // Why `Skips` and `Crash signatures` need no such branch, asserted rather
+    // than argued: their lists and the header totals are built from the same
+    // narrowed population, so a list is empty exactly when its total is zero —
+    // and an unfiltered report omits those headings then too, so nothing
+    // disappeared *because of* the filter. If that ever stops holding, this
+    // fails and the missing-section branch is owed to them as well.
+    for (const config of [CLEAN_CONFIG, LATE_TASK_CONFIG]) {
+        const { stdout } = await invoke([
+            'test',
+            MULTI_CONFIG_TEST,
+            '--config',
+            config,
+            '--json',
+        ]);
+        const result = json(stdout);
+        const totals = result['totals'] as Record<string, number>;
+        const messages = result['messages'] as { count: number }[];
+        const skips = result['skips'] as { count: number }[];
+        const crashSignatures = result['crashSignatures'] as { count: number }[];
+
+        const sum = (rows: { count: number }[]): number =>
+            rows.reduce((total, row) => total + row.count, 0);
+        assert.equal(sum(messages), totals['failCount'], `${config}: messages vs failCount`);
+        assert.equal(sum(skips), totals['skipCount'], `${config}: skips vs skipCount`);
+        assert.equal(
+            sum(crashSignatures),
+            totals['crashCount'],
+            `${config}: crashSignatures vs crashCount`
+        );
+        // The implication that lets the two sections stay gated on length alone.
+        assert.equal(skips.length === 0, totals['skipCount'] === 0, `${config}: skips`);
+        assert.equal(
+            crashSignatures.length === 0,
+            totals['crashCount'] === 0,
+            `${config}: crashSignatures`
+        );
+    }
+});
+
+test('the markdown report names the --config filter, for pasting into a bug', async () => {
+    const { stdout } = await invoke([
+        'test',
+        MULTI_CONFIG_TEST,
+        '--config',
+        LATE_TASK_CONFIG,
+        '--markdown',
+    ]);
+    assert.match(stdout, /Filtered: every count below covers only configurations matching /);
+
+    const unfiltered = await invoke(['test', MULTI_CONFIG_TEST, '--markdown']);
+    assert.doesNotMatch(unfiltered.stdout, /Filtered:/);
+});
+
+test('try, errors and summary refuse --config rather than ignoring it', async () => {
+    // All three advertise the global flag and none can honour it: `try`
+    // classifies across configurations, and the errors and stats files record no
+    // job names. Accepting it returned the unfiltered answer.
+    for (const argv of [
+        ['try', 'abc123'],
+        ['errors'],
+        ['summary'],
+    ]) {
+        const { code, stderr } = await invoke([...argv, '--config', 'linux']);
+        assert.equal(code, ExitCode.Usage, `${argv[0]} should refuse --config`);
+        assert.match(stderr, /--config cannot be applied to/, argv[0]);
+
+        const excluded = await invoke([...argv, '--exclude-config', 'debug']);
+        assert.equal(excluded.code, ExitCode.Usage, `${argv[0]} should refuse --exclude-config`);
+    }
 });
 
 // --- --executions ---------------------------------------------------------

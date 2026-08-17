@@ -146,13 +146,16 @@ export function computeTestStats(
         if (!inDayRange(entry.day, options.dayRange)) {
             continue;
         }
+        // Per task, not per entry — see `configTargetsOfEntry()`.
+        let count = entry.count;
         if (options.jobFilter !== undefined) {
-            const jobName = jobNameOfEntry(file, entry);
-            if (jobName === null || !options.jobFilter(jobName)) {
+            const kept = filterEntryByConfig(file, entry, options.jobFilter);
+            if (kept === null || kept.count === 0) {
                 continue;
             }
+            count = kept.count;
         }
-        addEntry(stats, classifyStatus(entry.status).kind, entry);
+        addEntry(stats, classifyStatus(entry.status).kind, entry, count);
     }
 
     stats.runCount =
@@ -168,26 +171,31 @@ export function computeTestStats(
     return stats;
 }
 
-/** Adds one entry into the totals, by kind. */
-function addEntry(stats: TestStats, kind: StatusKind, entry: RunEntry): void {
+/** Adds one entry's `count` runs into the totals, by kind. */
+function addEntry(
+    stats: TestStats,
+    kind: StatusKind,
+    entry: RunEntry,
+    count: number
+): void {
     switch (kind) {
         case 'pass':
-            stats.passCount += entry.count;
+            stats.passCount += count;
             return;
         case 'fail':
-            stats.failCount += entry.count;
+            stats.failCount += count;
             return;
         case 'timeout':
-            stats.timeoutCount += entry.count;
+            stats.timeoutCount += count;
             return;
         case 'crash':
-            stats.crashCount += entry.count;
+            stats.crashCount += count;
             return;
         case 'expected-fail':
-            stats.expectedFailCount += entry.count;
+            stats.expectedFailCount += count;
             return;
         case 'unknown':
-            stats.unknownCount += entry.count;
+            stats.unknownCount += count;
             return;
         case 'skip':
             // The one kind whose count depends on the message. `run-if` means
@@ -195,9 +203,9 @@ function addEntry(stats: TestStats, kind: StatusKind, entry: RunEntry): void {
             // is the annotation working; the aggregates have already dropped
             // these, so this branch only ever fires on a daily file.
             if (skipReason(entry.message) === 'run-if') {
-                stats.runIfSkipCount += entry.count;
+                stats.runIfSkipCount += count;
             } else {
-                stats.skipCount += entry.count;
+                stats.skipCount += count;
             }
             return;
     }
@@ -207,11 +215,9 @@ function addEntry(stats: TestStats, kind: StatusKind, entry: RunEntry): void {
  * The job name behind an entry, whichever way the shape records it.
  *
  * Two shapes carry `jobName` directly; the failing shapes carry task-ID indices
- * and need `taskInfo`. An entry whose task IDs resolve to more than one job is
- * possible in principle and does not occur in practice — a (day, message)
- * bucket's tasks are usually one job's retries — so the first is taken and the
- * ambiguity is left to `config-stats.ts`, which attributes per task rather than
- * per entry precisely because it cannot assume otherwise.
+ * and need `taskInfo`. **This is the first task's job, not the entry's**, and a
+ * FAIL/TIMEOUT/CRASH bucket routinely spans configurations — anything that has to
+ * be right per configuration needs `configTargetsOfEntry()` instead.
  */
 export function jobNameOfEntry(file: DecodedTimingFile, entry: RunEntry): string | null {
     if (entry.jobName !== undefined) {
@@ -219,6 +225,131 @@ export function jobNameOfEntry(file: DecodedTimingFile, entry: RunEntry): string
     }
     const first = entry.taskIdIndexes?.[0];
     return first === undefined ? null : file.jobNameOfTaskIndex(first);
+}
+
+/** One configuration an entry's runs belong to, and how many of them. */
+export interface ConfigTarget {
+    jobName: string;
+    count: number;
+    /** Positions in the entry's parallel arrays; empty on the `jobName` shapes. */
+    indexes: number[];
+}
+
+/** The configurations one entry's runs belong to, with a run count each. */
+export function configTargetsOfEntry(
+    file: DecodedTimingFile,
+    entry: RunEntry
+): ConfigTarget[] {
+    if (entry.jobName !== undefined) {
+        return [{ jobName: entry.jobName, count: entry.count, indexes: [] }];
+    }
+    if (entry.taskIdIndexes === undefined) {
+        // `{harness}-issues.json`'s `counts` shape: no attribution to resolve.
+        return [];
+    }
+    const byJob = new Map<string, ConfigTarget>();
+    entry.taskIdIndexes.forEach((taskIdIndex, i) => {
+        const jobName = file.jobNameOfTaskIndex(taskIdIndex);
+        if (jobName === null) {
+            // An unnameable task's run leaves the totals, even under a filter
+            // that accepts everything. No published file hits this.
+            return;
+        }
+        let target = byJob.get(jobName);
+        if (target === undefined) {
+            target = { jobName, count: 0, indexes: [] };
+            byJob.set(jobName, target);
+        }
+        target.count++;
+        target.indexes.push(i);
+    });
+    return [...byJob.values()];
+}
+
+/**
+ * How many of an entry's runs a config filter keeps, and which task positions.
+ * `null` for an unattributed entry — a different answer from "kept none".
+ */
+export function filterEntryByConfig(
+    file: DecodedTimingFile,
+    entry: RunEntry,
+    jobFilter: (jobName: string) => boolean
+): { count: number; indexes: number[] } | null {
+    const targets = configTargetsOfEntry(file, entry);
+    if (targets.length === 0) {
+        return null;
+    }
+    let count = 0;
+    const indexes: number[] = [];
+    for (const target of targets) {
+        if (!jobFilter(target.jobName)) {
+            continue;
+        }
+        count += target.count;
+        indexes.push(...target.indexes);
+    }
+    indexes.sort((a, b) => a - b);
+    return { count, indexes };
+}
+
+/**
+ * An entry restricted to the runs a config filter keeps, or `null` for none.
+ *
+ * `count` and the parallel arrays all describe the same kept runs afterwards, so
+ * a rerun count, a task-ID list and a profile list built from a narrowed entry
+ * cannot disagree with the totals.
+ */
+export function narrowEntryToConfig(
+    file: DecodedTimingFile,
+    entry: RunEntry,
+    jobFilter: (jobName: string) => boolean
+): RunEntry | null {
+    const kept = filterEntryByConfig(file, entry, jobFilter);
+    if (kept === null || kept.count === 0) {
+        return null;
+    }
+    if (kept.count === entry.count) {
+        return entry;
+    }
+    // Indexes positionally and must not compact: dropping a hole would shorten
+    // the array below `count` and shift every later element out of step with
+    // `taskIds`, silently misattributing tasks. The throw keeps that visible.
+    const pick = <T>(values: readonly T[] | undefined, field: string): T[] | undefined => {
+        if (values === undefined) {
+            return undefined;
+        }
+        if (values.length !== entry.count) {
+            throw new RangeError(
+                `${entry.status} entry has ${values.length} ${field} for ${entry.count} runs; ` +
+                    'narrowing by configuration needs them parallel'
+            );
+        }
+        return kept.indexes.map((i) => values[i]!);
+    };
+    const narrowed: RunEntry = { ...entry, count: kept.count };
+    // Assigned conditionally: an absent array must stay absent, not become
+    // `undefined`, for the `in` checks and `?.` chains downstream.
+    const taskIds = pick(entry.taskIds, 'taskIds');
+    if (taskIds !== undefined) {
+        narrowed.taskIds = taskIds;
+    }
+    const taskIdIndexes = pick(entry.taskIdIndexes, 'taskIdIndexes');
+    if (taskIdIndexes !== undefined) {
+        narrowed.taskIdIndexes = taskIdIndexes;
+    }
+    const durations = pick(entry.durations, 'durations');
+    if (durations !== undefined) {
+        narrowed.durations = durations;
+    }
+    const timestamps = pick(entry.timestamps, 'timestamps');
+    if (timestamps !== undefined) {
+        narrowed.timestamps = timestamps;
+    }
+    const minidumps = pick(entry.minidumps, 'minidumps');
+    if (minidumps !== undefined) {
+        narrowed.minidumps = minidumps;
+    }
+    return narrowed;
 }
 
 /**
@@ -248,16 +379,18 @@ export function failureMessageCounts(
         if (classifyStatus(entry.status).kind !== 'fail') {
             continue;
         }
+        let count = entry.count;
         if (options.jobFilter !== undefined) {
-            const jobName = jobNameOfEntry(file, entry);
-            if (jobName === null || !options.jobFilter(jobName)) {
+            const kept = filterEntryByConfig(file, entry, options.jobFilter);
+            if (kept === null || kept.count === 0) {
                 continue;
             }
+            count = kept.count;
         }
         // `undefined` (no array) and `null` (no message on this entry) are both
         // "no message recorded" as far as a display list is concerned.
         const key = entry.message ?? null;
-        counts.set(key, (counts.get(key) ?? 0) + entry.count);
+        counts.set(key, (counts.get(key) ?? 0) + count);
     }
     return counts;
 }
@@ -276,8 +409,16 @@ export function crashSignatureCounts(
         if (classifyStatus(entry.status).kind !== 'crash') {
             continue;
         }
+        let count = entry.count;
+        if (options.jobFilter !== undefined) {
+            const kept = filterEntryByConfig(file, entry, options.jobFilter);
+            if (kept === null || kept.count === 0) {
+                continue;
+            }
+            count = kept.count;
+        }
         const key = entry.crashSignature ?? null;
-        counts.set(key, (counts.get(key) ?? 0) + entry.count);
+        counts.set(key, (counts.get(key) ?? 0) + count);
     }
     return counts;
 }
@@ -289,6 +430,11 @@ export function crashSignatureCounts(
  * includes are a union, and the excludes are applied after — so
  * `--config linux --exclude-config debug` is "linux, but not debug". Empty
  * include list means everything.
+ *
+ * Callers disagree on what they test: `computeConfigStats` passes the
+ * chunk-stripped name, `configTargetsOfEntry` and `coverageOf` the raw one. Only
+ * a needle ending in a chunk number can tell them apart, so unifying them is a
+ * spec decision about what `--config` matches, not a cleanup.
  */
 export function configFilter(
     include: readonly string[] = [],

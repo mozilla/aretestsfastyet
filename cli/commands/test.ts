@@ -58,6 +58,7 @@ import {
     crashSignatureCounts,
     failureMessageCounts,
     inDayRange,
+    narrowEntryToConfig,
 } from '../../lib/query/test-stats.ts';
 import {
     resourceUsageProfileUrl,
@@ -135,6 +136,12 @@ export interface TestJson {
         singleDay: boolean;
         dataSource: string;
     };
+    /**
+     * The filter these numbers were measured under, `null` when none was given.
+     * Every count below is over the filtered population, so a filtered `0 fail`
+     * is otherwise indistinguishable from a healthy test.
+     */
+    configFilter: { include: string[]; exclude: string[] } | null;
     totals: TestStats;
     verdict: Verdict;
     configs: ConfigStats[];
@@ -410,6 +417,18 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
     const hasConfigFilter =
         context.globals.config.length > 0 || context.globals.excludeConfig.length > 0;
 
+    // Refuse rather than filter a family with no job names: every section here is
+    // per-run, so the alternative is a page of zeros reading as "clean on that
+    // configuration". Reachable only through the `loadTimingFile` seam today.
+    if (hasConfigFilter && !canAttributeConfigs(decoded)) {
+        throw usageError(
+            `--config cannot be applied to this ${harness} file: it records no job names, ` +
+                'so every configuration filter over it matches nothing',
+            'This is a property of the file, not of the test. The 64-bucket files that back ' +
+                '--config are what `--data-source central` serves by default.'
+        );
+    }
+
     const statsOptions = {
         ...(window.range === null ? {} : { dayRange: window.range }),
         ...(hasConfigFilter ? { jobFilter } : {}),
@@ -421,15 +440,19 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
     const configs = computeConfigStats(decoded, identity.testId, {
         ...(window.range === null ? {} : { dayRange: window.range }),
         ...(recentDays === undefined ? {} : { recentDays }),
-    }).filter((config) => !hasConfigFilter || jobFilter(config.jobName));
+        ...(hasConfigFilter ? { jobFilter } : {}),
+    });
 
     const entries = [...decoded.runsOfTest(identity.testId)].filter((entry) =>
         inDayRange(entry.day, window.range ?? undefined)
     );
+    // Narrowed per task, not filtered per entry: dropping a whole entry on its
+    // first task's job loses runs on the requested config and keeps runs on every
+    // other one. `narrowEntryToConfig` carries the detail.
     const filteredEntries = hasConfigFilter
-        ? entries.filter((entry) => {
-              const jobName = jobNameOf(decoded, entry);
-              return jobName === null ? false : jobFilter(jobName);
+        ? entries.flatMap((entry) => {
+              const narrowed = narrowEntryToConfig(decoded, entry, jobFilter);
+              return narrowed === null ? [] : [narrowed];
           })
         : entries;
 
@@ -471,6 +494,12 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
             singleDay: window.singleDay,
             dataSource: context.source.name,
         },
+        configFilter: hasConfigFilter
+            ? {
+                  include: [...context.globals.config],
+                  exclude: [...context.globals.excludeConfig],
+              }
+            : null,
         totals,
         verdict,
         configs: failingConfigs,
@@ -1072,6 +1101,10 @@ function renderText(result: TestJson, limit: number): string {
         `Data: ${result.harness}, ${describeWindow(metadata)}, ` +
             `generated ${metadata.generatedAt}`
     );
+    const filterLine = describeConfigFilter(result.configFilter);
+    if (filterLine !== null) {
+        lines.push(filterLine);
+    }
     lines.push('');
     lines.push(
         `  ${fmtCount(totals.runCount)} runs   ` +
@@ -1163,6 +1196,10 @@ function renderText(result: TestJson, limit: number): string {
             lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine(entry.message), 100)}`);
         }
         lines.push(moreLine(result.messages.length, shown.length));
+    } else if (result.configFilter !== null) {
+        lines.push('');
+        lines.push('Failure messages');
+        lines.push(`  ${emptyMessagesUnderFilter()}`);
     }
 
     if (result.crashSignatures.length > 0) {
@@ -1513,6 +1550,11 @@ function renderMarkdown(result: TestJson, limit: number): string {
     lines.push(
         `**Data:** ${result.harness}, ${describeWindow(metadata)}, generated ${metadata.generatedAt}`
     );
+    const filterLine = describeConfigFilter(result.configFilter);
+    if (filterLine !== null) {
+        lines.push('');
+        lines.push(`**${filterLine}**`);
+    }
     lines.push('');
     lines.push(
         ...md.table(
@@ -1586,6 +1628,11 @@ function renderMarkdown(result: TestJson, limit: number): string {
             )
         );
         lines.push(md.moreLine(result.messages.length, shown.length));
+    } else if (result.configFilter !== null) {
+        lines.push('');
+        lines.push(md.heading('Failure messages'));
+        lines.push('');
+        lines.push(emptyMessagesUnderFilter());
     }
 
     if (result.skips.length > 0) {
@@ -1698,6 +1745,33 @@ function describeReach(reach: TestJson['reach']): string | null {
             ? ''
             : ` — not ${reach.absentPlatforms.join(', ')}; see --coverage`;
     return `Runs on ${reach.configCount} configs across ${platforms}${absent}`;
+}
+
+/**
+ * What the `Failure messages` section says when a `--config` filter emptied it.
+ * Both renderers call this, so the heading cannot survive a filter in one format
+ * and vanish in the other.
+ */
+function emptyMessagesUnderFilter(): string {
+    return '(no failures on the configurations this filter matched)';
+}
+
+/**
+ * The line naming the `--config` filter every number below was measured under.
+ * Without it a filtered report is indistinguishable from an unfiltered one.
+ */
+function describeConfigFilter(filter: TestJson['configFilter']): string | null {
+    if (filter === null) {
+        return null;
+    }
+    const parts: string[] = [];
+    if (filter.include.length > 0) {
+        parts.push(`matching ${filter.include.join(', ')}`);
+    }
+    if (filter.exclude.length > 0) {
+        parts.push(`excluding ${filter.exclude.join(', ')}`);
+    }
+    return `Filtered: every count below covers only configurations ${parts.join(', ')}`;
 }
 
 /** The header's window phrase. */

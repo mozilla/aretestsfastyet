@@ -91,6 +91,37 @@ Installed as a `bin` entry in `package.json`; run without installing via
 `--json` and `--markdown` are mutually exclusive; passing both is a usage error
 (exit 1) rather than one silently winning.
 
+### `--config` either filters or refuses, on every command
+
+A configuration filter needs job names in the data, and only the bucket files and
+`manifests.json` have them. So `--config` and `--exclude-config` filter on `test`
+and `manifests`, and every command that reports per-test or per-push numbers and
+*cannot* honour them **refuses with a usage error** naming the file and why it
+cannot answer: `issues`, `flaky`, `errors` and `summary` because their files
+record no job names, and `try` because its sections are cross-configuration
+verdicts, so filtering the job set would change what each one means rather than
+narrow it. Silently ignoring the flag returned the unfiltered answer under a
+heading that claimed otherwise, which is the worst of the three options.
+
+`dates`, `cache`, `guide` and `crash` accept it and ignore it, because none of
+them reports a population a configuration could narrow — `dates` lists which
+dates exist, `crash` takes one task and one dump. Item 13's rule (do not list a
+global flag in a subcommand's `--help` when it does not apply) is what covers
+those.
+
+Where it does filter, **every number in the report comes from the filtered
+population**: the header totals, the per-config table, the message and skip
+lists, `--coverage`, `--task-ids` and `--profiles`, and the width of the recent
+window (which is sized from the sparsest config *in the filtered set*). The text
+and Markdown reports open with a `Filtered:` line naming the filter, and `--json`
+carries it as `configFilter`, because a filtered `0 fail` is otherwise
+indistinguishable from a healthy test.
+
+Attribution is **per task, not per entry**. A `FAIL`/`TIMEOUT`/`CRASH` group
+records one task per run and those tasks routinely span configurations, so a
+filter that keeps or drops a whole group on its first task's job both loses runs
+on the requested config and keeps runs on every other one.
+
 ### Harness detection is a heuristic, and it fails quietly
 
 `--harness` is inferred with the existing `detectHarness()` (`common-test-data.js:9`),

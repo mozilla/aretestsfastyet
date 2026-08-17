@@ -51,10 +51,12 @@ import { stripChunkSuffix } from '../lib/model/job-name.ts';
 import {
     computeTestStats,
     configFilter,
+    configTargetsOfEntry,
     crashSignatureCounts,
     failureMessageCounts,
     inDayRange,
     jobNameOfEntry,
+    narrowEntryToConfig,
 } from '../lib/query/test-stats.ts';
 import {
     canAttributeConfigs,
@@ -188,6 +190,150 @@ test('configFilter unions the includes and applies the excludes after', () => {
 
     // No includes means everything, which is what "all configs" has to mean.
     assert.equal(configFilter()('anything'), true);
+});
+
+/**
+ * A test whose failing entries hold tasks from more than one configuration.
+ *
+ * The shape a per-entry config filter gets wrong, and the reason it is a fixture
+ * test rather than a hand-built input: two of this test's failing entries span
+ * two configs each, and in both of them one of the two configs is reachable only
+ * as the *second* task in the bucket.
+ * `test-android-em-14-x86_64-shippable-lite/…-nofis`
+ * appears only at index 1 of a two-task FAIL-PARALLEL entry, so a filter reading
+ * `taskIdIndexes[0]` drops its one failure while `computeConfigStats`, which
+ * attributes per task, keeps it. That is what made `test --config` print `0 fail`
+ * in its header beside `2` in its own per-config table.
+ */
+const MULTI_CONFIG_ENTRY_TEST =
+    'toolkit/components/extensions/test/xpcshell/test_ext_contentscript_scriptCreated.js';
+
+test('a config filter attributes a multi-config entry per task, not per entry', () => {
+    const identity = bucket.findTest(MULTI_CONFIG_ENTRY_TEST)!;
+    const entries = [...bucket.runsOfTest(identity.testId)];
+
+    // The premise, asserted so this test cannot quietly become vacuous if the
+    // fixture is regenerated: an entry with tasks on two configs exists, and
+    // one config is reachable only past index 0.
+    const spanning = entries
+        .map((entry) => configTargetsOfEntry(bucket, entry))
+        .filter((targets) => targets.length > 1);
+    assert.equal(spanning.length, 2, 'the fixture must still hold multi-config entries');
+    const lateOnly = spanning.some((targets) =>
+        targets.some(
+            (target) =>
+                target.jobName ===
+                    'test-android-em-14-x86_64-shippable-lite/opt-geckoview-xpcshell-nofis' &&
+                !target.indexes.includes(0)
+        )
+    );
+    assert.ok(lateOnly, 'the config that only appears past index 0 must still do so');
+
+    // The invariant. For every config the test failed on, the header totals and
+    // the per-config table have to report the same number of failures.
+    const configs = computeConfigStats(bucket, identity.testId);
+    for (const config of configs) {
+        const jobFilter = configFilter([config.jobName]);
+        const totals = computeTestStats(bucket, identity.testId, { jobFilter });
+        const filtered = computeConfigStats(bucket, identity.testId, { jobFilter });
+        const tableFails = filtered.reduce((sum, row) => sum + row.failCount, 0);
+        assert.equal(
+            totals.failCount + totals.timeoutCount + totals.crashCount,
+            tableFails,
+            `${config.jobName}: header totals and per-config table disagree`
+        );
+        const messages = failureMessageCounts(bucket, identity.testId, { jobFilter });
+        assert.equal(
+            [...messages.values()].reduce((sum, n) => sum + n, 0),
+            totals.failCount,
+            `${config.jobName}: the message list must cover every counted failure`
+        );
+    }
+
+    // The one that used to read 0. `--config` on this substring matches one
+    // config, whose single failure sits at index 1 of its entry.
+    const lateFilter = configFilter([
+        'test-android-em-14-x86_64-shippable-lite/opt-geckoview-xpcshell-nofis',
+    ]);
+    assert.equal(computeTestStats(bucket, identity.testId, { jobFilter: lateFilter }).failCount, 1);
+});
+
+test('the parallel-array invariant narrowing relies on holds in every family', () => {
+    // `narrowEntryToConfig` indexes an entry's arrays positionally and throws if
+    // one is not `count` long. That is an assertion rather than a guard, so the
+    // premise is checked here: across these fixtures every array is exactly
+    // `count` long. Measured the same way over ~105M entries in ~110 real files
+    // while writing it, also with zero exceptions.
+    for (const file of [bucket, mochitestBucket, daily]) {
+        for (let testId = 0; testId < file.testCount; testId++) {
+            for (const entry of file.runsOfTest(testId)) {
+                for (const field of [
+                    'taskIds',
+                    'taskIdIndexes',
+                    'durations',
+                    'timestamps',
+                    'minidumps',
+                ] as const) {
+                    const values = entry[field];
+                    if (values !== undefined) {
+                        assert.equal(
+                            values.length,
+                            entry.count,
+                            `${file.family} ${entry.status}: ${field} is not parallel to count`
+                        );
+                    }
+                }
+            }
+        }
+    }
+});
+
+test('narrowEntryToConfig refuses an entry whose arrays are not parallel', () => {
+    // The assertion itself, on a hand-built entry: no real file produces this
+    // shape (see the test above), so it cannot be reached from a fixture, and a
+    // silent `.filter()` here would shift task attribution rather than fail.
+    const identity = bucket.findTest(MULTI_CONFIG_ENTRY_TEST)!;
+    const failing = [...bucket.runsOfTest(identity.testId)].find(
+        (entry) => configTargetsOfEntry(bucket, entry).length > 1
+    )!;
+    // A filter keeping *one* of the entry's configs, so narrowing actually runs:
+    // when it keeps them all, `count` is unchanged and the entry is returned
+    // as-is without touching the arrays.
+    const oneConfig = configFilter([configTargetsOfEntry(bucket, failing)[0]!.jobName]);
+    assert.ok(narrowEntryToConfig(bucket, failing, oneConfig) !== null, 'the filter must match');
+
+    const truncated = { ...failing, taskIds: failing.taskIds!.slice(0, 1) };
+    assert.throws(
+        () => narrowEntryToConfig(bucket, truncated, oneConfig),
+        /taskIds for \d+ runs; narrowing by configuration needs them parallel/
+    );
+});
+
+test('narrowEntryToConfig keeps the parallel arrays in step with the count', () => {
+    const identity = bucket.findTest(MULTI_CONFIG_ENTRY_TEST)!;
+    const jobFilter = configFilter([
+        'test-android-em-14-x86_64-shippable-lite/opt-geckoview-xpcshell-nofis',
+    ]);
+    const narrowed = [...bucket.runsOfTest(identity.testId)]
+        .map((entry) => narrowEntryToConfig(bucket, entry, jobFilter))
+        .filter((entry) => entry !== null);
+
+    assert.ok(narrowed.length > 0, 'the filter must keep something');
+    for (const entry of narrowed) {
+        // The property every per-task renderer depends on: a task-ID list, a
+        // rerun count and a profile list built from this entry all describe the
+        // same runs the count claims.
+        if (entry.taskIds !== undefined) {
+            assert.equal(entry.taskIds.length, entry.count, entry.status);
+            assert.equal(entry.taskIdIndexes?.length, entry.count, entry.status);
+            for (const taskIdIndex of entry.taskIdIndexes!) {
+                assert.ok(
+                    jobFilter(bucket.jobNameOfTaskIndex(taskIdIndex)!),
+                    'a narrowed entry must hold no task from another config'
+                );
+            }
+        }
+    }
 });
 
 test('a failing entry resolves its job through taskInfo, not through jobName', () => {

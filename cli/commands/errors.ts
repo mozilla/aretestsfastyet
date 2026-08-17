@@ -251,6 +251,18 @@ export async function runErrors(context: CommandContext, args: ParsedArgs): Prom
 
     // The one command that defaults to mochitest — see the module comment.
     const harness: Harness = context.globals.harness ?? 'mochitest';
+
+    if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
+        // The file groups markers by test and message with no job name, so any
+        // configuration filter matches nothing and an empty ranking would read
+        // as a clean tree.
+        throw usageError(
+            `--config cannot be applied to ${harness}-<date>-errors.json: the file records ` +
+                'no job names, so every configuration filter over it matches nothing',
+            'The errors files group markers by test and message, not by job. Use ' +
+                '`fx-tests test <path> --config` for one test, which reads a bucket file.'
+        );
+    }
     const grouping = readGrouping(args);
     const sort = readSort(args);
 

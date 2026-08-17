@@ -2810,6 +2810,12 @@ async function runErrors(context, args) {
     );
   }
   const harness = context.globals.harness ?? "mochitest";
+  if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
+    throw usageError(
+      `--config cannot be applied to ${harness}-<date>-errors.json: the file records no job names, so every configuration filter over it matches nothing`,
+      "The errors files group markers by test and message, not by job. Use `fx-tests test <path> --config` for one test, which reads a bucket file."
+    );
+  }
   const grouping = readGrouping(args);
   const sort = readSort(args);
   const loaded = await loadErrorsFile(context, harness);
@@ -4989,6 +4995,9 @@ function computeConfigStats(file, testId, options = {}) {
     if (wanted !== null && !wanted.has(jobName)) {
       return;
     }
+    if (options.jobFilter !== void 0 && !options.jobFilter(jobName)) {
+      return;
+    }
     let entry = byJob.get(jobName);
     if (entry === void 0) {
       entry = { jobName, passCount: 0, failCount: 0, sameMsgFailCount: 0, byDay: /* @__PURE__ */ new Map() };
@@ -5135,43 +5144,45 @@ function computeTestStats(file, testId, options = {}) {
     if (!inDayRange(entry.day, options.dayRange)) {
       continue;
     }
+    let count2 = entry.count;
     if (options.jobFilter !== void 0) {
-      const jobName = jobNameOfEntry(file, entry);
-      if (jobName === null || !options.jobFilter(jobName)) {
+      const kept = filterEntryByConfig(file, entry, options.jobFilter);
+      if (kept === null || kept.count === 0) {
         continue;
       }
+      count2 = kept.count;
     }
-    addEntry(stats, classifyStatus(entry.status).kind, entry);
+    addEntry(stats, classifyStatus(entry.status).kind, entry, count2);
   }
   stats.runCount = stats.passCount + stats.failCount + stats.timeoutCount + stats.crashCount + stats.expectedFailCount;
   stats.passRate = stats.runCount > 0 ? (stats.passCount + stats.expectedFailCount) / stats.runCount * 100 : null;
   return stats;
 }
-function addEntry(stats, kind, entry) {
+function addEntry(stats, kind, entry, count2) {
   switch (kind) {
     case "pass":
-      stats.passCount += entry.count;
+      stats.passCount += count2;
       return;
     case "fail":
-      stats.failCount += entry.count;
+      stats.failCount += count2;
       return;
     case "timeout":
-      stats.timeoutCount += entry.count;
+      stats.timeoutCount += count2;
       return;
     case "crash":
-      stats.crashCount += entry.count;
+      stats.crashCount += count2;
       return;
     case "expected-fail":
-      stats.expectedFailCount += entry.count;
+      stats.expectedFailCount += count2;
       return;
     case "unknown":
-      stats.unknownCount += entry.count;
+      stats.unknownCount += count2;
       return;
     case "skip":
       if (skipReason(entry.message) === "run-if") {
-        stats.runIfSkipCount += entry.count;
+        stats.runIfSkipCount += count2;
       } else {
-        stats.skipCount += entry.count;
+        stats.skipCount += count2;
       }
       return;
   }
@@ -5183,6 +5194,88 @@ function jobNameOfEntry(file, entry) {
   const first = entry.taskIdIndexes?.[0];
   return first === void 0 ? null : file.jobNameOfTaskIndex(first);
 }
+function configTargetsOfEntry(file, entry) {
+  if (entry.jobName !== void 0) {
+    return [{ jobName: entry.jobName, count: entry.count, indexes: [] }];
+  }
+  if (entry.taskIdIndexes === void 0) {
+    return [];
+  }
+  const byJob = /* @__PURE__ */ new Map();
+  entry.taskIdIndexes.forEach((taskIdIndex, i) => {
+    const jobName = file.jobNameOfTaskIndex(taskIdIndex);
+    if (jobName === null) {
+      return;
+    }
+    let target = byJob.get(jobName);
+    if (target === void 0) {
+      target = { jobName, count: 0, indexes: [] };
+      byJob.set(jobName, target);
+    }
+    target.count++;
+    target.indexes.push(i);
+  });
+  return [...byJob.values()];
+}
+function filterEntryByConfig(file, entry, jobFilter) {
+  const targets = configTargetsOfEntry(file, entry);
+  if (targets.length === 0) {
+    return null;
+  }
+  let count2 = 0;
+  const indexes = [];
+  for (const target of targets) {
+    if (!jobFilter(target.jobName)) {
+      continue;
+    }
+    count2 += target.count;
+    indexes.push(...target.indexes);
+  }
+  indexes.sort((a, b) => a - b);
+  return { count: count2, indexes };
+}
+function narrowEntryToConfig(file, entry, jobFilter) {
+  const kept = filterEntryByConfig(file, entry, jobFilter);
+  if (kept === null || kept.count === 0) {
+    return null;
+  }
+  if (kept.count === entry.count) {
+    return entry;
+  }
+  const pick = (values, field) => {
+    if (values === void 0) {
+      return void 0;
+    }
+    if (values.length !== entry.count) {
+      throw new RangeError(
+        `${entry.status} entry has ${values.length} ${field} for ${entry.count} runs; narrowing by configuration needs them parallel`
+      );
+    }
+    return kept.indexes.map((i) => values[i]);
+  };
+  const narrowed = { ...entry, count: kept.count };
+  const taskIds = pick(entry.taskIds, "taskIds");
+  if (taskIds !== void 0) {
+    narrowed.taskIds = taskIds;
+  }
+  const taskIdIndexes = pick(entry.taskIdIndexes, "taskIdIndexes");
+  if (taskIdIndexes !== void 0) {
+    narrowed.taskIdIndexes = taskIdIndexes;
+  }
+  const durations = pick(entry.durations, "durations");
+  if (durations !== void 0) {
+    narrowed.durations = durations;
+  }
+  const timestamps = pick(entry.timestamps, "timestamps");
+  if (timestamps !== void 0) {
+    narrowed.timestamps = timestamps;
+  }
+  const minidumps = pick(entry.minidumps, "minidumps");
+  if (minidumps !== void 0) {
+    narrowed.minidumps = minidumps;
+  }
+  return narrowed;
+}
 function failureMessageCounts(file, testId, options = {}) {
   const counts = /* @__PURE__ */ new Map();
   for (const entry of file.runsOfTest(testId)) {
@@ -5192,14 +5285,16 @@ function failureMessageCounts(file, testId, options = {}) {
     if (classifyStatus(entry.status).kind !== "fail") {
       continue;
     }
+    let count2 = entry.count;
     if (options.jobFilter !== void 0) {
-      const jobName = jobNameOfEntry(file, entry);
-      if (jobName === null || !options.jobFilter(jobName)) {
+      const kept = filterEntryByConfig(file, entry, options.jobFilter);
+      if (kept === null || kept.count === 0) {
         continue;
       }
+      count2 = kept.count;
     }
     const key = entry.message ?? null;
-    counts.set(key, (counts.get(key) ?? 0) + entry.count);
+    counts.set(key, (counts.get(key) ?? 0) + count2);
   }
   return counts;
 }
@@ -5212,8 +5307,16 @@ function crashSignatureCounts(file, testId, options = {}) {
     if (classifyStatus(entry.status).kind !== "crash") {
       continue;
     }
+    let count2 = entry.count;
+    if (options.jobFilter !== void 0) {
+      const kept = filterEntryByConfig(file, entry, options.jobFilter);
+      if (kept === null || kept.count === 0) {
+        continue;
+      }
+      count2 = kept.count;
+    }
     const key = entry.crashSignature ?? null;
-    counts.set(key, (counts.get(key) ?? 0) + entry.count);
+    counts.set(key, (counts.get(key) ?? 0) + count2);
   }
   return counts;
 }
@@ -7054,6 +7157,12 @@ async function runSummary(context, args) {
   if (args.positionals.length > 0) {
     throw usageError(`summary takes no arguments, got "${args.positionals[0]}"`);
   }
+  if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
+    throw usageError(
+      "--config cannot be applied to summary: it reads pre-aggregated tree-wide totals from {harness}-stats.json, which records no job names",
+      "Use `fx-tests test <path> --config` for one test, which reads a bucket file."
+    );
+  }
   const harnesses = context.globals.harness !== void 0 ? [context.globals.harness] : ["xpcshell", "mochitest"];
   const results = [];
   for (const harness of harnesses) {
@@ -7474,6 +7583,12 @@ async function runTest(context, args) {
   const window = resolveDayWindow(context.globals, decoded);
   const jobFilter = configFilter(context.globals.config, context.globals.excludeConfig);
   const hasConfigFilter = context.globals.config.length > 0 || context.globals.excludeConfig.length > 0;
+  if (hasConfigFilter && !canAttributeConfigs(decoded)) {
+    throw usageError(
+      `--config cannot be applied to this ${harness} file: it records no job names, so every configuration filter over it matches nothing`,
+      "This is a property of the file, not of the test. The 64-bucket files that back --config are what `--data-source central` serves by default."
+    );
+  }
   const statsOptions = {
     ...window.range === null ? {} : { dayRange: window.range },
     ...hasConfigFilter ? { jobFilter } : {}
@@ -7482,14 +7597,15 @@ async function runTest(context, args) {
   const recentDays = numberOption(args, "recent-days");
   const configs = computeConfigStats(decoded, identity.testId, {
     ...window.range === null ? {} : { dayRange: window.range },
-    ...recentDays === void 0 ? {} : { recentDays }
-  }).filter((config) => !hasConfigFilter || jobFilter(config.jobName));
+    ...recentDays === void 0 ? {} : { recentDays },
+    ...hasConfigFilter ? { jobFilter } : {}
+  });
   const entries = [...decoded.runsOfTest(identity.testId)].filter(
     (entry) => inDayRange(entry.day, window.range ?? void 0)
   );
-  const filteredEntries = hasConfigFilter ? entries.filter((entry) => {
-    const jobName = jobNameOf(decoded, entry);
-    return jobName === null ? false : jobFilter(jobName);
+  const filteredEntries = hasConfigFilter ? entries.flatMap((entry) => {
+    const narrowed = narrowEntryToConfig(decoded, entry, jobFilter);
+    return narrowed === null ? [] : [narrowed];
   }) : entries;
   const messages = [...failureMessageCounts(decoded, identity.testId, statsOptions)].map(([message, count2]) => ({ message: message ?? "(no message recorded)", count: count2 })).sort((a, b) => b.count - a.count);
   const crashSignatures = [...crashSignatureCounts(decoded, identity.testId, statsOptions)].map(([signature, count2]) => ({
@@ -7517,6 +7633,10 @@ async function runTest(context, args) {
       singleDay: window.singleDay,
       dataSource: context.source.name
     },
+    configFilter: hasConfigFilter ? {
+      include: [...context.globals.config],
+      exclude: [...context.globals.excludeConfig]
+    } : null,
     totals,
     verdict,
     configs: failingConfigs,
@@ -7902,6 +8022,10 @@ function renderText7(result, limit) {
   lines.push(
     `Data: ${result.harness}, ${describeWindow2(metadata)}, generated ${metadata.generatedAt}`
   );
+  const filterLine = describeConfigFilter(result.configFilter);
+  if (filterLine !== null) {
+    lines.push(filterLine);
+  }
   lines.push("");
   lines.push(
     `  ${count(totals.runCount)} runs   ${count(totals.passCount)} pass (${percent(totals.passRate, 2)})   ${count(totals.failCount)} fail   ${count(totals.timeoutCount)} timeout   ${count(totals.crashCount)} crash   ${count(totals.skipCount)} skip`
@@ -7968,6 +8092,10 @@ function renderText7(result, limit) {
       lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine3(entry.message), 100)}`);
     }
     lines.push(moreLine2(result.messages.length, shown.length));
+  } else if (result.configFilter !== null) {
+    lines.push("");
+    lines.push("Failure messages");
+    lines.push(`  ${emptyMessagesUnderFilter()}`);
   }
   if (result.crashSignatures.length > 0) {
     lines.push("");
@@ -8232,6 +8360,11 @@ function renderMarkdown7(result, limit) {
   lines.push(
     `**Data:** ${result.harness}, ${describeWindow2(metadata)}, generated ${metadata.generatedAt}`
   );
+  const filterLine = describeConfigFilter(result.configFilter);
+  if (filterLine !== null) {
+    lines.push("");
+    lines.push(`**${filterLine}**`);
+  }
   lines.push("");
   lines.push(
     ...table(
@@ -8303,6 +8436,11 @@ function renderMarkdown7(result, limit) {
       )
     );
     lines.push(moreLine(result.messages.length, shown.length));
+  } else if (result.configFilter !== null) {
+    lines.push("");
+    lines.push(heading("Failure messages"));
+    lines.push("");
+    lines.push(emptyMessagesUnderFilter());
   }
   if (result.skips.length > 0) {
     lines.push("");
@@ -8386,6 +8524,22 @@ function describeReach(reach) {
   const platforms = reach.platforms.map((entry) => `${entry.platform} (${entry.configCount})`).join(", ");
   const absent = reach.absentPlatforms.length === 0 ? "" : ` \u2014 not ${reach.absentPlatforms.join(", ")}; see --coverage`;
   return `Runs on ${reach.configCount} configs across ${platforms}${absent}`;
+}
+function emptyMessagesUnderFilter() {
+  return "(no failures on the configurations this filter matched)";
+}
+function describeConfigFilter(filter) {
+  if (filter === null) {
+    return null;
+  }
+  const parts = [];
+  if (filter.include.length > 0) {
+    parts.push(`matching ${filter.include.join(", ")}`);
+  }
+  if (filter.exclude.length > 0) {
+    parts.push(`excluding ${filter.exclude.join(", ")}`);
+  }
+  return `Filtered: every count below covers only configurations ${parts.join(", ")}`;
 }
 function describeWindow2(metadata) {
   if (metadata.singleDay) {
@@ -8761,6 +8915,12 @@ async function runTry(context, args) {
   const fetchUrl = context.fetchUrl;
   if (fetchUrl === void 0) {
     throw new Error("try needs a URL fetcher but none was supplied");
+  }
+  if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
+    throw usageError(
+      "--config cannot be applied to try: this command classifies a test across the configurations a push ran, so filtering the job set would change what each section means rather than narrow it",
+      "The per-row config names and central comparison are already per configuration. For one test on one configuration over central, use `fx-tests test <path> --config <substring>`."
+    );
   }
   const project = stringOption(args, "project") ?? "try";
   progress(context, `Looking up ${revision} on ${project}\u2026`);

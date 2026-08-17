@@ -54,6 +54,15 @@ export async function runSummary(context: CommandContext, args: ParsedArgs): Pro
     if (args.positionals.length > 0) {
         throw usageError(`summary takes no arguments, got "${args.positionals[0]}"`);
     }
+    if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
+        // Pre-aggregated tree-wide totals with no job axis: accepting the flag
+        // would report the whole tree under a per-configuration heading.
+        throw usageError(
+            '--config cannot be applied to summary: it reads pre-aggregated tree-wide totals ' +
+                'from {harness}-stats.json, which records no job names',
+            'Use `fx-tests test <path> --config` for one test, which reads a bucket file.'
+        );
+    }
 
     const harnesses: Harness[] =
         context.globals.harness !== undefined

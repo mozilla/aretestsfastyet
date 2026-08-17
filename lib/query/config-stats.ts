@@ -123,6 +123,15 @@ export interface ConfigStatsOptions {
     matchAnyCrash?: boolean | undefined;
     /** Restrict to a day range, as absolute day indices. Both ends inclusive. */
     dayRange?: { from: number; to: number } | undefined;
+    /**
+     * Keep only configurations whose job name satisfies this — `--config`.
+     *
+     * Must be applied here, not by filtering the returned rows: the recent window
+     * is sized from the sparsest config in the set, so post-filtering labels every
+     * row with a window computed over configs the report does not show. Tested
+     * against the chunk-stripped name the rows are keyed on.
+     */
+    jobFilter?: ((jobName: string) => boolean) | undefined;
 }
 
 /** The default number of runs a config needs before a recent rate is reported. */
@@ -170,6 +179,9 @@ export function computeConfigStats(
         // runs on 2026-08-03).
         const jobName = stripChunkSuffix(rawJobName);
         if (wanted !== null && !wanted.has(jobName)) {
+            return;
+        }
+        if (options.jobFilter !== undefined && !options.jobFilter(jobName)) {
             return;
         }
         let entry = byJob.get(jobName);
