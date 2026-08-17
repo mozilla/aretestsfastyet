@@ -1179,11 +1179,11 @@ function renderText(result: TestJson, limit: number): string {
         }
         lines.push(moreLine(result.profiles.length, shown.length));
         if (shown.every((row) => row.testProfile === undefined)) {
-            // The absence is worth a line: "no per-test profile" and "the
-            // command forgot to look" are indistinguishable otherwise, and
-            // `CLI.md` says to emit nothing rather than guess a filename.
+            // Only prints when nothing was extracted, so the tests that do
+            // carry a name never show it; `test/cli.test.ts` pins that case.
+            // The `try` route needs a revision, which this command has not got.
             lines.push(
-                '  (no per-test failure profile was named in any failure message)'
+                '  (these are resource-usage profiles; per-test profiles: fx-tests try <rev> --profiles)'
             );
         }
     }

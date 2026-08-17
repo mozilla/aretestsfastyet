@@ -194,9 +194,12 @@ Two kinds of profile, with different availability:
   message (`old/try.html:2900`). This is why profile URLs matter most for
   `fx-tests try`, which already has the push's failure messages in hand.
 
-For commands working from aggregated data, the failure message is in the data
-file, so the same extraction applies. Where no profile was uploaded, no URL is
-emitted — the command does not guess a filename.
+For commands working from aggregated data the failure message is in the data
+file, so the same extraction applies. In practice few tests keep a
+`profile uploaded in …` message there, so `fx-tests test --profiles` is
+resource-usage profiles plus the occasional per-test URL, and it points at
+`fx-tests try <rev> --profiles` for the per-test profiles of a push. Where no
+name is found no URL is emitted — the command does not guess a filename.
 
 Progress and diagnostics go to **stderr**; only the requested data goes to
 **stdout**, so `fx-tests ... > out.md` and piping into `jq` both behave.

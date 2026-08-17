@@ -7879,7 +7879,7 @@ function renderText7(result, limit) {
     lines.push(moreLine2(result.profiles.length, shown.length));
     if (shown.every((row) => row.testProfile === void 0)) {
       lines.push(
-        "  (no per-test failure profile was named in any failure message)"
+        "  (these are resource-usage profiles; per-test profiles: fx-tests try <rev> --profiles)"
       );
     }
   }

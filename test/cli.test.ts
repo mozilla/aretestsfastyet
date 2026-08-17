@@ -57,6 +57,12 @@ const TEST_PATH = 'dom/indexedDB/test/unit/test_rename_objectStore_errors.js';
 const MOCHITEST_PATH =
     'browser/components/tabbrowser/test/browser/tabs/browser_tab_dragdrop2.js';
 /**
+ * The one test whose fixture keeps a `profile uploaded in …` failure message,
+ * so `--profiles` can render a per-test profile URL. Uncommon in real data,
+ * but not impossible, which is why the branch needs pinning.
+ */
+const PROFILE_NAMED_TEST = 'layout/base/tests/chrome/test_bug551434.html';
+/**
  * A Windows-only crash-reporter test, for the `--coverage` rollup.
  *
  * Chosen because one test exhibits every outcome the rollup has to tell apart:
@@ -1201,11 +1207,27 @@ test('--profiles emits no per-test profile URL when no message named one', async
     }
 });
 
-test('--profiles text says when no per-test profile was found', async () => {
+test('--profiles text says what the list is and where per-test profiles are', async () => {
     const { stdout } = await invoke(['test', TEST_PATH, '--profiles']);
-    // Otherwise "no profile was uploaded" and "the command did not look" are
-    // indistinguishable to the reader.
-    assert.match(stdout, /no per-test failure profile was named/);
+    // Names the list and the command that does carry per-test profiles.
+    // Claiming an absence instead read as "no profile exists" and readers
+    // stopped looking.
+    assert.match(stdout, /these are resource-usage profiles/);
+    assert.match(stdout, /fx-tests try <rev> --profiles/);
+});
+
+test('--profiles text omits the caveat when a per-test profile IS found', async () => {
+    // The caveat prints only when nothing was extracted, so without this case
+    // the tests that do carry a name would never exercise the branch.
+    const { stdout } = await invoke([
+        'test',
+        PROFILE_NAMED_TEST,
+        '--profiles',
+        '--harness',
+        'mochitest',
+    ]);
+    assert.match(stdout, /test profile:\s+https:\/\/\S+profile_test_bug551434\.html\.json/);
+    assert.doesNotMatch(stdout, /these are resource-usage profiles/);
 });
 
 // --- --history, --task-ids, --durations ------------------------------------
