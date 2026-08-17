@@ -456,6 +456,17 @@ PERMA-FAILS (3) — failed in every run of at least one configuration here.
 
   browser/base/content/test/sync/browser_sync.js
     8 failures on test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks-2 (4/4 runs)
+    central 31.4% on test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks (287 runs)
+      This failure already happens without your changes.
+
+      It fails this way 31.4% of the time over the last 9 days on
+      test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks
+
+      Same failure over the last 9 days, by configuration:
+        31.4% of 287 runs — …-swr-a11y-checks
+        2.1% of 480 runs — …-swr
+
+      Any failure, all platforms, 21 days: 4.7% of 5493 runs.
     4.7% on central (259/5493), 4.6% with the same message (250)
     Pre-existing: central already fails the same way on
       test-linux2404-64/opt-mochitest-browser-chrome-swr-a11y-checks-2
@@ -580,6 +591,31 @@ Failures are also labelled when they occur only in parallel execution, which
 points at a race with concurrently-running tests rather than a defect in the test
 itself.
 
+**The `central` column is measured on the configurations the push ran, not
+across the tree.** It is `try.html`'s flakiness column, from the same code
+(`lib/query/flakiness-rate.ts`), so the same push and test produce the same
+percentage on the page and here. That code picks per configuration among the ones
+this push failed on, prefers each configuration's recent window, falls back to
+its full history, ranks on a lower confidence bound rather than on the raw rate,
+and falls back to the whole-test rate when no configuration shows this failure at
+all.
+
+Those are four different measurements yielding four different numbers from the
+same counts, so the rate is always printed with the lines that say which one it
+is — and which configuration, over what window, on how many runs. A bare
+percentage here is what the previous version of this column was: it divided every
+failure on every configuration the test runs on anywhere by every run on all of
+them, and sat next to a `here` cell measured on the one configuration the push
+used. On push `46c757b692be` a row read `20/41 · central 5.8%` where central's
+rate on the configuration that ran was 42.0% — two populations, one comparison,
+and an apparent 8x elevation that was arithmetic.
+
+When central has no history for **any** configuration the push used — a test that
+runs on windows and mac on central and was pushed to linux — the rate is the
+whole-test one and the output says so, because the per-configuration comparison
+had nothing to compare and the verdict sentence above it is then about an empty
+population.
+
 The same-message distinction matters and is what the `Pre-existing:` line rests
 on: a test that already fails on central 8% of the time, but with a *different*
 message than the one in your push, is not pre-existing in any useful sense.
@@ -617,6 +653,13 @@ permaFails[], knownIntermittents[], newIntermittents[] }`. Each failure carries
 `permaFailingConfigs[]` — the configurations it failed every run of — and
 `central.sameMessageFailCountOnPermaConfigs`, the same-message count restricted
 to those, which is `null` when central attributed no runs to them.
+
+`central` also carries `headline` — `{rate, runs, scope, jobName?, recent?,
+days?, lowConfidence?}`, the value `try.html`'s flakiness column shows —
+`explanation`, the text lines that say which measurement produced it, and
+`configsInHistory`, how many of the push's configurations central has any history
+for. `central.failRate` is retained beside them as the whole-test, all-platform
+rate; read `headline.rate` for the comparison against this push.
 
 ### `fx-tests issues` — what is failing right now, across the tree
 

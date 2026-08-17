@@ -8401,6 +8401,87 @@ function oneLine3(value) {
   return value.replace(/\s*\r?\n\s*/g, " \u23CE ").trim();
 }
 
+// lib/query/flakiness-rate.ts
+var MIN_RECENT_RUNS = 100;
+var HISTORY_DAYS = 21;
+var MAX_TOOLTIP_CONFIGS = 4;
+function pickHeadlineRate(stats, configs) {
+  const overall = overallRate(stats);
+  const rateOf = (config) => config.recentSameMsgFailRate !== null ? {
+    rate: config.recentSameMsgFailRate,
+    runs: config.recentRunCount,
+    days: config.recentDays,
+    recent: true,
+    scope: "config"
+  } : {
+    rate: config.sameMsgFailRate,
+    runs: config.runCount,
+    recent: false,
+    scope: "config"
+  };
+  const score = (rate2) => rate2.runs > 0 ? rate2.rate - 100 / Math.sqrt(rate2.runs) : 0;
+  let best = null;
+  let bestScore = -Infinity;
+  for (const config of configs ?? []) {
+    const rate2 = rateOf(config);
+    const current = score(rate2);
+    if (best === null || current > bestScore) {
+      best = { ...rate2, jobName: config.jobName };
+      bestScore = current;
+    }
+  }
+  if (best === null || best.rate === 0) {
+    return { rate: overall, runs: stats.runCount, scope: "overall" };
+  }
+  return { ...best, scope: "config", lowConfidence: best.runs < MIN_RECENT_RUNS };
+}
+function overallRate(stats) {
+  return stats.runCount > 0 ? (stats.failCount + stats.crashCount + stats.timeoutCount) / stats.runCount * 100 : 0;
+}
+function formatFailRate(rate2) {
+  return `${rate2.toFixed(1)}%`;
+}
+function dayCount(days) {
+  return days === 1 ? "the last day" : `the last ${days} days`;
+}
+function flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDays) {
+  const overall = overallRate(stats);
+  const all = totalDays || HISTORY_DAYS;
+  const lines = [];
+  lines.push(
+    hasMatchingMessage ? "This failure already happens without your changes." : "This exact failure was never seen in history \u2014 it looks new.",
+    ""
+  );
+  if (headline.scope === "config") {
+    const span = headline.recent === true ? dayCount(headline.days) : `${all} days`;
+    lines.push(
+      `It fails this way ${formatFailRate(headline.rate)} of the time over ${span} on` + (headline.lowConfidence === true ? ` (only ${headline.runs} runs, so approximate)` : ""),
+      `${headline.jobName}`
+    );
+  }
+  const rateFor = (config) => config.recentSameMsgFailRate !== null ? { rate: config.recentSameMsgFailRate, runs: config.recentRunCount } : { rate: config.sameMsgFailRate, runs: config.runCount };
+  const shown = (configs ?? []).map((config) => ({
+    ...rateFor(config),
+    jobName: config.jobName,
+    recentDays: config.recentDays
+  })).filter((config) => config.rate > 0).sort((a, b) => b.rate - a.rate);
+  if (shown.length > 0) {
+    lines.push("", `Same failure over ${dayCount(shown[0].recentDays)}, by configuration:`);
+    for (const config of shown.slice(0, MAX_TOOLTIP_CONFIGS)) {
+      lines.push(`  ${formatFailRate(config.rate)} of ${config.runs} runs \u2014 ${config.jobName}`);
+    }
+    const hidden = shown.length - MAX_TOOLTIP_CONFIGS;
+    if (hidden > 0) {
+      lines.push(`  and ${hidden} more configuration${hidden === 1 ? "" : "s"}`);
+    }
+  }
+  lines.push(
+    "",
+    `Any failure, all platforms, ${all} days: ${formatFailRate(overall)} of ${stats.runCount} runs.`
+  );
+  return lines.filter((line, index) => line !== "" || lines[index - 1] !== "").join("\n");
+}
+
 // lib/model/failure-message.ts
 function normalizeMessage(message) {
   if (message === null || message === void 0) {
@@ -9134,7 +9215,7 @@ async function attachCentralHistory(context, failures) {
         continue;
       }
       const stats = computeTestStats(decoded, identity.testId);
-      const configs = computeConfigStats(decoded, identity.testId, {
+      const messageOptions = {
         tryMessages: failure.messages,
         // A timeout or a crash records no message at all
         // (`FORMATS.md`), so for those the status kind stands in for
@@ -9142,7 +9223,14 @@ async function attachCentralHistory(context, failures) {
         // failure from the timeout on central.
         matchAnyTimeout: failure.statuses.includes("TIMEOUT"),
         matchAnyCrash: failure.statuses.includes("CRASH")
+      };
+      const configs = computeConfigStats(decoded, identity.testId, messageOptions);
+      const hereConfigs = computeConfigStats(decoded, identity.testId, {
+        ...messageOptions,
+        jobNames: failure.jobNames.map(stripChunkSuffix),
+        minRecentRuns: MIN_RECENT_RUNS
       });
+      const headline = pickHeadlineRate(stats, hereConfigs);
       const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
       const sameMessageFailCount = configs.reduce(
         (sum, config) => sum + config.sameMsgFailCount,
@@ -9163,6 +9251,16 @@ async function attachCentralHistory(context, failures) {
         sameMessageFailCount,
         sameMessageFailRate: stats.runCount > 0 ? sameMessageFailCount / stats.runCount * 100 : null,
         sameMessageFailCountOnPermaConfigs,
+        headline,
+        // Over `hereConfigs`, to agree with the rates it quotes.
+        explanation: flakinessTooltip(
+          stats,
+          hereConfigs,
+          headline,
+          hereConfigs.some((config) => config.sameMsgFailCount > 0),
+          decoded.days ?? void 0
+        ),
+        configsInHistory: hereConfigs.length,
         worstConfig: worst === null ? null : {
           jobName: worst.jobName,
           failRate: worst.failRate,
@@ -9232,6 +9330,32 @@ function centralLine(failure) {
     return `${overall}; this push recorded no failure message, so it cannot be compared`;
   }
   return `${overall}, ${percent(central.sameMessageFailRate)} with the same message (${central.sameMessageFailCount})`;
+}
+function centralHeadlineLines(failure, indent) {
+  const central = failure.central;
+  if (central === null) {
+    return [];
+  }
+  const where = central.headline.scope === "config" ? `on ${centralScopeCell(failure)}` : "across every configuration";
+  const lines = [
+    `${indent}central ${percent(central.headline.rate)} ${where} (${central.headline.runs} runs)`
+  ];
+  if (central.configsInHistory === 0) {
+    lines.push(
+      `${indent}  central never ran this test on ${failure.jobNames.length === 1 ? "the configuration" : `any of the ${failure.jobNames.length} configurations`} this push used, so the rate above is the whole-test one`
+    );
+  }
+  for (const line of central.explanation.split("\n")) {
+    lines.push(line === "" ? "" : `${indent}  ${line}`);
+  }
+  return lines;
+}
+function centralScopeCell(failure) {
+  if (failure.central === null) {
+    return "n/a";
+  }
+  const { headline } = failure.central;
+  return headline.scope === "config" ? headline.jobName ?? "" : "all configs";
 }
 function preExistingLine(failure) {
   const central = failure.central;
@@ -9411,6 +9535,7 @@ function section(title, failures, description, limit) {
         every.length === 1 ? `    Failed every run on ${every[0]}` : `    Failed every run on ${every.length} of them: ${every.slice(0, 3).join(", ")}` + (every.length > 3 ? `, +${every.length - 3} more` : "")
       );
     }
+    lines.push(...centralHeadlineLines(failure, "    "));
     lines.push(`    ${centralLine(failure)}`);
     const preExisting = preExistingLine(failure);
     if (preExisting !== null) {
@@ -9467,6 +9592,8 @@ function compactSection(title, failures, description, limit) {
       // recovery block below prints it whole. See `tableWithPaths()`.
       { header: "test", path: true },
       { header: "here", align: "right" },
+      // Measured on the configurations this push ran, so it is
+      // comparable with `here`.
       { header: "central", align: "right" },
       { header: "same msg", align: "right" }
     ],
@@ -9478,7 +9605,7 @@ function compactSection(title, failures, description, limit) {
       // distinct job runs and the denominator job runs — two wrong
       // quantities that agreed with each other.
       `${failure.failureCount}/${failure.totalRuns}`,
-      failure.central === null ? "n/a" : percent(failure.central.failRate),
+      failure.central === null ? "n/a" : percent(failure.central.headline.rate),
       sameMessageCell(failure)
     ])
   );
@@ -9486,6 +9613,11 @@ function compactSection(title, failures, description, limit) {
   for (const failure of shown) {
     if (failure.passedOnRerun) {
       lines.push(`    ${basename(failure.path)}: passed on harness rerun`);
+    }
+    const headlineLines = centralHeadlineLines(failure, "      ");
+    if (headlineLines.length > 0) {
+      lines.push(`    ${basename(failure.path)}:`);
+      lines.push(...headlineLines);
     }
   }
   lines.push(...fullPathLines(rendered.shortenedPaths));
@@ -9538,6 +9670,9 @@ function renderMarkdown8(result, limit, permaOnly, otherJobs) {
           { header: "Configs", align: "right" },
           { header: "Here", align: "right" },
           { header: "Central", align: "right" },
+          // A table pasted into a bug carries no tooltip, so the
+          // configuration the rate was measured on has to be a column.
+          { header: "Central measured on" },
           { header: "Same message", align: "right" },
           // The text renderer says this in a sentence per row. A
           // Markdown table pasted into a bug needs it just as much —
@@ -9552,7 +9687,8 @@ function renderMarkdown8(result, limit, permaOnly, otherJobs) {
           failure.path,
           String(failure.jobNames.length),
           `${failure.failureCount}/${failure.totalRuns}`,
-          failure.central === null ? "n/a" : percent(failure.central.failRate),
+          failure.central === null ? "n/a" : percent(failure.central.headline.rate),
+          centralScopeCell(failure),
           sameMessageCell(failure),
           preExistingCell(failure),
           truncate(failure.messages[0] ?? "", 120)

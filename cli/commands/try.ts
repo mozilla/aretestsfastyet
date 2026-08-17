@@ -46,6 +46,12 @@
 
 import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } from '../../lib/formats/buckets.ts';
 import { computeConfigStats } from '../../lib/query/config-stats.ts';
+import {
+    MIN_RECENT_RUNS,
+    type HeadlineRate,
+    flakinessTooltip,
+    pickHeadlineRate,
+} from '../../lib/query/flakiness-rate.ts';
 import { computeTestStats } from '../../lib/query/test-stats.ts';
 import { stripChunkSuffix } from '../../lib/model/job-name.ts';
 import { normalizeMessage } from '../../lib/model/failure-message.ts';
@@ -277,6 +283,18 @@ export interface CentralHistory {
      * appears in central's history.
      */
     sameMessageFailCountOnPermaConfigs: number | null;
+    /**
+     * try.html's flakiness column (`lib/query/flakiness-rate.ts`), and the
+     * tooltip explaining it. Read this for "does this failure pre-exist", not
+     * `failRate` above, which is the whole-test, all-configuration rate.
+     */
+    headline: HeadlineRate;
+    explanation: string;
+    /**
+     * How many of this push's configurations central has history for. 0 means
+     * the explanation's "never seen in history" is about an empty population.
+     */
+    configsInHistory: number;
     /** Whether the test appears in central data at all. */
     known: boolean;
 }
@@ -1235,7 +1253,7 @@ async function attachCentralHistory(
                 continue;
             }
             const stats = computeTestStats(decoded, identity.testId);
-            const configs = computeConfigStats(decoded, identity.testId, {
+            const messageOptions = {
                 tryMessages: failure.messages,
                 // A timeout or a crash records no message at all
                 // (`FORMATS.md`), so for those the status kind stands in for
@@ -1243,7 +1261,18 @@ async function attachCentralHistory(
                 // failure from the timeout on central.
                 matchAnyTimeout: failure.statuses.includes('TIMEOUT'),
                 matchAnyCrash: failure.statuses.includes('CRASH'),
+            };
+            const configs = computeConfigStats(decoded, identity.testId, messageOptions);
+            // The call `site/try-flakiness-worker.ts` makes, option for option.
+            // Chunk-stripped because the aggregates store names that way: leave
+            // it out and every configuration misses, silently sending every row
+            // to the overall fallback.
+            const hereConfigs = computeConfigStats(decoded, identity.testId, {
+                ...messageOptions,
+                jobNames: failure.jobNames.map(stripChunkSuffix),
+                minRecentRuns: MIN_RECENT_RUNS,
             });
+            const headline = pickHeadlineRate(stats, hereConfigs);
             const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
             const sameMessageFailCount = configs.reduce(
                 (sum, config) => sum + config.sameMsgFailCount,
@@ -1275,6 +1304,16 @@ async function attachCentralHistory(
                 sameMessageFailRate:
                     stats.runCount > 0 ? (sameMessageFailCount / stats.runCount) * 100 : null,
                 sameMessageFailCountOnPermaConfigs,
+                headline,
+                // Over `hereConfigs`, to agree with the rates it quotes.
+                explanation: flakinessTooltip(
+                    stats,
+                    hereConfigs,
+                    headline,
+                    hereConfigs.some((config) => config.sameMsgFailCount > 0),
+                    decoded.days ?? undefined
+                ),
+                configsInHistory: hereConfigs.length,
                 worstConfig:
                     worst === null
                         ? null
@@ -1368,6 +1407,47 @@ function centralLine(failure: TryFailure): string {
         `${percent(central.sameMessageFailRate)} with the same message ` +
         `(${central.sameMessageFailCount})`
     );
+}
+
+/** `[]` when there is no central history — `centralLine()` says so already. */
+function centralHeadlineLines(failure: TryFailure, indent: string): string[] {
+    const central = failure.central;
+    if (central === null) {
+        return [];
+    }
+    const where =
+        central.headline.scope === 'config'
+            ? `on ${centralScopeCell(failure)}`
+            : 'across every configuration';
+    const lines = [
+        `${indent}central ${percent(central.headline.rate)} ${where} ` +
+            `(${central.headline.runs} runs)`,
+    ];
+    if (central.configsInHistory === 0) {
+        // Before the explanation: its verdict is conditional on this.
+        lines.push(
+            `${indent}  central never ran this test on ` +
+                `${failure.jobNames.length === 1 ? 'the configuration' : `any of the ${failure.jobNames.length} configurations`}` +
+                ' this push used, so the rate above is the whole-test one'
+        );
+    }
+    for (const line of central.explanation.split('\n')) {
+        lines.push(line === '' ? '' : `${indent}  ${line}`);
+    }
+    return lines;
+}
+
+/**
+ * What the `central` percentage was measured on. `all configs` is the
+ * `scope: 'overall'` fallback: no configuration this push ran shows this
+ * failure, so the cell answers "how flaky is this test at all" instead.
+ */
+function centralScopeCell(failure: TryFailure): string {
+    if (failure.central === null) {
+        return 'n/a';
+    }
+    const { headline } = failure.central;
+    return headline.scope === 'config' ? (headline.jobName ?? '') : 'all configs';
 }
 
 /**
@@ -1700,6 +1780,7 @@ function section(
                           (every.length > 3 ? `, +${every.length - 3} more` : '')
             );
         }
+        lines.push(...centralHeadlineLines(failure, '    '));
         lines.push(`    ${centralLine(failure)}`);
         const preExisting = preExistingLine(failure);
         if (preExisting !== null) {
@@ -1763,6 +1844,8 @@ function compactSection(
             // recovery block below prints it whole. See `tableWithPaths()`.
             { header: 'test', path: true },
             { header: 'here', align: 'right' },
+            // Measured on the configurations this push ran, so it is
+            // comparable with `here`.
             { header: 'central', align: 'right' },
             { header: 'same msg', align: 'right' },
         ],
@@ -1774,7 +1857,7 @@ function compactSection(
             // distinct job runs and the denominator job runs — two wrong
             // quantities that agreed with each other.
             `${failure.failureCount}/${failure.totalRuns}`,
-            failure.central === null ? 'n/a' : percent(failure.central.failRate),
+            failure.central === null ? 'n/a' : percent(failure.central.headline.rate),
             sameMessageCell(failure),
         ])
     );
@@ -1782,6 +1865,11 @@ function compactSection(
     for (const failure of shown) {
         if (failure.passedOnRerun) {
             lines.push(`    ${basename(failure.path)}: passed on harness rerun`);
+        }
+        const headlineLines = centralHeadlineLines(failure, '      ');
+        if (headlineLines.length > 0) {
+            lines.push(`    ${basename(failure.path)}:`);
+            lines.push(...headlineLines);
         }
         // No "failed every run on a config" note is needed here any more:
         // every such failure is now in the perma-fail section, which states it
@@ -1853,6 +1941,9 @@ function renderMarkdown(
                     { header: 'Configs', align: 'right' },
                     { header: 'Here', align: 'right' },
                     { header: 'Central', align: 'right' },
+                    // A table pasted into a bug carries no tooltip, so the
+                    // configuration the rate was measured on has to be a column.
+                    { header: 'Central measured on' },
                     { header: 'Same message', align: 'right' },
                     // The text renderer says this in a sentence per row. A
                     // Markdown table pasted into a bug needs it just as much —
@@ -1867,7 +1958,8 @@ function renderMarkdown(
                     failure.path,
                     String(failure.jobNames.length),
                     `${failure.failureCount}/${failure.totalRuns}`,
-                    failure.central === null ? 'n/a' : percent(failure.central.failRate),
+                    failure.central === null ? 'n/a' : percent(failure.central.headline.rate),
+                    centralScopeCell(failure),
                     sameMessageCell(failure),
                     preExistingCell(failure),
                     truncate(failure.messages[0] ?? '', 120),

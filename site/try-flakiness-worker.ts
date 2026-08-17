@@ -58,6 +58,7 @@
  */
 
 import { type BucketFile, decodeBucket } from '../lib/formats/buckets.ts';
+import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import { computeConfigStats, type ConfigStats } from '../lib/query/config-stats.ts';
 import { computeTestStats, type TestStats } from '../lib/query/test-stats.ts';
 import { MIN_RECENT_RUNS, type FlakinessRequest } from './try-view.ts';
@@ -85,49 +86,61 @@ export interface WorkerResponse {
     error?: string;
 }
 
-self.onmessage = (event: MessageEvent<WorkerRequest>): void => {
-    const { buffer, tests } = event.data;
-    try {
-        const json = new TextDecoder().decode(buffer);
-        const raw = JSON.parse(json) as BucketFile;
-        const file = decodeBucket(raw);
-        const results: FlakinessResult[] = [];
-        for (const { path, tryMessages, hasTimeout, hasCrash, jobNames } of tests) {
-            const found = file.findTest(path);
-            if (found === null) {
-                results.push({ path, found: false });
-                continue;
-            }
-            const stats = computeTestStats(file, found.testId);
-            // `file.days` is the aggregate's window. Upstream reads
-            // `data.metadata.days` and falls back to 0 (`old/try.html:2601`); a
-            // daily file would give `null` here, which the display code treats
-            // the same way its `|| HISTORY_DAYS` fallback does.
-            const totalDays = file.days ?? 0;
-            const configs = computeConfigStats(file, found.testId, {
-                jobNames,
-                minRecentRuns: MIN_RECENT_RUNS,
-                tryMessages,
-                matchAnyTimeout: hasTimeout,
-                matchAnyCrash: hasCrash,
-            });
-            results.push({
-                path,
-                found: true,
-                stats,
-                // Agrees with the rates the tooltip shows, because it is asked
-                // of the same configs.
-                hasMatchingMessage: configs.some((config) => config.sameMsgFailCount > 0),
-                configs,
-                totalDays,
-            });
-        }
-        const response: WorkerResponse = { results };
-        self.postMessage(response);
-    } catch (error) {
-        const response: WorkerResponse = {
-            error: error instanceof Error ? error.message : String(error),
-        };
-        self.postMessage(response);
+/**
+ * One test's history. Exported so the parity test compares `fx-tests try`
+ * against this code rather than a copy of it; touches no worker global.
+ */
+export function flakinessOfTest(
+    file: DecodedTimingFile,
+    request: FlakinessRequest
+): FlakinessResult {
+    const { path, tryMessages, hasTimeout, hasCrash, jobNames } = request;
+    const found = file.findTest(path);
+    if (found === null) {
+        return { path, found: false };
     }
-};
+    const stats = computeTestStats(file, found.testId);
+    const configs = computeConfigStats(file, found.testId, {
+        jobNames,
+        minRecentRuns: MIN_RECENT_RUNS,
+        tryMessages,
+        matchAnyTimeout: hasTimeout,
+        matchAnyCrash: hasCrash,
+    });
+    return {
+        path,
+        found: true,
+        stats,
+        // Agrees with the rates the tooltip shows, because it is asked
+        // of the same configs.
+        hasMatchingMessage: configs.some((config) => config.sameMsgFailCount > 0),
+        configs,
+        // `file.days` is the aggregate's window. Upstream reads
+        // `data.metadata.days` and falls back to 0 (`old/try.html:2601`); a
+        // daily file would give `null` here, which the display code treats
+        // the same way its `|| HISTORY_DAYS` fallback does.
+        totalDays: file.days ?? 0,
+    };
+}
+
+// Load-bearing, not defensive: `self` at module scope is a `ReferenceError`
+// under Node, which would make `flakinessOfTest` unimportable by any test.
+if (typeof self !== 'undefined') {
+    self.onmessage = (event: MessageEvent<WorkerRequest>): void => {
+        const { buffer, tests } = event.data;
+        try {
+            const json = new TextDecoder().decode(buffer);
+            const raw = JSON.parse(json) as BucketFile;
+            const file = decodeBucket(raw);
+            const response: WorkerResponse = {
+                results: tests.map((request) => flakinessOfTest(file, request)),
+            };
+            self.postMessage(response);
+        } catch (error) {
+            const response: WorkerResponse = {
+                error: error instanceof Error ? error.message : String(error),
+            };
+            self.postMessage(response);
+        }
+    };
+}
