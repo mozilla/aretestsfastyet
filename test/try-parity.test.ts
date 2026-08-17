@@ -45,7 +45,12 @@ import assert from 'node:assert/strict';
 
 import type { TreeherderJob } from '../lib/sources/treeherder.ts';
 import { normalizeMessage } from '../lib/model/failure-message.ts';
-import { parseTestMarkers } from '../cli/commands/try.ts';
+import {
+    isTestFilePath,
+    normalizeTestPath,
+    stripManifestPrefix,
+} from '../lib/model/test-path.ts';
+import { type DroppedMarker, parseTestMarkers } from '../cli/commands/try.ts';
 import {
     type FailingTest,
     type Timing,
@@ -131,6 +136,8 @@ interface CliFailure {
     everyRunFailed: boolean;
     statuses: string[];
     messages: string[];
+    /** Item 18's full set, with a per-execution count each. */
+    allMessages: { message: string; count: number }[];
 }
 
 interface CliTry {
@@ -975,6 +982,163 @@ function workerNormalizeMessage(): (message: string | null | undefined) => strin
     return (message) => fn(message) ?? null;
 }
 
+/**
+ * The worker's own path helpers, lifted out of the template literal.
+ *
+ * Same technique as `workerNormalizeMessage` and for the same reason: evaluating
+ * the shipped source beats restating it, because a restatement can be wrong in
+ * the same way the copy is and then both agree on nothing.
+ */
+function workerPathHelpers(): {
+    stripManifestPrefix: (id: string) => string;
+    isTestFilePath: (path: string) => boolean;
+    normalizeTestPath: (id: string | null | undefined) => string | null;
+} {
+    const start = WORKER_SOURCE.indexOf('function stripManifestPrefix(id) {');
+    assert.ok(start > 0, 'the worker still defines stripManifestPrefix');
+    const end = WORKER_SOURCE.indexOf('function extractTextRanges', start);
+    assert.ok(end > start, 'the three path helpers are still contiguous');
+    const source = WORKER_SOURCE.slice(start, end);
+    for (const name of ['isTestFilePath', 'normalizeTestPath']) {
+        assert.ok(source.includes(`function ${name}(`), `the worker still defines ${name}`);
+    }
+    return new Function(
+        `${source}; return { stripManifestPrefix, isTestFilePath, normalizeTestPath };`
+    )() as ReturnType<typeof workerPathHelpers>;
+}
+
+/**
+ * ## Why this test exists, and what it caught
+ *
+ * The worker's comment claimed this file pinned its copies of the path rule. It
+ * did not — grepping this file for the three symbols returned nothing — so the
+ * copies could drift freely, which is the exact condition that produced the
+ * `normalizeMessage` divergence upstream. A comment asserting coverage that does
+ * not exist is worse than no comment, so either the assertion or the claim had to
+ * go; this is the assertion.
+ *
+ * The inputs are chosen to separate the anchored rule from the two unanchored
+ * spellings that preceded it, because that is where a silent drift would land:
+ * a URL and a Windows path both carry a colon, and both survive the extension
+ * filter, so getting them wrong emits a corrupted path rather than dropping it.
+ */
+test('the worker copies of the path rule match the shared ones', () => {
+    const worker = workerPathHelpers();
+    const cases: string[] = [
+        // The prefix the rule is for, bare filename and full-path spellings.
+        'xpcshell-remote.toml:toolkit/x/test_a.js',
+        'mochitest.ini:dom/base/test/test_b.html',
+        'browser/components/urlbar/tests/browser-tips/browser-nova.toml:browser/x/browser.toml',
+        // The two shapes an unanchored rule corrupts.
+        'http://mochi.test:8888/tests/dom/test_x.html',
+        'C:/builds/foo/test_a.js',
+        // The suffix, and both together.
+        'dom/base/test/test_c.html (finished)',
+        'xpcshell.toml:toolkit/x/test_d.js (finished)',
+        // Not test paths.
+        'toolkit/components/extensions/test/xpcshell/xpcshell.toml',
+        'testAddTaskSkip',
+        'replaying full log for dom/base/test/test_e.html',
+        '',
+    ];
+    for (const input of cases) {
+        assert.equal(
+            worker.stripManifestPrefix(input),
+            stripManifestPrefix(input),
+            `stripManifestPrefix disagrees on ${JSON.stringify(input)}`
+        );
+        assert.equal(
+            worker.isTestFilePath(input),
+            isTestFilePath(input),
+            `isTestFilePath disagrees on ${JSON.stringify(input)}`
+        );
+        assert.equal(
+            worker.normalizeTestPath(input),
+            normalizeTestPath(input),
+            `normalizeTestPath disagrees on ${JSON.stringify(input)}`
+        );
+    }
+    // The absent spellings, which only `normalizeTestPath` accepts.
+    assert.equal(worker.normalizeTestPath(null), normalizeTestPath(null));
+    assert.equal(worker.normalizeTestPath(undefined), normalizeTestPath(undefined));
+});
+
+/**
+ * The anchoring, stated as the values it protects.
+ *
+ * Separate from the parity test above: that one asserts the two copies agree,
+ * which they would also do if both were wrong. This one asserts what the rule
+ * must produce, so a change that "fixes" both copies the same wrong way fails.
+ */
+test('a colon that is not a manifest prefix is left alone', () => {
+    // Stripped: the prefix is a filename ending .toml/.ini.
+    assert.equal(
+        normalizeTestPath('xpcshell-remote.toml:toolkit/x/test_a.js'),
+        'toolkit/x/test_a.js'
+    );
+    assert.equal(
+        normalizeTestPath('mochitest.ini:dom/base/test/test_b.html'),
+        'dom/base/test/test_b.html'
+    );
+    // Not stripped: a URL scheme and a Windows drive letter. Both used to lose
+    // their head and still pass the extension filter, so both were emitted as
+    // paths that match nothing in central — item 15's symptom, reintroduced.
+    assert.equal(
+        normalizeTestPath('http://mochi.test:8888/tests/dom/test_x.html'),
+        'http://mochi.test:8888/tests/dom/test_x.html'
+    );
+    assert.equal(normalizeTestPath('C:/builds/foo/test_a.js'), 'C:/builds/foo/test_a.js');
+    // The manifest part may contain `/`: every colon-carrying id in the corpus
+    // spells it as a full path, so a `/`-free anchor would strip nothing at all.
+    assert.equal(
+        normalizeTestPath('dom/serviceworkers/test/browser-dFPI.toml:dom/x/test_y.html'),
+        'dom/x/test_y.html'
+    );
+});
+
+/**
+ * The `Text` branch, which nothing else exercises.
+ *
+ * This change newly routes `site/try.ts`'s free-form `Text` marker through the
+ * shared stripper, where it previously did not strip at all. The corpus contains
+ * only colon-free range markers on that branch, so no fixture covers it and the
+ * URL shape above is latent there rather than absent. Asserted directly on the
+ * worker, since the CLI has no `Text` branch to compare against.
+ */
+test('the Text branch strips a manifest prefix and keeps a URL intact', () => {
+    const extract = workerExtractTestTimings();
+    const textProfile = (text: string): unknown => ({
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: ['test'],
+                markers: {
+                    length: 1,
+                    name: [0],
+                    data: [{ type: 'Text', text }],
+                    startTime: [10],
+                    endTime: [20],
+                },
+            },
+        ],
+    });
+    const pathsOf = (text: string): string[] =>
+        extract(textProfile(text)).map((timing) => timing.path);
+
+    // A prefixed path on the Text branch: stripped, which upstream did not do.
+    assert.deepEqual(pathsOf('xpcshell-remote.toml:toolkit/x/test_a.js'), [
+        'toolkit/x/test_a.js',
+    ]);
+    // A URL: kept whole. Under the unanchored rule this was
+    // '//mochi.test:8888/tests/dom/test_x.html'.
+    assert.deepEqual(pathsOf('http://mochi.test:8888/tests/dom/test_x.html'), [
+        'http://mochi.test:8888/tests/dom/test_x.html',
+    ]);
+    // A range marker: not a path, so no row.
+    assert.deepEqual(pathsOf('parallel'), []);
+    assert.deepEqual(pathsOf('selftests'), []);
+});
+
 test('the worker copy of normalizeMessage matches the shared one', () => {
     const worker = workerNormalizeMessage();
     // Inputs chosen so that a missing substitution shows up as an inequality
@@ -1136,4 +1300,339 @@ test('both sides turn an unexpected PASS into the same status', () => {
         assert.equal(cliStatus(data), expected[index], `CLI on ${label}`);
         assert.equal(pageStatus({ status: 'PASS', ...data }), expected[index], `page on ${label}`);
     }
+});
+
+// --- the manifest prefix: one rule for both, and for all three markers ------
+
+/**
+ * The worker's whole `extractTestTimings`, lifted out of the template literal.
+ *
+ * `workerNormalizeMessage` above lifts one function; this lifts the parser, so a
+ * page-side path assertion is made against the code the page actually ships
+ * rather than against a restatement of it. `self.onmessage` is cut because it
+ * references a worker global.
+ */
+function workerExtractTestTimings(): (profile: unknown) => {
+    path: string;
+    status: string;
+}[] {
+    const start = WORKER_SOURCE.indexOf('const WORKER_CODE = String.raw`');
+    assert.ok(start > 0, 'the worker source is still a String.raw template');
+    const bodyStart = WORKER_SOURCE.indexOf('`', start) + 1;
+    const bodyEnd = WORKER_SOURCE.indexOf('\n`;', bodyStart);
+    assert.ok(bodyEnd > bodyStart);
+    const body = WORKER_SOURCE.slice(bodyStart, bodyEnd).replace(/self\.onmessage[\s\S]*$/, '');
+    return new Function(`${body}; return extractTestTimings;`)() as (profile: unknown) => {
+        path: string;
+        status: string;
+    }[];
+}
+
+/**
+ * A job whose only failure is a crash recorded against a prefixed test id.
+ *
+ * The shape measured on try push `e2cf4a2c4039c5e0b594e351e604eaaf88c4ca57`: a
+ * `Test` marker at `CRASH` claims the crash inside its own range, and the *other*
+ * crash markers against the same id fall outside it and become synthetic entries.
+ * Those synthetic ones are what carried the prefix to `try.html`, so the profile
+ * has two crashes and one `Test` marker.
+ */
+function prefixedCrashProfile(): unknown {
+    const id =
+        'xpcshell-remote.toml:toolkit/components/extensions/test/xpcshell/' +
+        'test_ext_background_early_shutdown.js';
+    const strings = ['test', 'Crash'];
+    return {
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: strings,
+                markers: {
+                    length: 3,
+                    name: [1, 1, 0],
+                    data: [
+                        // Inside the Test marker's range: claimed.
+                        { type: 'Crash', test: id, signature: 'sig-claimed', minidump: null },
+                        // Outside it: this is the one that became a synthetic entry.
+                        { type: 'Crash', test: id, signature: 'sig-unclaimed', minidump: null },
+                        { type: 'Test', test: id, status: 'CRASH' },
+                    ],
+                    startTime: [10, 100, 10],
+                    endTime: [10, 100, 20],
+                },
+            },
+        ],
+    };
+}
+
+/**
+ * ## The divergence this closes
+ *
+ * Item 15 of `FX_TESTS_SUMMARY.md`, reported by the repository owner against
+ * <https://tests.firefox.dev/try.html?rev=e2cf4a2c4039c5e0b594e351e604eaaf88c4ca57>:
+ * two known intermittents shown as new failures, because their path kept its
+ * manifest prefix and so matched nothing in central.
+ *
+ * `site/try.ts` stripped the prefix in the `Test` branch only. The synthetic
+ * crash loop and the `Text` branch did not, and the crash loop is what produced
+ * the owner's two rows: running the shipped worker over that push's six cached
+ * profiles emitted 31,578 timings of which 60 still carried a colon, 54 for
+ * `test_ext_background_early_shutdown.js` and 6 for
+ * `test_ext_storage_session_on_crash.js`. `cli/commands/try.ts` stripped in its
+ * copy of the same loop, so the two front-ends spelled one test two ways.
+ *
+ * The reported CLI half — "it drops the affected tests entirely" — did **not**
+ * reproduce, and that is asserted below rather than left as an absence: the CLI
+ * emits the same one path the page does.
+ */
+test('a prefixed crash id yields the same bare path on both sides', () => {
+    const bare =
+        'toolkit/components/extensions/test/xpcshell/test_ext_background_early_shutdown.js';
+    const profile = prefixedCrashProfile();
+
+    const pagePaths = workerExtractTestTimings()(profile).map((timing) => timing.path);
+    const cliPaths = parseTestMarkers(profile, {
+        jobName: 'test-linux2404-64-ccov/opt-xpcshell',
+        taskId: 'T',
+        retryId: 0,
+    } as TreeherderJob).map((timing) => timing.path);
+
+    // Two entries each: the claimed CRASH and the synthetic one. The synthetic
+    // entry is the one that used to differ.
+    assert.deepEqual(pagePaths, [bare, bare], 'the page emits the bare path twice');
+    assert.deepEqual(cliPaths, [bare, bare], 'and so does the CLI — it drops neither');
+    assert.deepEqual(pagePaths, cliPaths, 'one test, one spelling, both front-ends');
+});
+
+test('no emitted path carries a manifest prefix, on either side', () => {
+    // The fixture push first: mochitest, so no path in it has a prefix, and the
+    // assertion is that neither parser invents one. Then the synthetic prefixed
+    // profile, which is where the two used to disagree.
+    const pageExtract = workerExtractTestTimings();
+    for (const [key, timings] of timingsByRun(PUSH)) {
+        const job = { jobName: key.split('|')[0]!, taskId: 'T', retryId: 0 } as TreeherderJob;
+        const profile = synthProfile(timings);
+        for (const timing of pageExtract(profile)) {
+            assert.ok(!timing.path.includes(':'), `page emitted ${timing.path}`);
+        }
+        for (const timing of parseTestMarkers(profile, job)) {
+            assert.ok(!timing.path.includes(':'), `CLI emitted ${timing.path}`);
+        }
+    }
+    // And the expected count is present, which is the other half of item 15's
+    // asserted invariant: a normaliser that dropped the rows instead of fixing
+    // them would satisfy the colon check alone. 178 rather than 180 because two
+    // of the push's rows are crashes recorded against a `.toml` manifest, which
+    // the CLI drops on purpose — the same two the round-trip test above counts
+    // and the divergence list declares, not a loss introduced here.
+    assert.equal(PUSH.timings.length, 180, 'the pinned push changed');
+    const cliTotal = [...timingsByRun(PUSH)].reduce(
+        (total, [key, timings]) =>
+            total +
+            parseTestMarkers(synthProfile(timings), {
+                jobName: key.split('|')[0]!,
+                taskId: 'T',
+                retryId: 0,
+            } as TreeherderJob).length,
+        0
+    );
+    assert.equal(cliTotal, 178, 'every fixture timing but the two manifests survives');
+
+    for (const timing of pageExtract(prefixedCrashProfile())) {
+        assert.ok(!timing.path.includes(':'), `page emitted ${timing.path}`);
+    }
+});
+
+/**
+ * The drop is a recorded entry, not a `continue`.
+ *
+ * Item 15's fix asks for this explicitly. The subject is a crash recorded against
+ * a `.toml` manifest — real, and deliberately not reported as a test failure
+ * because it has no path to compare against central, which is a thing the command
+ * should be able to say rather than a row a reader has to notice is absent.
+ */
+test('a crash against a manifest is recorded as a drop, with its reason', () => {
+    const profile = {
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: ['test', 'Crash'],
+                markers: {
+                    length: 1,
+                    name: [1],
+                    data: [
+                        {
+                            type: 'Crash',
+                            test: 'toolkit/components/extensions/test/xpcshell/xpcshell.toml',
+                            signature: 'shutdownhang | Foo',
+                            minidump: null,
+                        },
+                    ],
+                    startTime: [10],
+                    endTime: [10],
+                },
+            },
+        ],
+    };
+    const dropped: DroppedMarker[] = [];
+    const timings = parseTestMarkers(
+        profile,
+        { jobName: 'test-linux/opt-xpcshell', taskId: 'T', retryId: 0 } as TreeherderJob,
+        dropped
+    );
+    assert.equal(timings.length, 0, 'a manifest is not a test path, so no row');
+    assert.deepEqual(dropped, [
+        {
+            kind: 'Crash',
+            id: 'toolkit/components/extensions/test/xpcshell/xpcshell.toml',
+            reason: 'not-a-test-path',
+            status: 'CRASH',
+        },
+    ]);
+});
+
+/**
+ * A `Test` marker whose id is not a path drops silently *by design*.
+ *
+ * The xpcshell selftest job's markers are 63 bare function names, all `PASS`, six
+ * jobs — 378 drops that mean nothing. Only a failing marker is recorded, so the
+ * one that matters is not buried. Asserted in both directions so the filter
+ * cannot be widened back by accident.
+ */
+test('only a failing Test marker records its drop', () => {
+    const markerProfile = (status: string): unknown => ({
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: ['test'],
+                markers: {
+                    length: 1,
+                    name: [0],
+                    data: [{ type: 'Test', test: 'testAddTaskSkip', status }],
+                    startTime: [10],
+                    endTime: [20],
+                },
+            },
+        ],
+    });
+    const job = { jobName: 'test-linux/opt-xpcshell', taskId: 'T', retryId: 0 } as TreeherderJob;
+    for (const [status, expected] of [
+        ['PASS', 0],
+        ['SKIP', 0],
+        ['FAIL', 1],
+        ['TIMEOUT', 1],
+        ['CRASH', 1],
+        ['ERROR', 1],
+    ] as [string, number][]) {
+        const dropped: DroppedMarker[] = [];
+        assert.equal(parseTestMarkers(markerProfile(status), job, dropped).length, 0);
+        assert.equal(dropped.length, expected, `${status} drop recorded ${dropped.length} times`);
+    }
+});
+
+// --- item 18's count, which is the whole feature -------------------------
+
+/**
+ * ## Why an arithmetic test, on rendered text
+ *
+ * Item 18's default row says how many messages it is not showing. That number is
+ * the feature — it is what tells a reader to pass `--messages` — so a wrong one
+ * defeats it silently, and review found two ways it was wrong.
+ *
+ * `messages` and `allMessages` are **not nested**, which is the trap:
+ *
+ * - a synthetic `CRASH` row has its signature in `messages` and nothing at all in
+ *   `allMessages` (a crash marker carries no `TestStatus` messages), so
+ *   `allMessages.length - shown.length` went *negative* and the hint vanished;
+ * - a message carried on the `Test` marker rather than a `TestStatus` one is
+ *   likewise in `messages` only, so it was subtracted from a total that never
+ *   counted it.
+ *
+ * Asserted on the rendered lines rather than on the JSON, because the defect was
+ * in the renderer and the JSON was right both times.
+ */
+test('the +N more count matches the messages that exist, crashes included', async () => {
+    const text = (
+        await invoke(['try', '7d16bff81bb1', '--limit', '0'], {
+            treeherder: fakeTreeherder(PUSH.jobs),
+            fetchUrl: pushProfileFetcher(PUSH),
+            source: fixtureSource(),
+        })
+    ).stdout;
+    const result = await cli();
+    const rows = [
+        ...result.permaFails,
+        ...result.knownIntermittents,
+        ...result.newIntermittents,
+    ];
+    assert.ok(rows.length > 0, 'the pinned push still has failures to check');
+
+    let checkedHints = 0;
+    let checkedNested = 0;
+    // The shape that made the old arithmetic go negative, counted over the rows
+    // themselves rather than over the rendered blocks — on this push both such
+    // rows land in a compact section, which prints no messages, so counting them
+    // inside the render loop below would count zero and the control would be
+    // measuring the wrong thing.
+    const notNested = rows.filter(
+        (row) => row.allMessages.length === 0 && row.messages.length > 0
+    );
+    assert.deepEqual(
+        notNested.map((row) => row.statuses.join(',')),
+        ['CRASH', 'CRASH'],
+        'the two not-nested rows on this push are its synthetic crashes'
+    );
+    for (const row of notNested) {
+        // `allMessages.length - min(messages.length, 2)` was -1 here, so the
+        // union is what the count has to be taken over.
+        const union = new Set<string>([
+            ...row.messages,
+            ...row.allMessages.map((entry) => entry.message),
+        ]);
+        for (const message of row.messages.slice(0, 2)) {
+            union.delete(message);
+        }
+        assert.equal(union.size, 0, `${row.path}: a crash row has nothing left to hint at`);
+    }
+
+    for (const row of rows) {
+        // The union is the population the hint must describe: every distinct
+        // message this test recorded anywhere, minus the ones the row printed.
+        const union = new Set<string>([
+            ...row.messages,
+            ...row.allMessages.map((entry) => entry.message),
+        ]);
+        for (const message of row.messages.slice(0, 2)) {
+            union.delete(message);
+        }
+        // The row's own block of the output, from its path to the blank line.
+        // Only the detailed sections print one, so a compact row has none.
+        const start = text.indexOf(`  ${row.path}\n`);
+        if (start < 0) {
+            continue;
+        }
+        const end = text.indexOf('\n\n', start);
+        const block = text.slice(start, end < 0 ? undefined : end);
+        const hint = /\(\+(\d+) more messages? for this test; --messages to see them\)/.exec(block);
+
+        if (union.size === 0) {
+            assert.equal(hint, null, `${row.path}: a hint with nothing left to show`);
+        } else {
+            assert.ok(hint !== null, `${row.path}: ${union.size} unshown messages and no hint`);
+            assert.equal(
+                Number(hint[1]),
+                union.size,
+                `${row.path}: the hint miscounts the unshown messages`
+            );
+            checkedHints++;
+        }
+        if (row.allMessages.length > row.messages.length) {
+            checkedNested++;
+        }
+    }
+    // Positive controls: the corpus must actually contain the shapes this test
+    // claims to cover, or it passes by never reaching its assertions — the
+    // failure mode review flagged in the item 15 probe, which had no control.
+    assert.ok(checkedHints > 0, 'no rendered row exercised the +N hint');
+    assert.ok(checkedNested > 0, 'no rendered row had more messages than it showed');
 });

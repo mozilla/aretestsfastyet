@@ -51,6 +51,7 @@ import {
     platformsCovered,
     platformsInFile,
 } from '../../lib/query/coverage.ts';
+import { buildTestIssues } from '../../lib/query/test-issues.ts';
 import {
     type TestStats,
     computeTestStats,
@@ -172,6 +173,14 @@ export interface TestJson {
         /** Platforms in the file that this test never runs on. */
         absentPlatforms: string[];
     } | null;
+    /**
+     * Every issue of this test, ordered by count — the list `test.html` shows.
+     *
+     * `messages`, `crashSignatures` and `skips` below are slices of this, kept
+     * because `CLI.md` documents them; all three are keyed on message text, so
+     * none of them can carry a timeout.
+     */
+    issues: { count: number; type: string; message: string }[];
     messages: { message: string; count: number }[];
     crashSignatures: { signature: string; count: number }[];
     skips: { message: string; count: number }[];
@@ -509,6 +518,9 @@ export async function runTest(context: CommandContext, args: ParsedArgs): Promis
                 ? null
                 : { days: configs[0]!.recentDays, minRuns: 20 },
         reach: buildReach(decoded, coverage),
+        // `statsOptions` is the same day and config filter the header totals
+        // used, so the list and the totals cover one population.
+        issues: buildTestIssues(decoded, identity.testId, totals, statsOptions),
         messages,
         crashSignatures,
         skips,
@@ -1188,38 +1200,22 @@ function renderText(result: TestJson, limit: number): string {
         );
     }
 
-    if (result.messages.length > 0) {
+    // Replaces the `Failure messages`, `Crash signatures` and `Skips` sections.
+    if (result.issues.length > 0) {
         lines.push('');
-        lines.push('Failure messages');
-        const shown = applyLimit(result.messages, limit);
+        lines.push('Issues');
+        const shown = applyLimit(result.issues, limit);
         for (const entry of shown) {
-            lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine(entry.message), 100)}`);
+            lines.push(
+                `  ${String(entry.count).padStart(5)}x  ${entry.type.padEnd(7)} ` +
+                    `${truncate(oneLine(entry.message), 92)}`
+            );
         }
-        lines.push(moreLine(result.messages.length, shown.length));
+        lines.push(moreLine(result.issues.length, shown.length));
     } else if (result.configFilter !== null) {
         lines.push('');
-        lines.push('Failure messages');
-        lines.push(`  ${emptyMessagesUnderFilter()}`);
-    }
-
-    if (result.crashSignatures.length > 0) {
-        lines.push('');
-        lines.push('Crash signatures');
-        const shown = applyLimit(result.crashSignatures, limit);
-        for (const entry of shown) {
-            lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(entry.signature, 100)}`);
-        }
-        lines.push(moreLine(result.crashSignatures.length, shown.length));
-    }
-
-    if (result.skips.length > 0) {
-        lines.push('');
-        lines.push('Skips');
-        const shown = applyLimit(result.skips, limit);
-        for (const entry of shown) {
-            lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine(entry.message), 100)}`);
-        }
-        lines.push(moreLine(result.skips.length, shown.length));
+        lines.push('Issues');
+        lines.push(`  ${emptyIssuesUnderFilter()}`);
     }
 
     if (result.coverage !== undefined) {
@@ -1616,37 +1612,27 @@ function renderMarkdown(result: TestJson, limit: number): string {
         lines.push(md.moreLine(result.configs.length, shown.length));
     }
 
-    if (result.messages.length > 0) {
+    if (result.issues.length > 0) {
         lines.push('');
-        lines.push(md.heading('Failure messages'));
+        lines.push(md.heading('Issues'));
         lines.push('');
-        const shown = applyLimit(result.messages, limit);
+        const shown = applyLimit(result.issues, limit);
         lines.push(
             ...md.table(
-                [{ header: 'count', align: 'right' }, { header: 'message' }],
-                shown.map((entry) => [String(entry.count), oneLine(entry.message)])
+                [
+                    { header: 'count', align: 'right' },
+                    { header: 'kind' },
+                    { header: 'message' },
+                ],
+                shown.map((entry) => [String(entry.count), entry.type, oneLine(entry.message)])
             )
         );
-        lines.push(md.moreLine(result.messages.length, shown.length));
+        lines.push(md.moreLine(result.issues.length, shown.length));
     } else if (result.configFilter !== null) {
         lines.push('');
-        lines.push(md.heading('Failure messages'));
+        lines.push(md.heading('Issues'));
         lines.push('');
-        lines.push(emptyMessagesUnderFilter());
-    }
-
-    if (result.skips.length > 0) {
-        lines.push('');
-        lines.push(md.heading('Skips'));
-        lines.push('');
-        const shown = applyLimit(result.skips, limit);
-        lines.push(
-            ...md.table(
-                [{ header: 'count', align: 'right' }, { header: 'reason' }],
-                shown.map((entry) => [String(entry.count), oneLine(entry.message)])
-            )
-        );
-        lines.push(md.moreLine(result.skips.length, shown.length));
+        lines.push(emptyIssuesUnderFilter());
     }
 
     if (result.coverage !== undefined) {
@@ -1748,12 +1734,12 @@ function describeReach(reach: TestJson['reach']): string | null {
 }
 
 /**
- * What the `Failure messages` section says when a `--config` filter emptied it.
+ * What the `Issues` section says when a `--config` filter emptied it.
  * Both renderers call this, so the heading cannot survive a filter in one format
  * and vanish in the other.
  */
-function emptyMessagesUnderFilter(): string {
-    return '(no failures on the configurations this filter matched)';
+function emptyIssuesUnderFilter(): string {
+    return '(no issues on the configurations this filter matched)';
 }
 
 /**

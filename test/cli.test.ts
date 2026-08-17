@@ -1073,7 +1073,7 @@ test('the text report names the --config filter its numbers were measured under'
 /** A config `MULTI_CONFIG_TEST` ran 937 times on and never failed on. */
 const CLEAN_CONFIG = 'test-linux2404-64/opt-xpcshell';
 
-test('--config keeps the Failure messages section in text AND in markdown', async () => {
+test('--config keeps the Issues section in text AND in markdown', async () => {
     // A filter matching a config the test never failed on. The header says 0
     // fail, so the section has nothing to list — but it must still appear and
     // say so, because its absence is what made a filtered report read as an
@@ -1084,8 +1084,8 @@ test('--config keeps the Failure messages section in text AND in markdown', asyn
     // vanished in the one format `CLI.md` documents for pasting into a bug,
     // where a reader has nothing to cross-check it against.
     const text = await invoke(['test', MULTI_CONFIG_TEST, '--config', CLEAN_CONFIG]);
-    assert.match(text.stdout, /^Failure messages$/m);
-    assert.match(text.stdout, /no failures on the configurations this filter matched/);
+    assert.match(text.stdout, /^Issues$/m);
+    assert.match(text.stdout, /no issues on the configurations this filter matched/);
 
     const markdown = await invoke([
         'test',
@@ -1094,12 +1094,12 @@ test('--config keeps the Failure messages section in text AND in markdown', asyn
         CLEAN_CONFIG,
         '--markdown',
     ]);
-    assert.match(markdown.stdout, /^#+ Failure messages$/m, 'markdown dropped the section');
-    assert.match(markdown.stdout, /no failures on the configurations this filter matched/);
+    assert.match(markdown.stdout, /^#+ Issues$/m, 'markdown dropped the section');
+    assert.match(markdown.stdout, /no issues on the configurations this filter matched/);
 
     // Same wording in both, so the two renderers cannot drift into describing
     // the same state differently.
-    const sentence = /\(no failures on the configurations this filter matched\)/;
+    const sentence = /\(no issues on the configurations this filter matched\)/;
     assert.match(text.stdout, sentence);
     assert.match(markdown.stdout, sentence);
 });

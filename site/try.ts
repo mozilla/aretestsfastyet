@@ -173,6 +173,14 @@
  *     worker cannot import, and `test/try-parity.test.ts` pins the copy against
  *     the shared function so they cannot drift.
  *
+ *  9. **The `<manifest>:` prefix is stripped for all three marker kinds, not
+ *     one.** The second entry that changes an output value. Upstream stripped it
+ *     inside the `Test` branch (`old/try.html:990`) and nowhere else, so the
+ *     `Text` branch and the synthetic-crash loop emitted the raw id — and a path
+ *     carrying its prefix matches nothing on central, which showed two known
+ *     intermittents as introduced by the push. `lib/model/test-path.ts` owns the
+ *     rule; the worker keeps a pinned copy, as it does for `normalizeMessage`.
+ *
  * Everything else — the row unit, the three tables and their split rule, the
  * sort keys and their directions, the `UNEXPECTED-PASS` failure status, the
  * `totalJobs` denominator, the headline-rate argmax, the search box's `!`
@@ -378,6 +386,27 @@ function normalizeMessage(message) {
         .replace(/Test ran for \d+s/g, 'Test ran for Xs');
 }
 
+// The path derivation, one rule for all three marker kinds; upstream had it in
+// the Test branch only (old/try.html:990). Anchored on the .toml/.ini extension
+// rather than the first colon because this now runs over the free-form Text
+// marker too, where an unanchored rule would corrupt a URL or a Windows path
+// into something that still looks like a test path. lib/model/test-path.ts owns
+// the rule; this copy exists because a Blob worker cannot import, and
+// test/try-parity.test.ts pins the two against each other.
+function stripManifestPrefix(id) {
+    return id.replace(/^[^:]+\.(?:toml|ini):/, '').replace(/\s+\(finished\)$/, '').trim();
+}
+
+function isTestFilePath(path) {
+    return /\.(js|html|xhtml)$/.test(path);
+}
+
+function normalizeTestPath(id) {
+    if (id === null || id === undefined || id === '') return null;
+    const path = stripManifestPrefix(id);
+    return isTestFilePath(path) ? path : null;
+}
+
 function extractTextRanges(markers, text) {
     const ranges = [];
     for (let i = 0; i < markers.length; i++) {
@@ -510,9 +539,6 @@ function extractTestTimings(profile) {
                 }
             }
 
-            if (testPath?.includes(':')) {
-                testPath = testPath.split(':')[1];
-            }
         } else if (data.type === 'Text') {
             testPath = data.text;
             if (testPath?.startsWith('replaying full log for ')) continue;
@@ -521,7 +547,10 @@ function extractTestTimings(profile) {
             continue;
         }
 
-        if (!testPath || !/\.(js|html|xhtml)$/.test(testPath)) continue;
+        // One derivation for both branches; upstream stripped in the Test branch
+        // alone and then applied the .js filter to both.
+        testPath = normalizeTestPath(testPath);
+        if (testPath === null) continue;
 
         const timing = {
             path: testPath,
@@ -556,10 +585,13 @@ function extractTestTimings(profile) {
     // Without this they'd be invisible whenever the job also has another test
     // failure, since the log-based fallback only runs for jobs with no blamed
     // failure at all. Emit one synthetic CRASH timing per such crash.
+    // Stripped, but the .js filter is NOT applied: a crash recorded against a
+    // .toml manifest is what this loop exists to surface, so it keeps that row
+    // where cli/commands/try.ts drops it.
     for (const c of crashMarkers) {
         if (c.consumed || !c.testPath) continue;
         const timing = {
-            path: c.testPath,
+            path: stripManifestPrefix(c.testPath),
             duration: 0,
             status: 'CRASH',
             timestamp: profile.meta.startTime + c.startTime,

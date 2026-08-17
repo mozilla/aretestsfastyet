@@ -7472,6 +7472,115 @@ function operatingSystemOf(jobName) {
   return "unknown";
 }
 
+// lib/query/test-issues.ts
+var FAILURE_NO_MESSAGE = "Failure details not recorded (likely Android or platform logging issue)";
+var CRASH_NO_SIGNATURE = "Crash signature not recorded";
+var TIMEOUT_MESSAGE = "Test exceeded time limit";
+function buildTestIssues(file, testId, stats, options = {}) {
+  const issues = [];
+  for (const [message, count2] of sortedByCountDesc(skipCountsByMessage(file, testId, options))) {
+    issues.push({ count: count2, type: "SKIP", message });
+  }
+  let namedFailures = 0;
+  for (const [message, count2] of sortedByCountDesc(
+    failureCountsByMessage(file, testId, options)
+  )) {
+    issues.push({ count: count2, type: "FAIL", message });
+    namedFailures += count2;
+  }
+  if (stats.failCount > namedFailures) {
+    issues.push({
+      count: stats.failCount - namedFailures,
+      type: "FAIL",
+      message: FAILURE_NO_MESSAGE
+    });
+  }
+  let namedCrashes = 0;
+  for (const [signature, count2] of sortedByCountDesc(
+    crashCountsBySignature(file, testId, options)
+  )) {
+    issues.push({ count: count2, type: "CRASH", message: signature });
+    namedCrashes += count2;
+  }
+  if (stats.crashCount > namedCrashes) {
+    issues.push({
+      count: stats.crashCount - namedCrashes,
+      type: "CRASH",
+      message: CRASH_NO_SIGNATURE
+    });
+  }
+  if (stats.timeoutCount > 0) {
+    issues.push({ count: stats.timeoutCount, type: "TIMEOUT", message: TIMEOUT_MESSAGE });
+  }
+  issues.sort((a, b) => b.count - a.count);
+  return issues;
+}
+function sortedByCountDesc(counts) {
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+function included(file, entry, options) {
+  if (!inDayRange(entry.day, options.dayRange)) {
+    return false;
+  }
+  if (options.jobFilter === void 0) {
+    return true;
+  }
+  const jobName = jobNameOfEntry(file, entry);
+  return jobName === null ? false : options.jobFilter(jobName);
+}
+function skipCountsByMessage(file, testId, options) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of file.runsOfTest(testId)) {
+    if (classifyStatus(entry.status).kind !== "skip") {
+      continue;
+    }
+    if (!included(file, entry, options)) {
+      continue;
+    }
+    if (entry.message === void 0 || entry.message === null) {
+      continue;
+    }
+    if (skipReason(entry.message) === "run-if") {
+      continue;
+    }
+    const message = displaySkipMessage(entry.message);
+    counts.set(message, (counts.get(message) ?? 0) + entry.count);
+  }
+  return counts;
+}
+function failureCountsByMessage(file, testId, options) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of file.runsOfTest(testId)) {
+    if (classifyStatus(entry.status).kind !== "fail") {
+      continue;
+    }
+    if (!included(file, entry, options)) {
+      continue;
+    }
+    if (entry.message === void 0 || entry.message === null) {
+      continue;
+    }
+    counts.set(entry.message, (counts.get(entry.message) ?? 0) + entry.count);
+  }
+  return counts;
+}
+function crashCountsBySignature(file, testId, options) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of file.runsOfTest(testId)) {
+    if (classifyStatus(entry.status).kind !== "crash") {
+      continue;
+    }
+    if (!included(file, entry, options)) {
+      continue;
+    }
+    if (entry.crashSignature === void 0 || entry.crashSignature === null) {
+      continue;
+    }
+    counts.set(entry.crashSignature, (counts.get(entry.crashSignature) ?? 0) + entry.count);
+  }
+  return counts;
+}
+
 // cli/commands/test.ts
 var TEST_OPTIONS = {
   coverage: {
@@ -7643,6 +7752,9 @@ async function runTest(context, args) {
     canAttributeConfigs: canAttributeConfigs(decoded),
     recentWindow: configs.length === 0 || window.singleDay ? null : { days: configs[0].recentDays, minRuns: 20 },
     reach: buildReach(decoded, coverage),
+    // `statsOptions` is the same day and config filter the header totals
+    // used, so the list and the totals cover one population.
+    issues: buildTestIssues(decoded, identity.testId, totals, statsOptions),
     messages,
     crashSignatures,
     skips
@@ -8084,36 +8196,20 @@ function renderText7(result, limit) {
       result.canAttributeConfigs ? "   the failures could not be attributed to a job)" : "   table cannot be built from it)"
     );
   }
-  if (result.messages.length > 0) {
+  if (result.issues.length > 0) {
     lines.push("");
-    lines.push("Failure messages");
-    const shown = applyLimit(result.messages, limit);
+    lines.push("Issues");
+    const shown = applyLimit(result.issues, limit);
     for (const entry of shown) {
-      lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine3(entry.message), 100)}`);
+      lines.push(
+        `  ${String(entry.count).padStart(5)}x  ${entry.type.padEnd(7)} ${truncate(oneLine3(entry.message), 92)}`
+      );
     }
-    lines.push(moreLine2(result.messages.length, shown.length));
+    lines.push(moreLine2(result.issues.length, shown.length));
   } else if (result.configFilter !== null) {
     lines.push("");
-    lines.push("Failure messages");
-    lines.push(`  ${emptyMessagesUnderFilter()}`);
-  }
-  if (result.crashSignatures.length > 0) {
-    lines.push("");
-    lines.push("Crash signatures");
-    const shown = applyLimit(result.crashSignatures, limit);
-    for (const entry of shown) {
-      lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(entry.signature, 100)}`);
-    }
-    lines.push(moreLine2(result.crashSignatures.length, shown.length));
-  }
-  if (result.skips.length > 0) {
-    lines.push("");
-    lines.push("Skips");
-    const shown = applyLimit(result.skips, limit);
-    for (const entry of shown) {
-      lines.push(`  ${String(entry.count).padStart(4)}x  ${truncate(oneLine3(entry.message), 100)}`);
-    }
-    lines.push(moreLine2(result.skips.length, shown.length));
+    lines.push("Issues");
+    lines.push(`  ${emptyIssuesUnderFilter()}`);
   }
   if (result.coverage !== void 0) {
     lines.push("");
@@ -8424,36 +8520,27 @@ function renderMarkdown7(result, limit) {
     );
     lines.push(moreLine(result.configs.length, shown.length));
   }
-  if (result.messages.length > 0) {
+  if (result.issues.length > 0) {
     lines.push("");
-    lines.push(heading("Failure messages"));
+    lines.push(heading("Issues"));
     lines.push("");
-    const shown = applyLimit(result.messages, limit);
+    const shown = applyLimit(result.issues, limit);
     lines.push(
       ...table(
-        [{ header: "count", align: "right" }, { header: "message" }],
-        shown.map((entry) => [String(entry.count), oneLine3(entry.message)])
+        [
+          { header: "count", align: "right" },
+          { header: "kind" },
+          { header: "message" }
+        ],
+        shown.map((entry) => [String(entry.count), entry.type, oneLine3(entry.message)])
       )
     );
-    lines.push(moreLine(result.messages.length, shown.length));
+    lines.push(moreLine(result.issues.length, shown.length));
   } else if (result.configFilter !== null) {
     lines.push("");
-    lines.push(heading("Failure messages"));
+    lines.push(heading("Issues"));
     lines.push("");
-    lines.push(emptyMessagesUnderFilter());
-  }
-  if (result.skips.length > 0) {
-    lines.push("");
-    lines.push(heading("Skips"));
-    lines.push("");
-    const shown = applyLimit(result.skips, limit);
-    lines.push(
-      ...table(
-        [{ header: "count", align: "right" }, { header: "reason" }],
-        shown.map((entry) => [String(entry.count), oneLine3(entry.message)])
-      )
-    );
-    lines.push(moreLine(result.skips.length, shown.length));
+    lines.push(emptyIssuesUnderFilter());
   }
   if (result.coverage !== void 0) {
     lines.push("");
@@ -8525,8 +8612,8 @@ function describeReach(reach) {
   const absent = reach.absentPlatforms.length === 0 ? "" : ` \u2014 not ${reach.absentPlatforms.join(", ")}; see --coverage`;
   return `Runs on ${reach.configCount} configs across ${platforms}${absent}`;
 }
-function emptyMessagesUnderFilter() {
-  return "(no failures on the configurations this filter matched)";
+function emptyIssuesUnderFilter() {
+  return "(no issues on the configurations this filter matched)";
 }
 function describeConfigFilter(filter) {
   if (filter === null) {
@@ -8642,6 +8729,52 @@ function normalizeMessage(message) {
     return null;
   }
   return message.replace(/\r\n/g, "\n").replace(/task_\d+/g, "task_id").replace(/\nRejection date: [^\n]+/g, "").replace(/Test ran for \d+s/g, "Test ran for Xs");
+}
+
+// lib/model/marker-messages.ts
+function partitionMarkerMessages(messages) {
+  const seenMessage = /* @__PURE__ */ new Set();
+  const seenProfile = /* @__PURE__ */ new Set();
+  const out = { messages: [], profileFilenames: [] };
+  for (const entry of messages) {
+    const message = typeof entry === "string" ? entry : entry.message;
+    if (!message) {
+      continue;
+    }
+    const filename = uploadedProfileName(message);
+    if (filename !== null) {
+      if (!seenProfile.has(filename)) {
+        seenProfile.add(filename);
+        out.profileFilenames.push(filename);
+      }
+      continue;
+    }
+    if (seenMessage.has(message)) {
+      continue;
+    }
+    seenMessage.add(message);
+    out.messages.push(message);
+  }
+  return out;
+}
+
+// lib/model/test-path.ts
+var MANIFEST_PREFIX = /^[^:]+\.(?:toml|ini):/;
+function stripManifestPrefix(id) {
+  return id.replace(MANIFEST_PREFIX, "").replace(/\s+\(finished\)$/, "").trim();
+}
+function isTestFilePath(path) {
+  return /\.(js|html|xhtml)$/.test(path);
+}
+function normalizeTestPath(id) {
+  if (id === null || id === void 0 || id === "") {
+    return null;
+  }
+  const path = stripManifestPrefix(id);
+  return isTestFilePath(path) ? path : null;
+}
+function describeTestPathDrop(id) {
+  return id === null || id === void 0 || id === "" ? "no-id" : "not-a-test-path";
 }
 
 // lib/sources/treeherder.ts
@@ -8862,6 +8995,7 @@ function selectTryJobs(jobs, options) {
 }
 
 // cli/commands/try.ts
+var MESSAGE_CAP = 20;
 var TRY_OPTIONS = {
   project: {
     type: "string",
@@ -8888,6 +9022,10 @@ var TRY_OPTIONS = {
   },
   "task-ids": { type: "boolean", describe: "Print the task IDs behind each failure." },
   profiles: { type: "boolean", describe: "Print raw profile artifact URLs." },
+  messages: {
+    type: "boolean",
+    describe: `Print every failure message per row, not just the first (cap ${MESSAGE_CAP}).`
+  },
   concurrency: {
     type: "number",
     placeholder: "<n>",
@@ -8990,7 +9128,13 @@ async function runTry(context, args) {
   const limit = context.globals.limit ?? DEFAULT_LIMIT6;
   emit(
     context,
-    context.globals.format === "markdown" ? renderMarkdown8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs")) : renderText8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs"))
+    context.globals.format === "markdown" ? renderMarkdown8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs")) : renderText8(
+      result,
+      limit,
+      boolOption(args, "perma-only"),
+      boolOption(args, "other-jobs"),
+      boolOption(args, "messages")
+    )
   );
 }
 function isPermaFail(failure) {
@@ -9015,6 +9159,7 @@ function isStreamedProfile(bytes2) {
 }
 async function collectTimings(context, jobs, fetchUrl, concurrency) {
   const timings = [];
+  const dropped = [];
   const queue = [...jobs];
   let done = 0;
   let missing = 0;
@@ -9040,7 +9185,7 @@ async function collectTimings(context, jobs, fetchUrl, concurrency) {
       } else {
         try {
           const profile = JSON.parse(new TextDecoder().decode(bytes2));
-          timings.push(...parseTestMarkers(profile, job));
+          timings.push(...parseTestMarkers(profile, job, dropped));
         } catch {
           missing++;
         }
@@ -9065,9 +9210,17 @@ async function collectTimings(context, jobs, fetchUrl, concurrency) {
       `${missing} of ${jobs.length} job profiles could not be read; failures in those jobs are not in this report`
     );
   }
+  if (dropped.length > 0) {
+    const shown = [...new Set(dropped.map((entry) => `${entry.status} ${entry.id}`))];
+    warn(
+      context,
+      `${dropped.length} failing marker${dropped.length === 1 ? "" : "s"} named no test path and are not in this report (a crash recorded against a manifest has no path to compare against central): ${shown.slice(0, 5).join(", ")}` + (shown.length > 5 ? `, and ${shown.length - 5} more` : "")
+    );
+  }
   return timings;
 }
-function parseTestMarkers(profile, job) {
+var DROP_WORTH_REPORTING = /* @__PURE__ */ new Set(["FAIL", "TIMEOUT", "CRASH", "ERROR"]);
+function parseTestMarkers(profile, job, dropped = []) {
   const thread = profile?.threads?.[0];
   const markers = thread?.markers;
   const stringArray = thread?.stringArray;
@@ -9121,12 +9274,17 @@ function parseTestMarkers(profile, job) {
     if (message === null) {
       continue;
     }
-    testStatusMarkers.push({ test: data.test, time: startTime[i] ?? 0, message });
+    testStatusMarkers.push({
+      test: data.test,
+      time: startTime[i] ?? 0,
+      message,
+      statusName: stringArray[nameId] ?? "FAIL"
+    });
   }
   testStatusMarkers.sort((a, b) => a.time - b.time);
-  const messageInRange = (test, start, end) => testStatusMarkers.find(
+  const messagesInRange = (test, start, end) => testStatusMarkers.filter(
     (marker) => marker.test === test && marker.time >= start && marker.time <= end
-  )?.message ?? null;
+  ).map((marker) => ({ message: marker.message, status: marker.statusName }));
   const testStringId = stringArray.indexOf("test");
   const timings = [];
   for (let i = 0; i < length; i++) {
@@ -9137,15 +9295,18 @@ function parseTestMarkers(profile, job) {
     if (data?.type !== "Test") {
       continue;
     }
-    const fullTestId = data.test ?? data.name ?? null;
-    if (fullTestId === null) {
-      continue;
-    }
-    let path = fullTestId;
-    if (path.includes(":")) {
-      path = path.split(":")[1] ?? path;
-    }
-    if (!/\.(js|html|xhtml)$/.test(path)) {
+    const fullTestId = data.test ?? data.name ?? "";
+    const path = normalizeTestPath(fullTestId);
+    if (path === null) {
+      const status2 = data.status ?? "";
+      if (DROP_WORTH_REPORTING.has(status2)) {
+        dropped.push({
+          kind: "Test",
+          id: fullTestId,
+          reason: describeTestPathDrop(fullTestId),
+          status: status2
+        });
+      }
       continue;
     }
     const start = startTime[i] ?? 0;
@@ -9159,8 +9320,10 @@ function parseTestMarkers(profile, job) {
       status += overlaps(start, end, parallelRanges) ? "-PARALLEL" : "-SEQUENTIAL";
     }
     let message = normalizeMessage(data.message ?? null);
+    let partitioned = { messages: [], profileFilenames: [] };
     if (status.startsWith("FAIL") || status.startsWith("TIMEOUT") || status === "ERROR") {
-      message = messageInRange(fullTestId, start, end) ?? message;
+      partitioned = partitionMarkerMessages(messagesInRange(fullTestId, start, end));
+      message = partitioned.messages[0] ?? message;
     }
     if (status.startsWith("CRASH")) {
       const matching = crashMarkers.find(
@@ -9175,6 +9338,8 @@ function parseTestMarkers(profile, job) {
       path,
       status,
       message,
+      messages: partitioned.messages,
+      profileFilenames: partitioned.profileFilenames,
       jobName: job.jobName,
       taskId: job.taskId,
       retryId: job.retryId,
@@ -9185,18 +9350,24 @@ function parseTestMarkers(profile, job) {
     if (crash.consumed) {
       continue;
     }
-    let path = crash.testPath;
-    if (path.includes(":")) {
-      path = path.split(":")[1] ?? path;
-    }
-    path = path.replace(/\s+\(finished\)$/, "").trim();
-    if (!/\.(js|html|xhtml)$/.test(path)) {
+    const path = normalizeTestPath(crash.testPath);
+    if (path === null) {
+      dropped.push({
+        kind: "Crash",
+        id: crash.testPath,
+        reason: describeTestPathDrop(crash.testPath),
+        status: "CRASH"
+      });
       continue;
     }
     timings.push({
       path,
       status: "CRASH",
       message: normalizeMessage(crash.signature ?? crash.reason),
+      // The harness uploads a per-test profile from a failure handler that
+      // a crash never reaches.
+      messages: [],
+      profileFilenames: [],
       jobName: job.jobName,
       taskId: job.taskId,
       retryId: job.retryId,
@@ -9232,6 +9403,7 @@ function aggregateFailures(timings, runsPerJobName) {
         failedRunsByJobName: /* @__PURE__ */ new Map(),
         passedOnRerunConfigs: /* @__PURE__ */ new Set(),
         messages: /* @__PURE__ */ new Map(),
+        otherMessages: /* @__PURE__ */ new Map(),
         statuses: /* @__PURE__ */ new Set(),
         modes: /* @__PURE__ */ new Set()
       };
@@ -9247,6 +9419,9 @@ function aggregateFailures(timings, runsPerJobName) {
     entry.statuses.add(baseStatus(timing.status));
     if (timing.message !== null) {
       entry.messages.set(timing.message, (entry.messages.get(timing.message) ?? 0) + 1);
+    }
+    for (const message of timing.messages) {
+      entry.otherMessages.set(message, (entry.otherMessages.get(message) ?? 0) + 1);
     }
     if (passedOnRerunByRun.get(runKeyOf(timing))?.has(timing.path) === true) {
       entry.passedOnRerunConfigs.add(timing.jobName);
@@ -9324,6 +9499,7 @@ function aggregateFailures(timings, runsPerJobName) {
       passedOnRerun: passedOnRerunConfigs.length > 0,
       passedOnRerunConfigs,
       messages: [...entry.messages].sort((a, b) => b[1] - a[1]).map(([message]) => message),
+      allMessages: [...entry.otherMessages].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([message, count2]) => ({ message, count: count2 })),
       // A timeout or a crash records no message anywhere — not in the
       // push and not in the aggregates (`FORMATS.md`) — so for those the
       // status kind is the comparison and it is a valid one. For a plain
@@ -9464,13 +9640,12 @@ function attachProvenance(failures, timings, withTaskIds, withProfiles) {
           retryId: timing.retryId,
           resourceUsage: resourceUsageProfileUrl(timing.taskId, timing.retryId)
         };
-        const testProfile = uploadedProfileUrl(
-          timing.taskId,
-          timing.retryId,
-          timing.message
+        const urls = timing.profileFilenames.map(
+          (filename) => testInfoArtifactUrl(timing.taskId, timing.retryId, filename)
         );
-        if (testProfile !== null) {
-          row.testProfile = testProfile;
+        if (urls.length > 0) {
+          row.testProfiles = urls;
+          row.testProfile = urls[0];
         }
         failure.profiles.push(row);
       }
@@ -9586,7 +9761,7 @@ function universeLine(result) {
   }
   return `Read ${result.profilesRead} failed test job profiles. The ${result.passingTestJobCount} test jobs that passed were not read, so a test that failed and then passed on retry is not here; --all-jobs reads them too.`;
 }
-function renderText8(result, limit, permaOnly, otherJobs) {
+function renderText8(result, limit, permaOnly, otherJobs, allMessages) {
   const lines = [];
   lines.push(
     `Try push ${result.revision.slice(0, 12)} (${result.project}) \u2014 ${result.jobCount} jobs, ${result.failedJobCount} failed`
@@ -9614,7 +9789,8 @@ function renderText8(result, limit, permaOnly, otherJobs) {
     "PERMA-FAILS",
     result.permaFails,
     PERMA_FAIL_DESCRIPTION,
-    limit
+    limit,
+    allMessages
   ));
   if (!permaOnly) {
     lines.push("");
@@ -9662,7 +9838,56 @@ function renderText8(result, limit, permaOnly, otherJobs) {
   }
   return joinLines(lines);
 }
-function section(title, failures, description, limit) {
+function messageLines(failure, allMessages) {
+  const format = (message) => `    ${truncate(message.replace(/\s*\n\s*/g, " \u23CE "), 110)}`;
+  const all = failure.allMessages;
+  if (allMessages) {
+    const counted = new Map(all.map((entry) => [entry.message, entry.count]));
+    const ordered = [...all];
+    for (const message of failure.messages) {
+      if (!counted.has(message)) {
+        counted.set(message, 0);
+        ordered.push({ message, count: 0 });
+      }
+    }
+    if (ordered.length === 0) {
+      return [];
+    }
+    const shown2 = ordered.slice(0, MESSAGE_CAP);
+    const lines2 = shown2.map(
+      (entry) => (
+        // Blank rather than `0x` for a row with no per-execution count, since
+        // `0x` would read as "never seen".
+        `    ${(entry.count > 0 ? `${entry.count}x` : "").padStart(4)} ${truncate(
+          entry.message.replace(/\s*\n\s*/g, " \u23CE "),
+          106
+        )}`
+      )
+    );
+    if (ordered.length > shown2.length) {
+      lines2.push(
+        `    (${ordered.length - shown2.length} more messages, not shown: the cap is ${MESSAGE_CAP} per row)`
+      );
+    }
+    return lines2;
+  }
+  const shown = failure.messages.slice(0, 2);
+  const lines = shown.map(format);
+  const union = /* @__PURE__ */ new Set([
+    ...failure.messages,
+    ...all.map((entry) => entry.message)
+  ]);
+  for (const message of shown) {
+    union.delete(message);
+  }
+  if (union.size > 0) {
+    lines.push(
+      `    (+${union.size} more message${union.size === 1 ? "" : "s"} for this test; --messages to see them)`
+    );
+  }
+  return lines;
+}
+function section(title, failures, description, limit, allMessages) {
   const lines = [`${title} (${failures.length}) \u2014 ${description}`];
   if (failures.length === 0) {
     lines.push("  (none)");
@@ -9710,9 +9935,7 @@ function section(title, failures, description, limit) {
         "    Only failed under parallel execution \u2014 likely racing with its neighbours."
       );
     }
-    for (const message of failure.messages.slice(0, 2)) {
-      lines.push(`    ${truncate(message.replace(/\s*\n\s*/g, " \u23CE "), 110)}`);
-    }
+    lines.push(...messageLines(failure, allMessages));
     if (failure.taskIds !== void 0) {
       for (const entry of failure.taskIds.slice(0, 5)) {
         lines.push(`    task ${entry.taskId}.${entry.retryId}  ${entry.jobName}`);
@@ -9721,8 +9944,8 @@ function section(title, failures, description, limit) {
     if (failure.profiles !== void 0) {
       for (const entry of failure.profiles.slice(0, 5)) {
         lines.push(`    profile ${entry.resourceUsage}`);
-        if (entry.testProfile !== void 0) {
-          lines.push(`    test profile ${entry.testProfile}`);
+        for (const url of entry.testProfiles ?? []) {
+          lines.push(`    test profile ${url}`);
         }
       }
     }

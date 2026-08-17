@@ -301,6 +301,13 @@ interface CliTest {
         platforms: { platform: string; configCount: number }[];
         absentPlatforms: string[];
     } | null;
+    /**
+     * The shared issue list — skips, failures, crashes and timeouts in one
+     * sequence. Declared here independently of `cli/commands/test.ts`'s own type,
+     * like every other field on this mirror, so the assertion is against the
+     * documented JSON shape rather than against whatever the CLI happens to emit.
+     */
+    issues: { count: number; type: string; message: string }[];
     messages: { message: string; count: number }[];
     crashSignatures: { signature: string; count: number }[];
     skips: { message: string; count: number }[];
@@ -629,11 +636,13 @@ test('the failure messages and crash signatures agree, text and count', async ()
 const FAILURE_NO_MESSAGE_TEXT =
     'Failure details not recorded (likely Android or platform logging issue)';
 
-test('the skip messages agree once the shared prefix is accounted for', async () => {
-    // Same condition on both sides, presented differently: the page strips
-    // `skip-if: ` via `displaySkipMessage` (which is `lib/`'s) and the CLI
-    // keeps it. Declared below. What must not differ is the condition or the
-    // count, so those are compared after stripping.
+test('the skip conditions agree exactly, with no prefix to account for', async () => {
+    // This used to strip `skip-if: ` off the CLI side before comparing, because
+    // the CLI rendered the raw string and the page stripped it — a declared
+    // divergence. Since both sides render `buildTestIssues`, which strips via
+    // `displaySkipMessage`, there is nothing to account for and the comparison is
+    // exact. The prefix survives only on the legacy `--json` `skips[]` key,
+    // asserted separately below so that key's shape stays pinned too.
     for (const entry of CORPUS) {
         const result = await cli(entry.path);
         const view = pageView(entry, result.harness);
@@ -641,11 +650,35 @@ test('the skip messages agree once the shared prefix is accounted for', async ()
             .filter((issue) => issue.type === 'SKIP')
             .map((issue) => [issue.count, issue.message] as [number, string])
             .sort();
-        const cliSkips = result.skips
-            .map((row) => [row.count, row.message.replace(/^skip-if:\s*/, '')] as [number, string])
+        const cliSkips = result.issues
+            .filter((row) => row.type === 'SKIP')
+            .map((row) => [row.count, row.message] as [number, string])
             .sort();
         assert.deepEqual(pageSkips, cliSkips, `${entry.path}: the skip conditions differ`);
+        for (const [, message] of cliSkips) {
+            assert.doesNotMatch(
+                message,
+                /^skip-if:/,
+                `${entry.path}: the rendered skip condition still carries the prefix`
+            );
+        }
     }
+});
+
+test('the legacy skips[] JSON key still carries the raw manifest prefix', async () => {
+    // `CLI.md` documents this key and consumers read it, so item 10 left it
+    // alone. Asserted on real output rather than assumed: at least one corpus
+    // test must show the prefix, or this key has silently changed shape.
+    let withPrefix = 0;
+    for (const entry of CORPUS) {
+        const result = await cli(entry.path);
+        for (const row of result.skips) {
+            if (/^skip-if:/.test(row.message)) {
+                withPrefix++;
+            }
+        }
+    }
+    assert.ok(withPrefix > 0, 'no skips[] row carried `skip-if: `, so the key changed shape');
 });
 
 test('the reported window is the same on both sides', async () => {
@@ -777,25 +810,55 @@ test('the page issue list is count-descending, and so is the CLI within each cha
 
         // The full sequence, compared as (count, kind) rather than as text so
         // the label divergences do not mask an ordering difference. Timeouts
-        // are dropped from the page side: the CLI has no timeout channel, which
-        // is the declared divergence below.
-        const pageSequence = view.issues
-            .filter((issue) => issue.type !== 'TIMEOUT')
-            .map((issue) => `${issue.count}|${issue.type}`);
-        const cliSequence = [
-            ...result.skips.map((row) => ({ count: row.count, type: 'SKIP' })),
-            ...result.messages.map((row) => ({ count: row.count, type: 'FAIL' })),
-            ...result.crashSignatures.map((row) => ({ count: row.count, type: 'CRASH' })),
-        ]
-            // The page assembles skips, failures, crashes, timeouts and then
-            // sorts by count alone, so its tie order is that assembly order and
-            // `Array.sort` is stable. Reproduced with the same assembly order.
-            .sort((a, b) => b.count - a.count)
-            .map((row) => `${row.count}|${row.type}`);
+        // used to be dropped from the page side here, because the CLI's three
+        // message channels are all keyed on a recorded string and a `TIMEOUT*`
+        // group records none — the divergence that made 444 timeouts invisible
+        // beside 62 failures (`FX_TESTS_SUMMARY.md` item 10). Both sides now
+        // call `buildTestIssues`, so nothing is filtered out.
+        const pageSequence = view.issues.map((issue) => `${issue.count}|${issue.type}`);
+        const cliSequence = result.issues.map((row) => `${row.count}|${row.type}`);
         assertSameOrder(
             pageSequence,
             cliSequence,
             `${entry.path}: the issue sequences differ`
+        );
+
+        // And the same rows, not merely the same shape — including the message
+        // text, which the three legacy channels could not match (the page strips
+        // the `skip-if: ` prefix and labels an unrecorded failure differently;
+        // those two divergences are declared below and are *about the channels*,
+        // which is why they do not apply to this list). One shared assembly means
+        // one answer, so this is a deep equality rather than an ordering check.
+        assert.deepEqual(
+            result.issues.map((row) => ({
+                count: row.count,
+                type: row.type,
+                message: row.message,
+            })),
+            view.issues.map((issue) => ({
+                count: issue.count,
+                type: issue.type,
+                message: issue.message,
+            })),
+            `${entry.path}: the CLI and the page disagree about the issue list`
+        );
+
+        // The list reconciles with the summary bar, which is the property the
+        // synthetic difference rows exist to guarantee and the reason a reader
+        // can trust the two together. Skips are excluded from the comparison:
+        // `buildTestIssues` drops a skip with no message at all rather than
+        // inventing a label for it, so the SKIP rows can legitimately total less
+        // than `skipCount` (`lib/model/skips.ts` says why every site does this).
+        const byType = (type: string): number =>
+            result.issues
+                .filter((row) => row.type === type)
+                .reduce((sum, row) => sum + row.count, 0);
+        assert.equal(byType('FAIL'), result.totals.failCount, `${entry.path}: FAIL total`);
+        assert.equal(byType('CRASH'), result.totals.crashCount, `${entry.path}: CRASH total`);
+        assert.equal(
+            byType('TIMEOUT'),
+            result.totals.timeoutCount,
+            `${entry.path}: TIMEOUT total — the row item 10 is about`
         );
     }
 });
@@ -881,24 +944,6 @@ test('the page shows every cell where the CLI shows the failing rows', async () 
 
 const DIVERGENCES: Divergence[] = [
     {
-        what: 'timeouts have no CLI issue row',
-        reason:
-            'The page emits one TIMEOUT row per test carrying the whole timeout count under a ' +
-            'fixed string (`site/test-view.ts:1105`), because a `TIMEOUT*` status group records ' +
-            'no `messageIds` at all (`lib/formats/status-entries.ts:18`) and there is nothing to ' +
-            'group by. The CLI has three message channels — `messages`, `crashSignatures`, ' +
-            '`skips` — all keyed on a recorded string, so a timeout falls through all three. It ' +
-            'is not lost: the summary line prints `1 timeout` and the failing config appears in ' +
-            'the ranked table, because `ConfigStats.failCount` counts every non-pass verdict. ' +
-            'But on `dom/security/test/csp/test_bug1777572.html`, whose only issue is one ' +
-            'timeout, the CLI\'s three issue channels are all empty while the page shows a row. ' +
-            'Measured across the corpus: 5 of the 16 tests have a page TIMEOUT row with no CLI ' +
-            'counterpart. Recorded rather than fixed — the fix is a fourth channel in ' +
-            '`cli/commands/test.ts`, outside this change.',
-        page: 'one TIMEOUT row, "Test exceeded time limit"',
-        cli: 'no row in any issue channel',
-    },
-    {
         what: 'the label for a failure that recorded no message',
         reason:
             'The same population under two labels. The page says "Failure details not recorded ' +
@@ -910,19 +955,6 @@ const DIVERGENCES: Divergence[] = [
             'every unrecorded value.',
         page: 'Failure details not recorded (likely Android or platform logging issue)',
         cli: '(no message recorded)',
-    },
-    {
-        what: 'the `skip-if: ` prefix on a skip condition',
-        reason:
-            'Both read the same field; the page strips the prefix with `displaySkipMessage` ' +
-            '(`lib/model/skips.ts:118`, which says every page does this because the prefix is ' +
-            'the same on every message) and the CLI prints the raw string. The conditions and ' +
-            'counts are asserted equal after stripping. Kept as a divergence rather than ' +
-            'silently reconciled because the CLI\'s output is pasted into bugs, where ' +
-            '`skip-if: os == \'android\'` is the manifest line someone would search for and the ' +
-            'bare condition is not.',
-        page: "os == 'android'",
-        cli: "skip-if: os == 'android'",
     },
     {
         what: 'platform granularity in the default view',
@@ -944,40 +976,51 @@ test('every declared divergence still diverges', () => {
     assertDeclaredDivergences('test', DIVERGENCES);
 });
 
-test('the timeout divergence is exactly as large as declared', async () => {
-    // The entry above says 5 of 16. An allow-list number nothing checks is a
-    // comment; this makes it an assertion, so a sixth affected test — or the
-    // divergence being fixed — fails here rather than passing unnoticed.
+test('every test with timeouts gets a timeout row on BOTH sides', async () => {
+    // This test used to assert the opposite — that no CLI channel carried the
+    // timeout row — and pinned the size of that divergence at 7 of 16. The
+    // divergence is item 10 and is now fixed, so the assertion is inverted rather
+    // than deleted: the population it measured is exactly the population that
+    // must now agree, and 7 is still the number of corpus tests that have
+    // timeouts at all. Checked on the CLI's rendered `Issues` list, not on the
+    // legacy channels, because that is the output a reader sees.
     let affected = 0;
     for (const entry of CORPUS) {
         const result = await cli(entry.path);
         const view = pageView(entry, result.harness);
         const pageTimeouts = view.issues.filter((issue) => issue.type === 'TIMEOUT');
-        if (pageTimeouts.length === 0) {
+        const cliTimeouts = result.issues.filter((row) => row.type === 'TIMEOUT');
+        if (entry.stats.timeoutCount === 0) {
+            assert.equal(pageTimeouts.length, 0, `${entry.path}: page row with no timeouts`);
+            assert.equal(cliTimeouts.length, 0, `${entry.path}: CLI row with no timeouts`);
             continue;
         }
         affected++;
+        // One row per side, carrying the whole count: a `TIMEOUT*` group records
+        // no `messageIds`, so there is nothing to break it down by.
         assert.equal(pageTimeouts.length, 1, `${entry.path}: the page emits one TIMEOUT row`);
+        assert.equal(cliTimeouts.length, 1, `${entry.path}: the CLI emits one TIMEOUT row`);
         assert.equal(
-            pageTimeouts[0]!.count,
+            cliTimeouts[0]!.count,
             entry.stats.timeoutCount,
-            `${entry.path}: the TIMEOUT row must carry the whole timeout count`
+            `${entry.path}: the CLI TIMEOUT row must carry the whole timeout count`
         );
-        // And nothing in any CLI channel carries it.
-        const channels = [
-            ...result.messages.map((row) => row.message),
-            ...result.crashSignatures.map((row) => row.signature),
-            ...result.skips.map((row) => row.message),
-        ];
-        for (const text of channels) {
-            assert.doesNotMatch(text, /exceeded time limit/i);
-        }
+        assert.equal(
+            cliTimeouts[0]!.count,
+            pageTimeouts[0]!.count,
+            `${entry.path}: the two sides disagree about the timeout count`
+        );
+        assert.equal(
+            cliTimeouts[0]!.message,
+            pageTimeouts[0]!.message,
+            `${entry.path}: the two sides label the timeout row differently`
+        );
     }
     assert.equal(
         affected,
         7,
-        'the timeout divergence changed size. Re-measure it and update the entry in ' +
-            'DIVERGENCES, or delete the entry if the CLI grew a timeout channel.'
+        'the number of corpus tests with timeouts changed. This is the population ' +
+            'item 10 was about, so re-check that the row is still present on both sides.'
     );
 });
 

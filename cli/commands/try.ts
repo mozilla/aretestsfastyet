@@ -56,6 +56,16 @@ import { computeTestStats } from '../../lib/query/test-stats.ts';
 import { stripChunkSuffix } from '../../lib/model/job-name.ts';
 import { normalizeMessage } from '../../lib/model/failure-message.ts';
 import {
+    type MarkerMessage,
+    type PartitionedMessages,
+    partitionMarkerMessages,
+} from '../../lib/model/marker-messages.ts';
+import {
+    type TestPathDropReason,
+    describeTestPathDrop,
+    normalizeTestPath,
+} from '../../lib/model/test-path.ts';
+import {
     type RunOutcomes,
     baseStatus,
     isFailureStatus,
@@ -63,7 +73,7 @@ import {
     runOutcomes,
     selectTryJobs,
 } from '../../lib/model/try-jobs.ts';
-import { resourceUsageProfileUrl, uploadedProfileUrl } from '../../lib/links.ts';
+import { resourceUsageProfileUrl, testInfoArtifactUrl } from '../../lib/links.ts';
 import { treeherderPushUrl } from '../../lib/links.ts';
 import { type TreeherderJob } from '../../lib/sources/treeherder.ts';
 import { fetchJson, timingsIndex } from '../../lib/sources/source.ts';
@@ -82,6 +92,9 @@ import {
     truncate,
 } from '../format/text.ts';
 import { detectHarness } from '../options.ts';
+
+/** How many messages one row prints under `--messages`; stated in the output. */
+const MESSAGE_CAP = 20;
 
 /** Options `try` adds. */
 export const TRY_OPTIONS: OptionSpecs = {
@@ -112,6 +125,10 @@ export const TRY_OPTIONS: OptionSpecs = {
     },
     'task-ids': { type: 'boolean', describe: 'Print the task IDs behind each failure.' },
     profiles: { type: 'boolean', describe: 'Print raw profile artifact URLs.' },
+    messages: {
+        type: 'boolean',
+        describe: `Print every failure message per row, not just the first (cap ${MESSAGE_CAP}).`,
+    },
     concurrency: {
         type: 'number',
         placeholder: '<n>',
@@ -227,8 +244,10 @@ export interface TryFailure {
      * turned green is excluded from the latter.
      */
     passedOnRerunConfigs: string[];
-    /** The distinct failure messages seen, most common first. */
+    /** One message per failing execution, most common first. */
     messages: string[];
+    /** Every message the failing executions logged, with a count each. */
+    allMessages: { message: string; count: number }[];
     /**
      * Whether the same-message comparison against central means anything.
      *
@@ -253,7 +272,14 @@ export interface TryFailure {
     /** What central says about this test. `null` when it has no data at all. */
     central: CentralHistory | null;
     taskIds?: { taskId: string; retryId: number; jobName: string }[];
-    profiles?: { taskId: string; retryId: number; resourceUsage: string; testProfile?: string }[];
+    profiles?: {
+        taskId: string;
+        retryId: number;
+        resourceUsage: string;
+        testProfile?: string;
+        /** All of them: an in-job rerun uploads a second with a `-2` suffix. */
+        testProfiles?: string[];
+    }[];
 }
 
 /** What the 21-day central aggregate says about a test. */
@@ -474,7 +500,13 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         context,
         context.globals.format === 'markdown'
             ? renderMarkdown(result, limit, boolOption(args, 'perma-only'), boolOption(args, 'other-jobs'))
-            : renderText(result, limit, boolOption(args, 'perma-only'), boolOption(args, 'other-jobs'))
+            : renderText(
+                  result,
+                  limit,
+                  boolOption(args, 'perma-only'),
+                  boolOption(args, 'other-jobs'),
+                  boolOption(args, 'messages')
+              )
     );
     // Exit 0 regardless of what was found: `CLI.md` is explicit that the
     // failures are the answer, not an error, and that scripts should branch on
@@ -526,7 +558,14 @@ function isKnownOnCentral(failure: TryFailure): boolean {
 interface TestTiming {
     path: string;
     status: string;
+    /**
+     * The message the row shows: the first of `messages`, or the `Test` marker's
+     * own when there were no `TestStatus` markers and `messages` is empty.
+     */
     message: string | null;
+    /** Every message logged, in log order, profile notices partitioned out. */
+    messages: string[];
+    profileFilenames: string[];
     jobName: string;
     taskId: string;
     /** The **job-level** retry, Taskcluster's `runs/<n>` — a different axis from `isRerun`. */
@@ -601,6 +640,7 @@ async function collectTimings(
     concurrency: number
 ): Promise<TestTiming[]> {
     const timings: TestTiming[] = [];
+    const dropped: DroppedMarker[] = [];
     const queue = [...jobs];
     let done = 0;
     let missing = 0;
@@ -631,7 +671,7 @@ async function collectTimings(
             } else {
                 try {
                     const profile = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-                    timings.push(...parseTestMarkers(profile, job));
+                    timings.push(...parseTestMarkers(profile, job, dropped));
                 } catch {
                     missing++;
                 }
@@ -660,6 +700,18 @@ async function collectTimings(
             context,
             `${missing} of ${jobs.length} job profiles could not be read; ` +
                 `failures in those jobs are not in this report`
+        );
+    }
+    // A `warn`, not `progress`: it says the report is incomplete. The ids print
+    // rather than just counting, since the useful question is which shape dropped.
+    if (dropped.length > 0) {
+        const shown = [...new Set(dropped.map((entry) => `${entry.status} ${entry.id}`))];
+        warn(
+            context,
+            `${dropped.length} failing marker${dropped.length === 1 ? '' : 's'} named no test ` +
+                `path and are not in this report (a crash recorded against a manifest has no ` +
+                `path to compare against central): ${shown.slice(0, 5).join(', ')}` +
+                (shown.length > 5 ? `, and ${shown.length - 5} more` : '')
         );
     }
     return timings;
@@ -710,7 +762,32 @@ interface TestStatusMarker {
     test: string;
     time: number;
     message: string;
+    /** `FAIL` or `ERROR`, the marker's name in the string table. */
+    statusName: string;
 }
+
+/**
+ * A marker whose id yielded no test path, and why.
+ *
+ * `kind` matters: a `Test` marker with a non-path id is usually an xpcshell
+ * selftest name, while a `Crash` one is a crash the report cannot attribute.
+ */
+export interface DroppedMarker {
+    kind: 'Test' | 'Crash';
+    /** `''` when the marker named no test at all. */
+    id: string;
+    reason: TestPathDropReason;
+    status: string;
+}
+
+/**
+ * The `Test` marker statuses whose drop is worth recording.
+ *
+ * The xpcshell selftest job names every one of its passing tests with a bare
+ * function name, so recording those drops would bury the ones that matter. Raw
+ * statuses, before the `-PARALLEL`/`-SEQUENTIAL` suffixes are derived.
+ */
+const DROP_WORTH_REPORTING = new Set(['FAIL', 'TIMEOUT', 'CRASH', 'ERROR']);
 
 /** A `Crash` marker, before it is matched to a test. */
 interface CrashMarker {
@@ -738,7 +815,8 @@ interface CrashMarker {
  * - **`FAIL` with `color === 'green'` is an expected failure**, not a failure.
  *   Missing this reports every `fail-if` annotated test as broken.
  * - **The test path may be `manifest.toml:path/to/test.js`**, and only the part
- *   after the colon is the path the aggregates use.
+ *   after the colon is the path the aggregates use. `normalizeTestPath` in
+ *   `lib/model/test-path.ts` owns that rule; the `site/try.ts` worker copies it.
  * - **`Crash` markers that no test marker claims become synthetic `CRASH`
  *   entries** (`old/try.html:1042`). This is not an edge case. Measured on the
  *   five failed Linux mochitest jobs of try push 717fc67feaa071: four of them
@@ -753,9 +831,14 @@ interface CrashMarker {
  *   `FAIL`, and 27 crashes recorded against `.toml` manifests rather than
  *   tests. Those 27 are deliberately dropped by the path filter below —
  *   a manifest is not a test path and has nothing to join against central —
- *   so that job contributes its `FAIL` and nothing else.
+ *   so that job contributes its `FAIL` and nothing else. Pass `dropped` to get
+ *   those discards reported rather than inferred from a missing row.
  */
-export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTiming[] {
+export function parseTestMarkers(
+    profile: unknown,
+    job: TreeherderJob,
+    dropped: DroppedMarker[] = []
+): TestTiming[] {
     const thread = (profile as { threads?: ProfileThread[] })?.threads?.[0];
     const markers = thread?.markers;
     const stringArray = thread?.stringArray;
@@ -823,19 +906,22 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         if (message === null) {
             continue;
         }
-        testStatusMarkers.push({ test: data.test, time: startTime[i] ?? 0, message });
+        testStatusMarkers.push({
+            test: data.test,
+            time: startTime[i] ?? 0,
+            message,
+            statusName: stringArray[nameId] ?? 'FAIL',
+        });
     }
-    // `old/try.html:952` sorts by test then time, and then takes the *first* match
-    // in that order — which for one test's one time range is its earliest
-    // message. Sorting by time alone gives the same first element per range
-    // and keeps the intent visible.
+    // Sorted by time, so the collect below yields harness log order.
     testStatusMarkers.sort((a, b) => a.time - b.time);
 
-    /** The first message logged inside a test execution's time range. */
-    const messageInRange = (test: string, start: number, end: number): string | null =>
-        testStatusMarkers.find(
-            (marker) => marker.test === test && marker.time >= start && marker.time <= end
-        )?.message ?? null;
+    const messagesInRange = (test: string, start: number, end: number): MarkerMessage[] =>
+        testStatusMarkers
+            .filter(
+                (marker) => marker.test === test && marker.time >= start && marker.time <= end
+            )
+            .map((marker) => ({ message: marker.message, status: marker.statusName }));
 
     const testStringId = stringArray.indexOf('test');
     const timings: TestTiming[] = [];
@@ -851,15 +937,18 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         // The full ID keeps the `manifest.toml:` prefix, which is how the
         // `TestStatus` and `Crash` markers name the test; `path` is the
         // stripped form the aggregates use. Both are needed.
-        const fullTestId = data.test ?? data.name ?? null;
-        if (fullTestId === null) {
-            continue;
-        }
-        let path = fullTestId;
-        if (path.includes(':')) {
-            path = path.split(':')[1] ?? path;
-        }
-        if (!/\.(js|html|xhtml)$/.test(path)) {
+        const fullTestId = data.test ?? data.name ?? '';
+        const path = normalizeTestPath(fullTestId);
+        if (path === null) {
+            const status = data.status ?? '';
+            if (DROP_WORTH_REPORTING.has(status)) {
+                dropped.push({
+                    kind: 'Test',
+                    id: fullTestId,
+                    reason: describeTestPathDrop(fullTestId),
+                    status,
+                });
+            }
             continue;
         }
 
@@ -885,16 +974,21 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         }
 
         let message = normalizeMessage(data.message ?? null);
-        // A failing test's message comes from the `TestStatus` markers logged
-        // inside its execution, and overrides the `Test` marker's own
-        // `message` when there is one — `old/try.html:983` assigns
+        // A failing test's messages come from the `TestStatus` markers logged
+        // inside its execution, and the first of them overrides the `Test`
+        // marker's own `message` when there is one — `old/try.html:983` assigns
         // `allMessages[0].message` over whatever it had. It is usually the
         // only message there is: the `Test` marker has no `message` field for
         // a plain assertion failure, so without this every `FAIL` on the push
         // looks message-less. Measured on push 7d16bff8, that was 12 of the 26
         // failing tests, including all three of its permanent failures.
+        //
+        // All of them are kept, not just the first, with the `profile uploaded in
+        // …` notices partitioned out so no caller has to spot a URL in the list.
+        let partitioned: PartitionedMessages = { messages: [], profileFilenames: [] };
         if (status.startsWith('FAIL') || status.startsWith('TIMEOUT') || status === 'ERROR') {
-            message = messageInRange(fullTestId, start, end) ?? message;
+            partitioned = partitionMarkerMessages(messagesInRange(fullTestId, start, end));
+            message = partitioned.messages[0] ?? message;
         }
         if (status.startsWith('CRASH')) {
             // Claim the crash marker inside this test's range, so it is not
@@ -918,6 +1012,8 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
             path,
             status,
             message,
+            messages: partitioned.messages,
+            profileFilenames: partitioned.profileFilenames,
             jobName: job.jobName,
             taskId: job.taskId,
             retryId: job.retryId,
@@ -936,21 +1032,26 @@ export function parseTestMarkers(profile: unknown, job: TreeherderJob): TestTimi
         }
         // The marker's `test` can carry a manifest prefix and a " (finished)"
         // suffix, neither of which is part of the path the aggregates use.
-        let path = crash.testPath;
-        if (path.includes(':')) {
-            path = path.split(':')[1] ?? path;
-        }
-        path = path.replace(/\s+\(finished\)$/, '').trim();
-        if (!/\.(js|html|xhtml)$/.test(path)) {
-            // A crash recorded against a manifest rather than a test. Real,
-            // but it has no test path to join against central, so reporting
-            // it as a test failure would invent one.
+        const path = normalizeTestPath(crash.testPath);
+        if (path === null) {
+            // A crash against a manifest: real, but with no path to join against
+            // central. All of them are recorded, unlike the `Test` loop's.
+            dropped.push({
+                kind: 'Crash',
+                id: crash.testPath,
+                reason: describeTestPathDrop(crash.testPath),
+                status: 'CRASH',
+            });
             continue;
         }
         timings.push({
             path,
             status: 'CRASH',
             message: normalizeMessage(crash.signature ?? crash.reason),
+            // The harness uploads a per-test profile from a failure handler that
+            // a crash never reaches.
+            messages: [],
+            profileFilenames: [],
             jobName: job.jobName,
             taskId: job.taskId,
             retryId: job.retryId,
@@ -1013,6 +1114,7 @@ function aggregateFailures(
          */
         passedOnRerunConfigs: Set<string>;
         messages: Map<string, number>;
+        otherMessages: Map<string, number>;
         statuses: Set<string>;
         modes: Set<string>;
     }
@@ -1030,6 +1132,7 @@ function aggregateFailures(
                 failedRunsByJobName: new Map(),
                 passedOnRerunConfigs: new Set(),
                 messages: new Map(),
+                otherMessages: new Map(),
                 statuses: new Set(),
                 modes: new Set(),
             };
@@ -1052,6 +1155,12 @@ function aggregateFailures(
         entry.statuses.add(baseStatus(timing.status));
         if (timing.message !== null) {
             entry.messages.set(timing.message, (entry.messages.get(timing.message) ?? 0) + 1);
+        }
+        // Kept apart from `messages` deliberately: that set feeds the central
+        // same-message comparison, so widening it would change which section
+        // every failure lands in.
+        for (const message of timing.messages) {
+            entry.otherMessages.set(message, (entry.otherMessages.get(message) ?? 0) + 1);
         }
         if (passedOnRerunByRun.get(runKeyOf(timing))?.has(timing.path) === true) {
             entry.passedOnRerunConfigs.add(timing.jobName);
@@ -1174,6 +1283,9 @@ function aggregateFailures(
             messages: [...entry.messages]
                 .sort((a, b) => b[1] - a[1])
                 .map(([message]) => message),
+            allMessages: [...entry.otherMessages]
+                .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                .map(([message, count]) => ({ message, count })),
             // A timeout or a crash records no message anywhere — not in the
             // push and not in the aggregates (`FORMATS.md`) — so for those the
             // status kind is the comparison and it is a valid one. For a plain
@@ -1381,15 +1493,16 @@ function attachProvenance(
                     retryId: timing.retryId,
                     resourceUsage: resourceUsageProfileUrl(timing.taskId, timing.retryId),
                 };
-                // Only when the message actually names one. `CLI.md`: emit
-                // nothing rather than guess a filename.
-                const testProfile = uploadedProfileUrl(
-                    timing.taskId,
-                    timing.retryId,
-                    timing.message
+                // Every profile this execution uploaded, not the first: an
+                // in-job rerun adds a `-2`-suffixed one and comparing the two is
+                // what the list is for.
+                const urls = timing.profileFilenames.map((filename) =>
+                    testInfoArtifactUrl(timing.taskId, timing.retryId, filename)
                 );
-                if (testProfile !== null) {
-                    row.testProfile = testProfile;
+                if (urls.length > 0) {
+                    row.testProfiles = urls;
+                    // Kept for consumers reading the pre-existing key.
+                    row.testProfile = urls[0]!;
                 }
                 failure.profiles.push(row);
             }
@@ -1638,7 +1751,8 @@ function renderText(
     result: TryJson,
     limit: number,
     permaOnly: boolean,
-    otherJobs: boolean
+    otherJobs: boolean,
+    allMessages: boolean
 ): string {
     const lines: (string | null)[] = [];
     lines.push(
@@ -1676,7 +1790,8 @@ function renderText(
         'PERMA-FAILS',
         result.permaFails,
         PERMA_FAIL_DESCRIPTION,
-        limit
+        limit,
+        allMessages
     ));
 
     if (!permaOnly) {
@@ -1729,12 +1844,74 @@ function renderText(
     return joinLines(lines);
 }
 
+/**
+ * Every message on a row, or the first plus how many more.
+ *
+ * `messages` and `allMessages` are **not nested** — a synthetic crash's signature
+ * and a `Test`-marker message are in `messages` only — so both the list and the
+ * count are taken over their union rather than by subtracting one from the other.
+ */
+function messageLines(failure: TryFailure, allMessages: boolean): string[] {
+    const format = (message: string): string =>
+        `    ${truncate(message.replace(/\s*\n\s*/g, ' ⏎ '), 110)}`;
+    const all = failure.allMessages;
+    if (allMessages) {
+        const counted = new Map(all.map((entry) => [entry.message, entry.count]));
+        const ordered = [...all];
+        for (const message of failure.messages) {
+            if (!counted.has(message)) {
+                counted.set(message, 0);
+                ordered.push({ message, count: 0 });
+            }
+        }
+        if (ordered.length === 0) {
+            return [];
+        }
+        const shown = ordered.slice(0, MESSAGE_CAP);
+        const lines = shown.map((entry) =>
+            // Blank rather than `0x` for a row with no per-execution count, since
+            // `0x` would read as "never seen".
+            `    ${(entry.count > 0 ? `${entry.count}x` : '').padStart(4)} ${truncate(
+                entry.message.replace(/\s*\n\s*/g, ' ⏎ '),
+                106
+            )}`
+        );
+        if (ordered.length > shown.length) {
+            lines.push(
+                `    (${ordered.length - shown.length} more messages, not shown: the cap is ` +
+                    `${MESSAGE_CAP} per row)`
+            );
+        }
+        return lines;
+    }
+    // The headline stays `messages`: it is one entry per execution, so it ranks by
+    // how many executions reported each message. Ranking on `allMessages` promotes
+    // whichever message repeats most *within* an execution instead.
+    const shown = failure.messages.slice(0, 2);
+    const lines = shown.map(format);
+    const union = new Set<string>([
+        ...failure.messages,
+        ...all.map((entry) => entry.message),
+    ]);
+    for (const message of shown) {
+        union.delete(message);
+    }
+    if (union.size > 0) {
+        lines.push(
+            `    (+${union.size} more message${union.size === 1 ? '' : 's'} for this test; ` +
+                `--messages to see them)`
+        );
+    }
+    return lines;
+}
+
 /** The detailed section — perma-fails get every fact. */
 function section(
     title: string,
     failures: readonly TryFailure[],
     description: string,
-    limit: number
+    limit: number,
+    allMessages: boolean
 ): string[] {
     const lines: string[] = [`${title} (${failures.length}) — ${description}`];
     if (failures.length === 0) {
@@ -1809,9 +1986,7 @@ function section(
                 '    Only failed under parallel execution — likely racing with its neighbours.'
             );
         }
-        for (const message of failure.messages.slice(0, 2)) {
-            lines.push(`    ${truncate(message.replace(/\s*\n\s*/g, ' ⏎ '), 110)}`);
-        }
+        lines.push(...messageLines(failure, allMessages));
         if (failure.taskIds !== undefined) {
             for (const entry of failure.taskIds.slice(0, 5)) {
                 lines.push(`    task ${entry.taskId}.${entry.retryId}  ${entry.jobName}`);
@@ -1820,8 +1995,8 @@ function section(
         if (failure.profiles !== undefined) {
             for (const entry of failure.profiles.slice(0, 5)) {
                 lines.push(`    profile ${entry.resourceUsage}`);
-                if (entry.testProfile !== undefined) {
-                    lines.push(`    test profile ${entry.testProfile}`);
+                for (const url of entry.testProfiles ?? []) {
+                    lines.push(`    test profile ${url}`);
                 }
             }
         }

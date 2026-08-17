@@ -81,6 +81,13 @@ import { extractPlatform } from '../lib/model/job-name.ts';
 import { classifyStatus } from '../lib/model/status.ts';
 import { displaySkipMessage, skipReason } from '../lib/model/skips.ts';
 import { type ConfigCoverage, coverageOf } from '../lib/query/coverage.ts';
+import {
+    type TestIssue,
+    CRASH_NO_SIGNATURE,
+    FAILURE_NO_MESSAGE,
+    TIMEOUT_MESSAGE,
+    buildTestIssues,
+} from '../lib/query/test-issues.ts';
 import { type TestStats } from '../lib/query/test-stats.ts';
 
 /**
@@ -1058,21 +1065,14 @@ export function chartPresence(rates: readonly DailyRate[]): ChartPresence {
 
 // --- issues ---------------------------------------------------------------
 
-/** The placeholder for a failure that recorded no message. `old/test.html:777`. */
-export const FAILURE_NO_MESSAGE =
-    'Failure details not recorded (likely Android or platform logging issue)';
+/**
+ * Re-exported rather than imported through, as this file does for the other
+ * shared values its readers and tests expect to find here.
+ */
+export { CRASH_NO_SIGNATURE, FAILURE_NO_MESSAGE, TIMEOUT_MESSAGE };
 
-/** The placeholder for a crash whose signature was not symbolized. */
-export const CRASH_NO_SIGNATURE = 'Crash signature not recorded';
-
-/** The one line every TIMEOUT issue shows; timeouts record no message. */
-export const TIMEOUT_MESSAGE = 'Test exceeded time limit';
-
-/** One row of the Issue Details list. */
-export interface Issue {
-    count: number;
-    type: 'SKIP' | 'FAIL' | 'CRASH' | 'TIMEOUT';
-    message: string;
+/** One row of the Issue Details list: the shared row plus this page's fields. */
+export interface Issue extends TestIssue {
     /** `badge-skip`, `badge-fail`, … */
     badgeClass: string;
     /** `issue-0`, …; the prefix of the runs and chart element ids. */
@@ -1095,73 +1095,15 @@ export interface Issue {
 /**
  * The Issue Details list, ordered by count descending.
  *
- * `renderIssueDetails` (`old/test.html:2513`). Assembled from four sources in a
- * fixed order — skips, failures, crashes, timeouts — and then sorted purely by
- * count (`old/test.html:2551`), so the assembly order only decides ties. `Array.sort`
- * is stable in every engine this runs in, so a skip and a failure with the same
- * count keep the skip first, and that is reproduced by building the list in the
- * same order.
- *
- * ## The two synthetic rows
- *
- * A failure recorded with no message and a crash with no signature would each
- * otherwise vanish from a list keyed on message text. Upstream adds one row per
- * kind carrying the **difference** between the status total and the sum of the
- * messages it could name (`old/test.html:2530`, `:2540`). So the list's counts
- * always add up to the totals in the summary bar, which is what makes the two
- * readable together.
- *
- * Timeouts get one row rather than one per message, because `TIMEOUT*` groups
- * carry no `messageIds` at all — `lib/formats/status-entries.ts` says so, and
- * upstream simply emits the whole timeout count under a fixed string.
+ * `renderIssueDetails` (`old/test.html:2513`). `buildTestIssues` assembles the
+ * rows; this adds the page's badge class, DOM id, click affordance and tooltip.
  */
 export function buildIssues(
     file: DecodedTimingFile,
     testId: number,
     stats: TestStats
 ): Issue[] {
-    const raw: { count: number; type: Issue['type']; message: string }[] = [];
-
-    // Skips, by message, `run-if` excluded and the `skip-if: ` prefix stripped.
-    for (const [message, count] of sortedByCountDesc(skipCountsByMessage(file, testId))) {
-        raw.push({ count, type: 'SKIP', message });
-    }
-
-    // Failures, by message.
-    let namedFailures = 0;
-    for (const [message, count] of sortedByCountDesc(failureCountsByMessage(file, testId))) {
-        raw.push({ count, type: 'FAIL', message });
-        namedFailures += count;
-    }
-    if (stats.failCount > namedFailures) {
-        raw.push({
-            count: stats.failCount - namedFailures,
-            type: 'FAIL',
-            message: FAILURE_NO_MESSAGE,
-        });
-    }
-
-    // Crashes, by signature.
-    let namedCrashes = 0;
-    for (const [signature, count] of sortedByCountDesc(crashCountsBySignature(file, testId))) {
-        raw.push({ count, type: 'CRASH', message: signature });
-        namedCrashes += count;
-    }
-    if (stats.crashCount > namedCrashes) {
-        raw.push({
-            count: stats.crashCount - namedCrashes,
-            type: 'CRASH',
-            message: CRASH_NO_SIGNATURE,
-        });
-    }
-
-    if (stats.timeoutCount > 0) {
-        raw.push({ count: stats.timeoutCount, type: 'TIMEOUT', message: TIMEOUT_MESSAGE });
-    }
-
-    raw.sort((a, b) => b.count - a.count);
-
-    return raw.map((issue, index) => ({
+    return buildTestIssues(file, testId, stats).map((issue, index) => ({
         ...issue,
         badgeClass: badgeClassOf(issue.type),
         id: `issue-${index}`,
@@ -1187,81 +1129,6 @@ function badgeClassOf(type: Issue['type']): string {
         case 'TIMEOUT':
             return 'badge-timeout';
     }
-}
-
-/** `[message, count]` pairs, highest count first. */
-function sortedByCountDesc(counts: Map<string, number>): [string, number][] {
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-}
-
-/**
- * Skip counts by display message.
- *
- * `getSkipMessageCounts` (`old/test.html:780`), which drops `run-if` **and** drops
- * entries with no message at all — the `if (messageId !== null)` guard at
- * `:791`. That second exclusion is not the same rule as `computeTestStats`'s,
- * which counts a null-message skip (`lib/model/skips.ts` explains why every
- * site does), so the SKIP rows in this list can total less than the Skips
- * figure in the summary bar. Preserved: a row labelled with no message is not
- * something the list can render, and upstream chose to omit it rather than
- * invent a label.
- */
-function skipCountsByMessage(file: DecodedTimingFile, testId: number): Map<string, number> {
-    const counts = new Map<string, number>();
-    for (const entry of file.runsOfTest(testId)) {
-        if (classifyStatus(entry.status).kind !== 'skip') {
-            continue;
-        }
-        // `undefined`/`null` are both "no message"; upstream skips those.
-        if (entry.message === undefined || entry.message === null) {
-            continue;
-        }
-        if (skipReason(entry.message) === 'run-if') {
-            continue;
-        }
-        const message = displaySkipMessage(entry.message);
-        counts.set(message, (counts.get(message) ?? 0) + entry.count);
-    }
-    return counts;
-}
-
-/**
- * Failure counts by message.
- *
- * `getFailureMessageCounts` (`old/test.html:807`). Only `FAIL*` statuses, and only
- * entries carrying a message — the ones without are the synthetic row's
- * business.
- */
-function failureCountsByMessage(file: DecodedTimingFile, testId: number): Map<string, number> {
-    const counts = new Map<string, number>();
-    for (const entry of file.runsOfTest(testId)) {
-        if (classifyStatus(entry.status).kind !== 'fail') {
-            continue;
-        }
-        if (entry.message === undefined || entry.message === null) {
-            continue;
-        }
-        counts.set(entry.message, (counts.get(entry.message) ?? 0) + entry.count);
-    }
-    return counts;
-}
-
-/** Crash counts by signature. `getCrashData` (`old/test.html:838`). */
-function crashCountsBySignature(file: DecodedTimingFile, testId: number): Map<string, number> {
-    const counts = new Map<string, number>();
-    for (const entry of file.runsOfTest(testId)) {
-        if (classifyStatus(entry.status).kind !== 'crash') {
-            continue;
-        }
-        if (entry.crashSignature === undefined || entry.crashSignature === null) {
-            continue;
-        }
-        counts.set(
-            entry.crashSignature,
-            (counts.get(entry.crashSignature) ?? 0) + entry.count
-        );
-    }
-    return counts;
 }
 
 // --- the selection model --------------------------------------------------
