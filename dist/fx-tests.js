@@ -175,6 +175,10 @@ function otherHarness(harness) {
 }
 
 // cli/options.ts
+function isAgentCaller(env) {
+  const set = (value) => value !== void 0 && value !== "" && value !== "0";
+  return set(env.CLAUDECODE) || set(env.CODEX_SANDBOX) || set(env.GEMINI_CLI) || set(env.OPENCODE);
+}
 var GLOBAL_OPTION_SPECS = {
   harness: {
     type: "string",
@@ -216,9 +220,13 @@ var GLOBAL_OPTION_SPECS = {
   },
   "no-cache": { type: "boolean", describe: "Ignore and do not write the cache." },
   quiet: { type: "boolean", describe: "Suppress progress output on stderr." },
+  progress: {
+    type: "boolean",
+    describe: "Write progress to stderr even when a coding agent is the caller (off by default there). --quiet wins over this."
+  },
   help: { type: "boolean", describe: "Show this help." }
 };
-function readGlobalOptions(args) {
+function readGlobalOptions(args, env = {}) {
   const wantsJson = boolOption(args, "json");
   const wantsMarkdown = boolOption(args, "markdown");
   if (wantsJson && wantsMarkdown) {
@@ -261,7 +269,9 @@ function readGlobalOptions(args) {
     dataSource: dataSourceValue,
     cacheDir: stringOption(args, "cache-dir"),
     noCache: boolOption(args, "no-cache"),
-    quiet: boolOption(args, "quiet")
+    quiet: boolOption(args, "quiet"),
+    progress: boolOption(args, "progress"),
+    agent: isAgentCaller(env)
   };
 }
 function resolveHarness(testPath, explicit) {
@@ -627,8 +637,14 @@ async function cacheSize(cache) {
 }
 
 // cli/context.ts
+function wantsProgress(globals) {
+  if (globals.quiet) {
+    return false;
+  }
+  return globals.progress || !globals.agent;
+}
 function progress(context, message) {
-  if (!context.globals.quiet) {
+  if (wantsProgress(context.globals)) {
     context.streams.err(`${message}
 `);
   }
@@ -10340,7 +10356,7 @@ async function dispatch(options) {
     streams.out(commandHelp(command, specs));
     return ExitCode.Success;
   }
-  const globals = readGlobalOptions(args);
+  const globals = readGlobalOptions(args, options.env ?? {});
   for (const rejected of command.rejectsGlobals ?? []) {
     if (rejected.names.some((name) => args.options.has(name))) {
       throw usageError(rejected.message, rejected.hint);
@@ -10423,7 +10439,7 @@ var artifactHits = 0;
 var artifactMisses = 0;
 function reportArtifactCacheUse(globals, streams) {
   const total = artifactHits + artifactMisses;
-  if (total === 0 || globals.quiet) {
+  if (total === 0 || !wantsProgress(globals)) {
     return;
   }
   streams.err(
@@ -10462,8 +10478,8 @@ function buildSource(globals, cache, streams) {
     return http;
   }
   return cachedSource(http, cache, {
-    onMiss: globals.quiet ? void 0 : (name) => streams.err(`Fetching ${name.filename}\u2026
-`),
+    onMiss: wantsProgress(globals) ? (name) => streams.err(`Fetching ${name.filename}\u2026
+`) : void 0,
     onWarning: (message) => streams.err(`warning: ${message}
 `)
   });
@@ -10532,6 +10548,7 @@ function commandHelp(command, specs) {
 // cli/bin/fx-tests.ts
 var exitCode = await run({
   argv: process.argv.slice(2),
+  env: process.env,
   streams: {
     out(text) {
       process.stdout.write(text);

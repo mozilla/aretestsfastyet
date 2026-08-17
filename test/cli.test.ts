@@ -32,7 +32,7 @@
  * worth pinning.
  */
 
-import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readFile, readdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -44,7 +44,7 @@ import { CANDIDATE_LIMIT } from '../lib/query/test-lookup.ts';
 import { ExitCode } from '../cli/errors.ts';
 import { type CommandContext, captureStreams } from '../cli/context.ts';
 import { diskCache } from '../cli/cache.ts';
-import { run } from '../cli/main.ts';
+import { COMMAND_NAMES, run } from '../cli/main.ts';
 
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
@@ -1681,6 +1681,150 @@ test('--quiet suppresses progress but keeps the data', async () => {
     const { stdout, stderr } = await invoke(['test', TEST_PATH, '--json', '--quiet']);
     assert.equal(stderr, '');
     assert.doesNotThrow(() => JSON.parse(stdout));
+});
+
+/**
+ * An agent harness merges stdout and stderr into the transcript, so progress
+ * written to stderr still ends up in the model's context, and an agent has no
+ * way to know to pass `--quiet` on its first call. Each of the four variables
+ * is asserted separately: a helper reading only `CLAUDECODE` would pass a test
+ * that named the set in a comment.
+ */
+for (const variable of ['CLAUDECODE', 'CODEX_SANDBOX', 'GEMINI_CLI', 'OPENCODE']) {
+    test(`${variable} suppresses progress without --quiet`, async () => {
+        const { stdout, stderr } = await invoke(['test', TEST_PATH, '--json'], {
+            env: { [variable]: '1' },
+        });
+        assert.equal(stderr, '');
+        assert.doesNotThrow(() => JSON.parse(stdout));
+    });
+}
+
+/**
+ * `0` is how a caller turns a variable off, so reading it as "on" would take
+ * progress away with no way to guess which variable did it. This diverges from
+ * the presence-based Python snippet on purpose — see `isAgentCaller`.
+ */
+for (const value of ['', '0']) {
+    test(`CLAUDECODE=${JSON.stringify(value)} does not make a caller an agent`, async () => {
+        const { stderr } = await invoke(['test', TEST_PATH, '--json'], {
+            env: { CLAUDECODE: value },
+        });
+        assert.match(stderr, /Reading xpcshell bucket/);
+    });
+}
+
+test('--progress asks for progress back in an agent environment', async () => {
+    const { stdout, stderr } = await invoke(['test', TEST_PATH, '--json', '--progress'], {
+        env: { CLAUDECODE: '1' },
+    });
+    assert.match(stderr, /Reading xpcshell bucket/);
+    assert.doesNotThrow(() => JSON.parse(stdout));
+});
+
+test('--quiet still wins over --progress', async () => {
+    const { stderr } = await invoke(['test', TEST_PATH, '--json', '--quiet', '--progress'], {
+        env: { CLAUDECODE: '1' },
+    });
+    assert.equal(stderr, '');
+});
+
+/**
+ * The suppression has to hold in **every** command, and asserting that per
+ * command would mean one test per command that nobody adds for the next one.
+ *
+ * What makes it hold instead is that every progress line goes through
+ * `progress()` or `wantsProgress()`. So this scans the CLI sources for the
+ * writes that bypass both: a `streams.err` call whose text is not a warning and
+ * not an error. `cli/main.ts`'s two gated call sites are the allowed exception,
+ * recognised by a `wantsProgress` in the enclosing function.
+ *
+ * **The file list is read from disk, not written here.** A hand-maintained copy
+ * would match `cli/commands/` only by coincidence of timing, and a command
+ * added afterwards would be unscanned — which is the one regression this exists
+ * to catch. `cli/main.ts`'s `COMMAND_NAMES` carries the same warning for the
+ * same reason. Enumerating goes further than `COMMAND_NAMES` here: a file that
+ * is present but not yet wired into the command table is still scanned, and it
+ * can still be imported and still leak.
+ *
+ * **Aliasing defeats the scan**, and knowingly: `const { err } = context.streams`
+ * followed by a bare `err(…)` is matched via the alias case below, but an alias
+ * under any other name, or a stream passed into a helper as a parameter, is not
+ * detectable by a regex. That is accepted rather than papered over — this guard
+ * is a backstop against the ordinary way of writing the mistake, and the
+ * behavioural tests above are what actually pin the behaviour.
+ */
+test('no command writes progress past the agent check', async () => {
+    const cliDir = new URL('../cli/', import.meta.url);
+    const commandsDir = new URL('commands/', cliDir);
+    const sources: string[] = [];
+    for (const [dir, prefix] of [
+        [cliDir, 'cli'],
+        [commandsDir, 'cli/commands'],
+    ] as const) {
+        for (const entry of await readdir(dir)) {
+            if (entry.endsWith('.ts')) {
+                sources.push(`${prefix}/${entry}`);
+            }
+        }
+    }
+    // The enumeration must not silently come back empty or short, or the whole
+    // guard passes by scanning nothing. Checked against the command table with
+    // a name-by-name lookup rather than a count: `issues.ts` implements four of
+    // the commands (`issues`, `failures`, `crashes`, `skips`) and `crash.ts`
+    // one more, so there are legitimately fewer files than commands.
+    for (const name of COMMAND_NAMES) {
+        const covered =
+            sources.includes(`cli/commands/${name}.ts`) ||
+            // The commands whose implementation shares a sibling's file.
+            ['failures', 'crashes', 'skips'].includes(name);
+        assert.ok(covered, `no source enumerated for the ${name} command`);
+    }
+    assert.ok(
+        sources.includes('cli/main.ts') && sources.includes('cli/commands/issues.ts'),
+        `enumeration missed a known file: ${sources.join(', ')}`
+    );
+
+    const offenders: string[] = [];
+    for (const path of sources) {
+        const text = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+        const lines = text.split('\n');
+        // `const { err } = context.streams` — after this, a bare `err(…)` in the
+        // same file writes to stderr without naming the stream.
+        const aliased = /(?:const|let)\s*\{[^}]*\berr\b[^}]*\}\s*=\s*\S*streams/.test(text);
+        for (const [index, line] of lines.entries()) {
+            const writes =
+                line.includes('streams.err(') || (aliased && /(?:^|[^.\w])err\(/.test(line));
+            // `err(text: string): void` is the declaration of the sink, not a
+            // write to it.
+            if (!writes || /\berr\([^)]*:\s*string/.test(line)) {
+                continue;
+            }
+            // A warning or an error is not progress and is meant to get out.
+            if (/warning: |fx-tests: |\$\{error\.hint\}/.test(line)) {
+                continue;
+            }
+            // A gated progress writer. The gate is somewhere in the enclosing
+            // function, not on the same line: `buildSource` decides whether to
+            // pass the callback at all, and `reportArtifactCacheUse` returns
+            // early. So the scan is from the function's opening line, found by
+            // walking back to the last line starting in column 0.
+            let start = index;
+            while (start > 0 && /^[\s})]/.test(lines[start]!)) {
+                start--;
+            }
+            if (lines.slice(start, index + 1).join('\n').includes('wantsProgress')) {
+                continue;
+            }
+            offenders.push(`${path}:${index + 1}: ${line.trim()}`);
+        }
+    }
+    assert.deepEqual(
+        offenders,
+        [],
+        'these write to stderr without going through progress()/wantsProgress(); ' +
+            'an agent caller would see them'
+    );
 });
 
 // --- markdown -------------------------------------------------------------
@@ -4279,6 +4423,52 @@ test('try blames a streamed profile on the job being killed, not on a read failu
         streams.stderr,
         /2 of 2 job profiles could not be read/,
         'the killed job must not be counted as unreadable too'
+    );
+});
+
+/**
+ * The agent check suppresses *progress*, and a warning is not progress.
+ *
+ * This is the regression the suppression could most easily cause: the killed
+ * jobs are why the answer below is a subset, so an agent that stops being told
+ * reports a partial result as a whole one. Same fixture as the test above, run
+ * with an agent environment, asserting the warnings survive and the progress
+ * lines do not.
+ */
+test('an agent caller still gets the warnings that say why a result is partial', async () => {
+    const streams = captureStreams();
+    const finished = profileWith([
+        { type: 'Test', test: TEST_PATH, status: 'FAIL', message: 'boom', start: 1, end: 2 },
+    ]);
+    await run({
+        argv: ['try', 'abcdef123456', '--json'],
+        streams,
+        env: { CLAUDECODE: '1' },
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder([
+            job('test-linux/opt-xpcshell-killed', 'TASK1', 'testfailed'),
+            job('test-linux/opt-xpcshell-truncated', 'TASK2', 'testfailed'),
+        ]),
+        fetchUrl: profileFetcher({
+            TASK1: `${JSON.stringify({ type: 'meta', interval: 1 })}\n${finished}\n`,
+            TASK2: '{"threads": [',
+        }),
+    });
+    assert.match(
+        streams.stderr,
+        /1 of 2 jobs were killed for exceeding their maximum duration/,
+        'a warning explaining an incomplete result must not be suppressed'
+    );
+    assert.match(
+        streams.stderr,
+        /1 of 2 job profiles could not be read/,
+        'nor must the read-failure count'
+    );
+    assert.doesNotMatch(
+        streams.stderr,
+        /Looking up|Fetching jobs for push|job profiles \(one per/,
+        'while the progress lines are gone'
     );
 });
 

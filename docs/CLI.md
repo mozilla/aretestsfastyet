@@ -179,7 +179,32 @@ the harness file does not hold it, and nothing matches at all.
 | `--cache-dir <path>` | `~/.cache/fx-tests` | On-disk cache for downloaded data files. |
 | `--no-cache` | off | Ignore and do not write the cache. |
 | `--quiet` | off | Suppress progress output on stderr. |
+| `--progress` | off | Write progress even when a coding agent is the caller. See below. |
 | `--help`, `--version` | | |
+
+### Progress is off for agent callers
+
+Progress goes to stderr, which is not enough on its own: an agent harness merges
+the two streams into a transcript, so `Reading mochitest bucket…` and
+`…10/64 profiles` land in the model's context anyway. `--quiet` fixes it only for
+a caller who already knows to pass it, which an agent does not on its first call.
+
+So progress is **off by default** when any of `CLAUDECODE`, `CODEX_SANDBOX`,
+`GEMINI_CLI` or `OPENCODE` is set — the same set Firefox's Python code checks.
+`0` and the empty string mean "not an agent", which the presence-based Python
+snippet would treat as one; `0` is how a variable gets turned off, and reading it
+as "on" would take progress away with no way to guess which variable did it.
+
+`--progress` turns the lines back on for a caller under an agent harness that
+wants them. **`--quiet` wins over `--progress`**, and the combination is not a
+usage error the way `--json --markdown` is: both flags ask about the same axis,
+so the outcome is unambiguous, and a wrapper passing `--progress` for every call
+while one call site adds `--quiet` is a legitimate shape.
+
+**Warnings are not progress and are never suppressed.** The cache-directory
+permission notice and `2 of 5 jobs were killed for exceeding their maximum
+duration` are the reasons a result is a subset, so an agent needs them more than
+a human does, not less. Only progress is affected.
 
 ### `--day` and the window
 

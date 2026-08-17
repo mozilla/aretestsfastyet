@@ -21,6 +21,7 @@ import {
     diskCache,
 } from './cache.ts';
 import type { CommandContext, OutputStreams } from './context.ts';
+import { wantsProgress } from './context.ts';
 import { CliError, ExitCode, type ExitCodeValue, usageError } from './errors.ts';
 import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
 import { CRASH_OPTIONS, runCrash } from './commands/crash.ts';
@@ -284,6 +285,13 @@ export interface RunOptions {
      * See `LoadedTimingFile` in `cli/context.ts`. Production leaves it unset.
      */
     loadTimingFile?: CommandContext['loadTimingFile'];
+    /**
+     * The environment the agent check reads. Defaults to **empty**, not
+     * `process.env`: the tests call `run()` in-process, so the ambient one would
+     * make the progress assertions fail under a coding agent and pass for a
+     * human. The entry point passes the real one.
+     */
+    env?: Record<string, string | undefined> | undefined;
     /** The version reported by `--version`. */
     version?: string | undefined;
 }
@@ -386,7 +394,7 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         return ExitCode.Success;
     }
 
-    const globals = readGlobalOptions(args);
+    const globals = readGlobalOptions(args, options.env ?? {});
 
     // Must stay after `readGlobalOptions`, which validates every global's value:
     // refusing first masks a typo'd `--harness` behind a complaint about an
@@ -534,7 +542,7 @@ let artifactMisses = 0;
  */
 function reportArtifactCacheUse(globals: ReturnType<typeof readGlobalOptions>, streams: OutputStreams): void {
     const total = artifactHits + artifactMisses;
-    if (total === 0 || globals.quiet) {
+    if (total === 0 || !wantsProgress(globals)) {
         return;
     }
     streams.err(
@@ -601,9 +609,9 @@ function buildSource(
         return http;
     }
     return cachedSource(http, cache, {
-        onMiss: globals.quiet
-            ? undefined
-            : (name) => streams.err(`Fetching ${name.filename}…\n`),
+        onMiss: wantsProgress(globals)
+            ? (name) => streams.err(`Fetching ${name.filename}…\n`)
+            : undefined,
         onWarning: (message) => streams.err(`warning: ${message}\n`),
     });
 }

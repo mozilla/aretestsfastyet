@@ -86,9 +86,17 @@ export interface CommandContext {
     fetchUrl?: ((url: string) => Promise<Uint8Array | null>) | undefined;
 }
 
-/** Writes a progress line, unless `--quiet`. */
+/** Whether progress is wanted: not `--quiet`, and not an agent caller. */
+export function wantsProgress(globals: GlobalOptions): boolean {
+    if (globals.quiet) {
+        return false;
+    }
+    return globals.progress || !globals.agent;
+}
+
+/** Writes a progress line, unless suppressed. See `wantsProgress`. */
 export function progress(context: CommandContext, message: string): void {
-    if (!context.globals.quiet) {
+    if (wantsProgress(context.globals)) {
         context.streams.err(`${message}\n`);
     }
 }

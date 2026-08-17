@@ -52,6 +52,21 @@ export interface GlobalOptions {
     cacheDir: string | undefined;
     noCache: boolean;
     quiet: boolean;
+    /** Forces progress on for an agent caller. `--quiet` wins over it. */
+    progress: boolean;
+    /** True when a coding agent is the caller. See `isAgentCaller`. */
+    agent: boolean;
+}
+
+/**
+ * Whether the caller is a coding agent. The variables are the set Firefox's
+ * Python code checks, but `0` and empty mean "not an agent" where that
+ * presence-based snippet counts them: `0` is how a variable gets turned off.
+ */
+export function isAgentCaller(env: Record<string, string | undefined>): boolean {
+    const set = (value: string | undefined): boolean =>
+        value !== undefined && value !== '' && value !== '0';
+    return set(env.CLAUDECODE) || set(env.CODEX_SANDBOX) || set(env.GEMINI_CLI) || set(env.OPENCODE);
 }
 
 /** The option specs from `CLI.md`'s global table. Parsed by every command. */
@@ -96,6 +111,12 @@ export const GLOBAL_OPTION_SPECS: OptionSpecs = {
     },
     'no-cache': { type: 'boolean', describe: 'Ignore and do not write the cache.' },
     quiet: { type: 'boolean', describe: 'Suppress progress output on stderr.' },
+    progress: {
+        type: 'boolean',
+        describe:
+            'Write progress to stderr even when a coding agent is the caller ' +
+            '(off by default there). --quiet wins over this.',
+    },
     help: { type: 'boolean', describe: 'Show this help.' },
 };
 
@@ -105,7 +126,10 @@ export const GLOBAL_OPTION_SPECS: OptionSpecs = {
  * Every rejection here is a usage error, and every one of them is a case where
  * carrying on would produce output that looks right.
  */
-export function readGlobalOptions(args: ParsedArgs): GlobalOptions {
+export function readGlobalOptions(
+    args: ParsedArgs,
+    env: Record<string, string | undefined> = {}
+): GlobalOptions {
     const wantsJson = boolOption(args, 'json');
     const wantsMarkdown = boolOption(args, 'markdown');
     if (wantsJson && wantsMarkdown) {
@@ -157,6 +181,8 @@ export function readGlobalOptions(args: ParsedArgs): GlobalOptions {
         cacheDir: stringOption(args, 'cache-dir'),
         noCache: boolOption(args, 'no-cache'),
         quiet: boolOption(args, 'quiet'),
+        progress: boolOption(args, 'progress'),
+        agent: isAgentCaller(env),
     };
 }
 

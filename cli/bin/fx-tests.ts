@@ -3,9 +3,10 @@
  * The `fx-tests` entry point.
  *
  * Deliberately thin: everything testable lives in `cli/main.ts`, and this file
- * owns only what a process owns — argv, the real streams, and the exit code.
- * That split is what lets every command test call `run()` directly with
- * captured streams and a fake `DataSource`, with no subprocess and no network.
+ * owns only what a process owns — argv, the environment, the real streams and
+ * the exit code. That split is what lets every command test call `run()`
+ * directly with captured streams and a fake `DataSource`, with no subprocess
+ * and no network.
  *
  * `process.exitCode` is set rather than `process.exit()` being called, so
  * buffered stdout is flushed before the process ends. `process.exit()` on a
@@ -18,6 +19,7 @@ import { run } from '../main.ts';
 
 const exitCode = await run({
     argv: process.argv.slice(2),
+    env: process.env,
     streams: {
         out(text: string): void {
             process.stdout.write(text);
