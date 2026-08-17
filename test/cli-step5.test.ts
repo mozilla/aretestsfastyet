@@ -44,7 +44,7 @@ import {
 import { ExitCode } from '../cli/errors.ts';
 import { captureStreams } from '../cli/context.ts';
 import { diskCache } from '../cli/cache.ts';
-import { run } from '../cli/main.ts';
+import { REJECTED_GLOBALS, run } from '../cli/main.ts';
 
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
@@ -509,6 +509,123 @@ test('manifests --day and --since are usage errors: the file has no day axis', a
         assert.equal(code, ExitCode.Usage, `${flag[0]} should be a usage error`);
         assert.match(stderr, /single day and has no day axis/);
     }
+});
+
+/**
+ * The flag lines of a `--help` output, trimmed, without the surrounding prose.
+ *
+ * `Options:` opens the table and the first blank line closes it, which is what
+ * `commandHelp()` emits.
+ */
+function optionTable(help: string): string[] {
+    const lines = help.split('\n');
+    const start = lines.indexOf('Options:');
+    assert.notEqual(start, -1, 'help output has no option table');
+    const table: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+        if (line.trim() === '') {
+            break;
+        }
+        table.push(line.trim());
+    }
+    assert.ok(table.length > 0, 'option table is empty');
+    return table;
+}
+
+/**
+ * `--help` must not promise a flag the command exits 1 on.
+ *
+ * The reported case was `manifests --help` listing `--day` and `--since`, both
+ * of which `manifests` refuses — a caller reads an option table as the list of
+ * what works. Driven off `REJECTED_GLOBALS` rather than a list here, so the two
+ * halves cannot drift: a refusal added to a command's registration is checked
+ * against its help text automatically, and a refusal thrown from a command body
+ * without being declared is not covered by this and will not hide behind it.
+ */
+test('no command’s --help lists a global flag that command rejects', async () => {
+    for (const [command, rejected] of Object.entries(REJECTED_GLOBALS)) {
+        const { code, stdout } = await invoke([command, '--help']);
+        assert.equal(code, ExitCode.Success, `${command} --help`);
+        // Scoped to the option table, which is the only part `commandHelp()`
+        // filters. Asserting against the whole output would fail on a `notes`
+        // block that merely *mentions* a rejected flag — prose the filter does
+        // not touch and should not have to, since `flaky`'s notes show that
+        // block can say anything. If a command ever needs its notes checked
+        // too, that is a separate assertion, not a wider match here.
+        const table = optionTable(stdout);
+        for (const flag of rejected) {
+            assert.ok(
+                !table.some((line) => line.startsWith(`--${flag} `) || line === `--${flag}`),
+                `${command} --help lists --${flag} in its option table, which ${command} rejects`
+            );
+        }
+    }
+});
+
+test('a rejected global is still refused with its own message, not "unknown option"', async () => {
+    // The flag stays in the parser's spec table on purpose: dropping it there
+    // too would turn a message that explains the data model into
+    // "unknown option --day".
+    for (const argv of [
+        ['manifests', '--day', '2026-08-03'],
+        ['manifests', '--since', '3'],
+        ['errors', '--since', '3'],
+    ]) {
+        const { code, stderr } = await invoke(argv);
+        assert.equal(code, ExitCode.Usage, argv.join(' '));
+        assert.doesNotMatch(stderr, /unknown option/, argv.join(' '));
+        assert.match(stderr, /does not apply|do not apply/, argv.join(' '));
+    }
+});
+
+/**
+ * A refusal must not pre-empt the validation of the *other* globals.
+ *
+ * The regression this pins: the refusal loop originally ran before
+ * `readGlobalOptions()`, so `manifests --harness bogus --since 3` reported the
+ * `--since` refusal and said nothing about the typo. Fixing the flag it named
+ * then surfaced an error the caller had never been told about. A refusal about a
+ * flag the caller may not have meant to pass must not outrank "this value is not
+ * a thing", so the loop runs after the globals are validated.
+ *
+ * Every case below is paired with a rejected global on purpose — that is the
+ * combination that broke, and each expectation is the message the command gave
+ * before `rejectsGlobals` existed.
+ */
+test('a rejected global does not mask a bad value in another global', async () => {
+    const cases: [string[], RegExp][] = [
+        [['manifests', '--harness', 'bogus', '--since', '3'], /--harness expects xpcshell or mochitest/],
+        [['manifests', '--data-source', 'bogus', '--since', '3'], /--data-source expects central, try or local/],
+        [['manifests', '--json', '--markdown', '--since', '3'], /--json and --markdown are mutually exclusive/],
+        [['manifests', '--day', '2026-08-03', '--since', '3'], /--day and --since are mutually exclusive/],
+        [['manifests', '--since', '0'], /--since expects at least 1 day/],
+        [['errors', '--harness', 'bogus', '--since', '3'], /--harness expects xpcshell or mochitest/],
+        [['errors', '--data-source', 'bogus', '--since', '3'], /--data-source expects central, try or local/],
+        [['errors', '--json', '--markdown', '--since', '3'], /--json and --markdown are mutually exclusive/],
+        [['errors', '--since', '0'], /--since expects at least 1 day/],
+    ];
+    for (const [argv, expected] of cases) {
+        const { code, stderr } = await invoke(argv);
+        assert.equal(code, ExitCode.Usage, argv.join(' '));
+        assert.match(stderr, expected, argv.join(' '));
+        // And the refusal must not also be printed: two complaints about
+        // different flags in one message is how the first version read.
+        assert.doesNotMatch(stderr, /does not apply|do not apply/, argv.join(' '));
+    }
+});
+
+/**
+ * The other direction: a global a command's help *does* list must work.
+ *
+ * Without this, deleting a flag from the help text would satisfy the test above
+ * while making the help less useful — the fix for a rejected flag is to stop
+ * advertising it, not to stop advertising all of them.
+ */
+test('errors --help still lists --day, which errors accepts', async () => {
+    const { stdout } = await invoke(['errors', '--help']);
+    assert.ok(stdout.includes('--day <date>'));
+    const { code } = await invoke(['errors', '--day', '2026-08-03', '--limit', '1']);
+    assert.equal(code, ExitCode.Success);
 });
 
 test('manifests names a manifest and shows its per-config table', async () => {

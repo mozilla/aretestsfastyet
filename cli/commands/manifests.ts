@@ -135,15 +135,6 @@ export async function runManifests(context: CommandContext, args: ParsedArgs): P
                 args.positionals.join(', ')
         );
     }
-    // `manifests.json` covers one day and carries no day axis at all, so a day
-    // filter has nothing to filter. Refused rather than ignored: silently
-    // dropping `--day` would report yesterday's file under today's flag.
-    if (context.globals.day !== undefined || context.globals.since !== undefined) {
-        throw usageError(
-            'manifests.json covers a single day and has no day axis, so --day and --since do not apply',
-            'The file the index publishes is the latest one; its date is in the output header.'
-        );
-    }
 
     const wanted = args.positionals[0];
     const sort = readSort(args);

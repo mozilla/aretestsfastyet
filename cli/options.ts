@@ -54,7 +54,7 @@ export interface GlobalOptions {
     quiet: boolean;
 }
 
-/** The option specs every command accepts, from `CLI.md`'s global table. */
+/** The option specs from `CLI.md`'s global table. Parsed by every command. */
 export const GLOBAL_OPTION_SPECS: OptionSpecs = {
     harness: {
         type: 'string',

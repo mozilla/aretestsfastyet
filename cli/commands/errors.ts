@@ -238,16 +238,6 @@ export async function runErrors(context: CommandContext, args: ParsedArgs): Prom
             'Filter with --message, --kind, --test, --component or --file.'
         );
     }
-    if (context.globals.since !== undefined) {
-        // Not silently ignored: `--since 3` looks like it widened the window
-        // and did not. There is no multi-day errors aggregate to widen into,
-        // and reporting one day's numbers under a three-day flag is exactly the
-        // plausible wrong answer this project keeps producing.
-        throw usageError(
-            '--since does not apply to errors: the files are per-date, with no multi-day aggregate',
-            'Use --day <date> for one day, and run the command twice to compare two days.'
-        );
-    }
 
     // The one command that defaults to mochitest — see the module comment.
     const harness: Harness = context.globals.harness ?? 'mochitest';

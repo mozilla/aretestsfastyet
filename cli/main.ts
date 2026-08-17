@@ -50,12 +50,22 @@ import {
 import { type FetchLike, httpSource, taskArtifactSource, taskArtifactUrl } from '../lib/sources/http.ts';
 import { PushNotFoundError, TreeherderError, treeherderClient } from '../lib/sources/treeherder.ts';
 
+/** Globals a command refuses unconditionally, and what it says instead. */
+interface RejectedGlobals {
+    /** Long names, without the leading dashes. */
+    names: readonly string[];
+    message: string;
+    hint: string;
+}
+
 /** One command's registration. */
 interface CommandSpec {
     name: string;
     summary: string;
     usage: string;
     options: OptionSpecs;
+    /** Globals this command refuses: omitted from `--help`, refused by `dispatch()`. */
+    rejectsGlobals?: readonly RejectedGlobals[];
     /**
      * Standing definitions printed after the options, for a command whose output
      * would otherwise have to carry them on every run.
@@ -128,6 +138,14 @@ const COMMANDS: CommandSpec[] = [
         summary: 'What is loudest in the test logs on one day. Defaults to mochitest.',
         usage: 'fx-tests errors [options]',
         options: ERRORS_OPTIONS,
+        rejectsGlobals: [
+            {
+                names: ['since'],
+                message:
+                    '--since does not apply to errors: the files are per-date, with no multi-day aggregate',
+                hint: 'Use --day <date> for one day, and run the command twice to compare two days.',
+            },
+        ],
         run: runErrors,
     },
     {
@@ -135,6 +153,14 @@ const COMMANDS: CommandSpec[] = [
         summary: 'Which manifest is eating a job’s time budget, and on which configs.',
         usage: 'fx-tests manifests [name] [options]',
         options: MANIFESTS_OPTIONS,
+        rejectsGlobals: [
+            {
+                names: ['day', 'since'],
+                message:
+                    'manifests.json covers a single day and has no day axis, so --day and --since do not apply',
+                hint: 'The file the index publishes is the latest one; its date is in the output header.',
+            },
+        ],
         run: runManifests,
     },
     {
@@ -187,6 +213,14 @@ const COMMANDS: CommandSpec[] = [
  * test would not catch it.
  */
 export const COMMAND_NAMES: readonly string[] = COMMANDS.map((command) => command.name);
+
+/** Which globals each command refuses, by command name. For the tests. */
+export const REJECTED_GLOBALS: Record<string, readonly string[]> = Object.fromEntries(
+    COMMANDS.map((command) => [
+        command.name,
+        (command.rejectsGlobals ?? []).flatMap((group) => group.names),
+    ])
+);
 
 /**
  * Commands `CLI.md` specifies that step 5 will add.
@@ -353,6 +387,16 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
     }
 
     const globals = readGlobalOptions(args);
+
+    // Must stay after `readGlobalOptions`, which validates every global's value:
+    // refusing first masks a typo'd `--harness` behind a complaint about an
+    // unrelated flag the caller may not have meant to pass. Nothing is fetched
+    // in between, so moving it earlier buys nothing.
+    for (const rejected of command.rejectsGlobals ?? []) {
+        if (rejected.names.some((name) => args.options.has(name))) {
+            throw usageError(rejected.message, rejected.hint);
+        }
+    }
 
     if (globals.dataSource === 'local' && options.source === undefined) {
         // Deliberately refused rather than silently reading `./data/`: the
@@ -615,7 +659,12 @@ export function topLevelHelp(): string {
 
 /** One command's `--help` text. */
 function commandHelp(command: CommandSpec, specs: OptionSpecs): string {
-    const names = Object.entries(specs).map(([name, spec]) => {
+    const rejected = new Set(
+        (command.rejectsGlobals ?? []).flatMap((group) => group.names)
+    );
+    const names = Object.entries(specs)
+        .filter(([name]) => !rejected.has(name))
+        .map(([name, spec]) => {
         const placeholder = spec.placeholder === undefined ? '' : ` ${spec.placeholder}`;
         return { flag: `--${name}${placeholder}`, describe: spec.describe };
     });

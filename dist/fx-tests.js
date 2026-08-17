@@ -2803,12 +2803,6 @@ async function runErrors(context, args) {
       "Filter with --message, --kind, --test, --component or --file."
     );
   }
-  if (context.globals.since !== void 0) {
-    throw usageError(
-      "--since does not apply to errors: the files are per-date, with no multi-day aggregate",
-      "Use --day <date> for one day, and run the command twice to compare two days."
-    );
-  }
   const harness = context.globals.harness ?? "mochitest";
   if (context.globals.config.length > 0 || context.globals.excludeConfig.length > 0) {
     throw usageError(
@@ -6726,12 +6720,6 @@ async function runManifests(context, args) {
       `manifests takes at most one manifest name, got ${args.positionals.length}: ` + args.positionals.join(", ")
     );
   }
-  if (context.globals.day !== void 0 || context.globals.since !== void 0) {
-    throw usageError(
-      "manifests.json covers a single day and has no day axis, so --day and --since do not apply",
-      "The file the index publishes is the latest one; its date is in the output header."
-    );
-  }
   const wanted = args.positionals[0];
   const sort = readSort4(args);
   const slowerThanMs = readDuration(stringOption(args, "slower-than"));
@@ -10155,6 +10143,13 @@ var COMMANDS = [
     summary: "What is loudest in the test logs on one day. Defaults to mochitest.",
     usage: "fx-tests errors [options]",
     options: ERRORS_OPTIONS,
+    rejectsGlobals: [
+      {
+        names: ["since"],
+        message: "--since does not apply to errors: the files are per-date, with no multi-day aggregate",
+        hint: "Use --day <date> for one day, and run the command twice to compare two days."
+      }
+    ],
     run: runErrors
   },
   {
@@ -10162,6 +10157,13 @@ var COMMANDS = [
     summary: "Which manifest is eating a job\u2019s time budget, and on which configs.",
     usage: "fx-tests manifests [name] [options]",
     options: MANIFESTS_OPTIONS,
+    rejectsGlobals: [
+      {
+        names: ["day", "since"],
+        message: "manifests.json covers a single day and has no day axis, so --day and --since do not apply",
+        hint: "The file the index publishes is the latest one; its date is in the output header."
+      }
+    ],
     run: runManifests
   },
   {
@@ -10204,6 +10206,12 @@ var COMMANDS = [
   }
 ];
 var COMMAND_NAMES = COMMANDS.map((command) => command.name);
+var REJECTED_GLOBALS = Object.fromEntries(
+  COMMANDS.map((command) => [
+    command.name,
+    (command.rejectsGlobals ?? []).flatMap((group) => group.names)
+  ])
+);
 var PLANNED_COMMANDS = {};
 var VERSION = "0.0.0";
 async function run(options) {
@@ -10285,6 +10293,11 @@ async function dispatch(options) {
     return ExitCode.Success;
   }
   const globals = readGlobalOptions(args);
+  for (const rejected of command.rejectsGlobals ?? []) {
+    if (rejected.names.some((name) => args.options.has(name))) {
+      throw usageError(rejected.message, rejected.hint);
+    }
+  }
   if (globals.dataSource === "local" && options.source === void 0) {
     throw usageError(
       "--data-source local is not supported by the CLI",
@@ -10444,7 +10457,10 @@ function topLevelHelp() {
   return lines.join("\n");
 }
 function commandHelp(command, specs) {
-  const names = Object.entries(specs).map(([name, spec]) => {
+  const rejected = new Set(
+    (command.rejectsGlobals ?? []).flatMap((group) => group.names)
+  );
+  const names = Object.entries(specs).filter(([name]) => !rejected.has(name)).map(([name, spec]) => {
     const placeholder = spec.placeholder === void 0 ? "" : ` ${spec.placeholder}`;
     return { flag: `--${name}${placeholder}`, describe: spec.describe };
   });
