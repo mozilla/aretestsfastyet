@@ -747,6 +747,36 @@ it rather than pointed at a column the rows are not ordered by.
 and can print minidump IDs (`--minidumps`), which `fx-tests crash` then reads.
 Both accept `--limit`, `--path`, `--component`, `--config`, `--day`.
 
+#### Which tests, not just how many
+
+`failures --message <substring>` answers "which tests emit this message", and the
+`tests` column alone does not: knowing 204 tests share a message does not say
+*which*, and whether they are contiguous in one manifest — the shape of a
+contamination chain — is not decidable from the count.
+
+So the tests are listed under the table, automatically once the table is three
+rows or fewer and on `--tests` above that. Three is the threshold `errors` uses
+and for the same reason: at twenty rows the per-row list is noise, and
+`--message` normally narrows to one row anyway, so a caller who has never heard
+of `--tests` still gets the answer. Paths print whole — the block exists because
+the table could not carry them.
+
+The failure is named by a **substring of its message**, not by a row index. That
+is how `--message` already works, and it survives the 21-day window moving
+between the query that ranked a message and the one that drills into it — an
+index is only meaningful against the rendering that printed it.
+
+**`--json` never truncates the list.** Text caps at 50 with a `… n more` line;
+JSON emits every test and reports `testsTruncated: false` beside `testCount`, so
+the array is never silently shorter than the count next to it. It used to stop at
+50 while reporting `testCount: 204`, with no marker and no way to lift it, which
+cost one investigation six tests — two of them inside the block that was the
+point of the query. Lifting the cap was measured first: tree-wide and uncapped is
+3,377 test rows over 2,409 mochitest groups against 3,070 capped, with 4 groups
+affected at all, so the cap was buying about 10% of one payload against being
+wrong. `testsTruncated` is always present, never absent-when-false, on the same
+reasoning that keeps `taskIds` unconditional.
+
 **Measured caveat, and it changes where `--minidumps` works.** Both commands
 read `{harness}-issues.json`, whose `CRASH` groups carry `counts`, `days` and
 `crashSignatureIds` and **no `minidumps` field at all** — 0 of 676 groups in one

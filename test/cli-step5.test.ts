@@ -1409,6 +1409,94 @@ test('failures groups by message and reports the test spread', async () => {
     assert.ok(rows.some((row) => row.testCount >= 1));
 });
 
+/**
+ * The bug: `tests` capped at 50 beside `testCount: 204`, with nothing saying so.
+ *
+ * A consumer that reads the array as the answer is off by however many the cap
+ * dropped, and cannot tell. Six tests went missing that way, two of them inside
+ * the contiguous manifest block that was the point of the query. So the
+ * invariant is checked on **every** row of every `--json` path that emits the
+ * pair, rather than on the one row that happened to be over the cap: the
+ * fixture is small enough that a cap-shaped regression would hide behind a
+ * spot-check of the biggest group.
+ */
+test('--json never emits a tests array shorter than its own testCount', async () => {
+    for (const argv of [
+        ['failures', '--json', '--limit', '0'],
+        ['failures', '--json'],
+        ['issues', '--group-by', 'message', '--json', '--limit', '0'],
+    ]) {
+        const { stdout } = await invoke(argv);
+        const rows = json(stdout)['rows'] as {
+            message: string | null;
+            testCount: number;
+            tests: { test: string; count: number }[];
+            testsTruncated: boolean;
+        }[];
+        assert.ok(rows.length > 0, argv.join(' '));
+        for (const row of rows) {
+            assert.equal(
+                row.tests.length,
+                row.testCount,
+                `${argv.join(' ')}: ${row.tests.length} of ${row.testCount} tests for ${row.message}`
+            );
+            // Present and false, not absent. An absent key is the shape item 5
+            // of the review is about: a consumer cannot tell "nothing was
+            // dropped" from "this build does not report it".
+            assert.equal(row.testsTruncated, false, argv.join(' '));
+        }
+    }
+});
+
+/**
+ * The other half: the text table printed the count and never the tests.
+ *
+ * "Which 204 tests" is the question the command is asked, and the answer has to
+ * be reachable without `--json` — the list is what shows whether a chain is
+ * contiguous in the manifest.
+ */
+test('failures lists the tests behind a message in text output', async () => {
+    const all = await invoke(['failures', '--json', '--limit', '0']);
+    const rows = json(all.stdout)['rows'] as {
+        message: string | null;
+        tests: { test: string }[];
+    }[];
+    // The loudest group in this fixture records no message, and `--message`
+    // cannot name that one.
+    const row = rows.find((candidate) => candidate.message !== null);
+    assert.ok(row?.message, 'the fixture must have a failure with a message');
+    assert.ok(row.tests.length > 0);
+
+    const { stdout } = await invoke(['failures', '--message', row.message, '--limit', '1']);
+    // Whole paths. This block exists because the table could not carry them, so
+    // a truncated path here would defeat its purpose — the same failure mode the
+    // review's item 17 is about, checked on the output that must not have it.
+    for (const test of row.tests) {
+        assert.ok(
+            stdout.includes(test.test),
+            `the whole path must appear untruncated: ${test.test}\n${stdout}`
+        );
+    }
+});
+
+/**
+ * The list is automatic at the narrowness that asks for it, and off above it.
+ *
+ * `--message` usually narrows to one row, so a caller who does not know about
+ * `--tests` still gets the answer; at twenty rows the same block is noise, which
+ * is the trade `errors` already made at the same threshold.
+ */
+test('the per-message test list is automatic when narrow and opt-in when wide', async () => {
+    const narrow = await invoke(['failures', '--limit', '1']);
+    assert.match(narrow.stdout, /failures in \d+ tests? —/);
+
+    const wide = await invoke(['failures', '--limit', '20']);
+    assert.doesNotMatch(wide.stdout, /failures in \d+ tests? —/);
+
+    const asked = await invoke(['failures', '--limit', '20', '--tests']);
+    assert.match(asked.stdout, /failures in \d+ tests? —/);
+});
+
 test('failures --message filters case-insensitively', async () => {
     const all = await invoke(['failures', '--json', '--limit', '0']);
     const rows = json(all.stdout)['rows'] as { message: string | null }[];
@@ -1592,7 +1680,7 @@ test('each step-5 command has --help listing its own options', async () => {
         issues: ['--component', '--path', '--type', '--min-rate', '--sort', '--group-by'],
         crashes: ['--signature', '--minidumps'],
         skips: ['--include-run-if'],
-        failures: ['--message'],
+        failures: ['--message', '--tests'],
     };
     for (const [command, flags] of Object.entries(expected)) {
         const { code, stdout } = await invoke([command, '--help']);

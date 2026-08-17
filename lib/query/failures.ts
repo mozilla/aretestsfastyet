@@ -38,6 +38,8 @@ export interface FailureGroup {
     testCount: number;
     /** The tests, most occurrences first. Capped by `maxTestsPerGroup`. */
     tests: { testId: number; fullPath: string; count: number }[];
+    /** Whether the cap shortened `tests` below `testCount`. */
+    testsTruncated: boolean;
     /** Configurations it was seen on, where the file attributes them. */
     jobNames: Set<string>;
     /** Task IDs behind it, for `--task-ids`. Capped by `maxTaskIds`. */
@@ -56,6 +58,8 @@ export interface FailureGroupOptions {
      * How many per-test rows to keep per group. A message in 9,367 tests does
      * not need 9,367 rows carried through to a formatter that will print
      * five — and keeping them all is how a tree-wide query gets expensive.
+     *
+     * `0` means keep every one, as `--limit 0` does; it is not "keep none".
      */
     maxTestsPerGroup?: number | undefined;
     /** How many task IDs to keep per group. Same reasoning. */
@@ -125,6 +129,7 @@ export function groupFailuresByMessage(
                     count: 0,
                     testCount: 0,
                     tests: [],
+                    testsTruncated: false,
                     jobNames: new Set(),
                     taskIds: [],
                 };
@@ -154,14 +159,14 @@ export function groupFailuresByMessage(
     for (const [message, group] of groups) {
         const counts = perTest.get(message)!;
         group.testCount = counts.size;
-        group.tests = [...counts]
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, maxTests)
-            .map(([testId, count]) => ({
-                testId,
-                fullPath: file.testAt(testId).fullPath,
-                count,
-            }));
+        const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+        const kept = maxTests === 0 ? ranked : ranked.slice(0, maxTests);
+        group.testsTruncated = kept.length < ranked.length;
+        group.tests = kept.map(([testId, count]) => ({
+            testId,
+            fullPath: file.testAt(testId).fullPath,
+            count,
+        }));
     }
 
     return [...groups.values()].sort((a, b) => b.count - a.count);

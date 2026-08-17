@@ -5454,6 +5454,7 @@ function groupFailuresByMessage(file, options = {}) {
           count: 0,
           testCount: 0,
           tests: [],
+          testsTruncated: false,
           jobNames: /* @__PURE__ */ new Set(),
           taskIds: []
         };
@@ -5480,7 +5481,10 @@ function groupFailuresByMessage(file, options = {}) {
   for (const [message, group] of groups) {
     const counts = perTest.get(message);
     group.testCount = counts.size;
-    group.tests = [...counts].sort((a, b) => b[1] - a[1]).slice(0, maxTests).map(([testId, count2]) => ({
+    const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+    const kept = maxTests === 0 ? ranked : ranked.slice(0, maxTests);
+    group.testsTruncated = kept.length < ranked.length;
+    group.tests = kept.map(([testId, count2]) => ({
       testId,
       fullPath: file.testAt(testId).fullPath,
       count: count2
@@ -5708,6 +5712,10 @@ var FAILURES_OPTIONS = {
     type: "string",
     placeholder: "<substring>",
     describe: "Only messages containing this."
+  },
+  tests: {
+    type: "boolean",
+    describe: "List the tests behind each message. Automatic once the table is 3 rows or fewer."
   }
 };
 var CRASHES_OPTIONS = {
@@ -5803,7 +5811,10 @@ async function runIssues(context, args) {
   const groupBy = readGroupBy2(args, ["component", "test", "directory", "message"], "component");
   const limit = context.globals.limit ?? DEFAULT_LIMIT3;
   if (groupBy === "message") {
-    const groups = groupFailuresByMessage(query.file, sharedOptions(query));
+    const groups = groupFailuresByMessage(query.file, {
+      ...sharedOptions(query),
+      maxTestsPerGroup: maxTestsFor(context)
+    });
     const shown2 = applyLimit(groups, limit);
     const result2 = {
       header: query.header,
@@ -6005,7 +6016,8 @@ async function runFailures(context, args) {
   const limit = context.globals.limit ?? DEFAULT_LIMIT3;
   const groups = groupFailuresByMessage(query.file, {
     ...sharedOptions(query),
-    ...optional2("message", stringOption(args, "message"))
+    ...optional2("message", stringOption(args, "message")),
+    maxTestsPerGroup: maxTestsFor(context)
   });
   const shown = applyLimit(groups, limit);
   const result = {
@@ -6016,21 +6028,31 @@ async function runFailures(context, args) {
     rowCount: groups.length,
     rows: shown.map(failureGroupJson)
   };
-  emitResult2(context, result, () => renderFailures(result, "failures by message"));
+  emitResult2(
+    context,
+    result,
+    () => renderFailures(result, "failures by message", boolOption(args, "tests"))
+  );
 }
+function maxTestsFor(context) {
+  return context.globals.format === "json" ? 0 : TEXT_MAX_TESTS_PER_GROUP;
+}
+var TEXT_MAX_TESTS_PER_GROUP = 50;
+var AUTO_TESTS_ROW_LIMIT = 3;
 function failureGroupJson(group) {
   return {
     message: group.message,
     count: group.count,
     testCount: group.testCount,
     tests: group.tests.map((test) => ({ test: test.fullPath, count: test.count })),
+    testsTruncated: group.testsTruncated,
     // A Set does not survive JSON.stringify; spelled out rather than
     // silently serializing as `{}`.
     jobNames: [...group.jobNames],
     taskIds: group.taskIds
   };
 }
-function renderFailures(result, subject) {
+function renderFailures(result, subject, wantTests = false) {
   return {
     preamble: headerLines3(result.header, subject),
     // `tests` is the discriminator here for the same reason it is in
@@ -6052,9 +6074,35 @@ function renderFailures(result, subject) {
     },
     total: result.rowCount,
     shown: result.rows.length,
-    epilogue: [],
+    epilogue: testListLines(result.rows, wantTests),
     empty: emptyMessage2(result.header, void 0, "failure", ", --message (a substring)")
   };
+}
+function testListLines(rows2, wantTests) {
+  if (!wantTests && rows2.length > AUTO_TESTS_ROW_LIMIT) {
+    return [];
+  }
+  const lines = [];
+  for (const row of rows2) {
+    const tests = row.tests;
+    if (tests.length === 0) {
+      continue;
+    }
+    const testCount = Number(row.testCount);
+    lines.push("");
+    lines.push(
+      `  ${count(Number(row.count))} failures in ${count(testCount)} test${testCount === 1 ? "" : "s"} \u2014 ` + truncate(oneLine2(String(row.message ?? "(no message recorded)")), 60)
+    );
+    for (const test of tests) {
+      lines.push(`    ${count(test.count).padStart(7)}  ${test.test}`);
+    }
+    if (row.testsTruncated === true) {
+      lines.push(
+        `    \u2026 ${count(testCount - tests.length)} more tests (--json for all of them)`
+      );
+    }
+  }
+  return lines;
 }
 async function runCrashes(context, args) {
   rejectPositionals(args, "crashes");

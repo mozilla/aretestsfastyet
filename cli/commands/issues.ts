@@ -122,6 +122,10 @@ export const FAILURES_OPTIONS: OptionSpecs = {
         placeholder: '<substring>',
         describe: 'Only messages containing this.',
     },
+    tests: {
+        type: 'boolean',
+        describe: 'List the tests behind each message. Automatic once the table is 3 rows or fewer.',
+    },
 };
 
 /** `fx-tests crashes` options. */
@@ -340,7 +344,10 @@ export async function runIssues(context: CommandContext, args: ParsedArgs): Prom
     // an `IssueRow` carries counts, not the messages behind them. `CLI.md` calls
     // it the "one bug, many tests" view and `failures.ts` is where it lives.
     if (groupBy === 'message') {
-        const groups = groupFailuresByMessage(query.file, sharedOptions(query));
+        const groups = groupFailuresByMessage(query.file, {
+            ...sharedOptions(query),
+            maxTestsPerGroup: maxTestsFor(context),
+        });
         const shown = applyLimit(groups, limit);
         const result = {
             header: query.header,
@@ -653,6 +660,7 @@ export async function runFailures(context: CommandContext, args: ParsedArgs): Pr
     const groups = groupFailuresByMessage(query.file, {
         ...sharedOptions(query),
         ...optional('message', stringOption(args, 'message')),
+        maxTestsPerGroup: maxTestsFor(context),
     });
     const shown = applyLimit(groups, limit);
     const result = {
@@ -663,8 +671,26 @@ export async function runFailures(context: CommandContext, args: ParsedArgs): Pr
         rowCount: groups.length,
         rows: shown.map(failureGroupJson),
     };
-    emitResult(context, result, () => renderFailures(result, 'failures by message'));
+    emitResult(context, result, () =>
+        renderFailures(result, 'failures by message', boolOption(args, 'tests'))
+    );
 }
+
+/**
+ * How many per-test rows to carry. `0` is uncapped, not empty.
+ *
+ * `--json` must not ship a `tests` array shorter than the `testCount` beside
+ * it; only the text renderer has a width to run out of.
+ */
+function maxTestsFor(context: CommandContext): number {
+    return context.globals.format === 'json' ? 0 : TEXT_MAX_TESTS_PER_GROUP;
+}
+
+/** How many tests one message's list shows in text, before `… n more`. */
+const TEXT_MAX_TESTS_PER_GROUP = 50;
+
+/** How few rows print the per-test list unasked. Matches `errors`. */
+const AUTO_TESTS_ROW_LIMIT = 3;
 
 /** One failure group's JSON. */
 function failureGroupJson(group: FailureGroup): Record<string, unknown> {
@@ -673,6 +699,7 @@ function failureGroupJson(group: FailureGroup): Record<string, unknown> {
         count: group.count,
         testCount: group.testCount,
         tests: group.tests.map((test) => ({ test: test.fullPath, count: test.count })),
+        testsTruncated: group.testsTruncated,
         // A Set does not survive JSON.stringify; spelled out rather than
         // silently serializing as `{}`.
         jobNames: [...group.jobNames],
@@ -683,7 +710,8 @@ function failureGroupJson(group: FailureGroup): Record<string, unknown> {
 /** Renders a message-grouped table. */
 function renderFailures(
     result: { header: TreeHeader; rowCount: number; rows: Record<string, unknown>[] },
-    subject: string
+    subject: string,
+    wantTests = false
 ): Rendered {
     return {
         preamble: headerLines(result.header, subject),
@@ -706,9 +734,44 @@ function renderFailures(
         },
         total: result.rowCount,
         shown: result.rows.length,
-        epilogue: [],
+        epilogue: testListLines(result.rows, wantTests),
         empty: emptyMessage(result.header, undefined, 'failure', ', --message (a substring)'),
     };
+}
+
+/**
+ * The per-message test lists, below the table.
+ *
+ * Paths print whole: this block exists because the table's `message` column
+ * could not carry them, so `truncate` here would defeat it.
+ */
+function testListLines(rows: Record<string, unknown>[], wantTests: boolean): string[] {
+    if (!wantTests && rows.length > AUTO_TESTS_ROW_LIMIT) {
+        return [];
+    }
+    const lines: string[] = [];
+    for (const row of rows) {
+        const tests = row.tests as { test: string; count: number }[];
+        if (tests.length === 0) {
+            continue;
+        }
+        const testCount = Number(row.testCount);
+        lines.push('');
+        lines.push(
+            `  ${fmtCount(Number(row.count))} failures in ${fmtCount(testCount)} test` +
+                `${testCount === 1 ? '' : 's'} — ` +
+                truncate(oneLine(String(row.message ?? '(no message recorded)')), 60)
+        );
+        for (const test of tests) {
+            lines.push(`    ${fmtCount(test.count).padStart(7)}  ${test.test}`);
+        }
+        if (row.testsTruncated === true) {
+            lines.push(
+                `    … ${fmtCount(testCount - tests.length)} more tests (--json for all of them)`
+            );
+        }
+    }
+    return lines;
 }
 
 // --- fx-tests crashes ----------------------------------------------------

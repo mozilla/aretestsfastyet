@@ -1578,6 +1578,31 @@ test('failures group by message and count distinct tests', () => {
     }
 });
 
+test('maxTestsPerGroup 0 keeps every test, and testsTruncated says which it did', () => {
+    // A cap of 1 forces the truncated case on any group with a spread, so both
+    // states of the flag are exercised against the same fixture.
+    const capped = groupFailuresByMessage(bucket, { maxTestsPerGroup: 1 });
+    const uncapped = groupFailuresByMessage(bucket, { maxTestsPerGroup: 0 });
+    assert.ok(capped.length > 0);
+    assert.equal(capped.length, uncapped.length);
+
+    let sawTruncation = false;
+    for (const [i, group] of uncapped.entries()) {
+        // The point of `0`: the array is the count, so a consumer reading one
+        // cannot be short of the other.
+        assert.equal(group.tests.length, group.testCount, group.message ?? '(none)');
+        assert.equal(group.testsTruncated, false);
+
+        const short = capped[i]!;
+        assert.equal(short.testsTruncated, short.testCount > 1);
+        if (short.testsTruncated) {
+            sawTruncation = true;
+            assert.equal(short.tests.length, 1);
+        }
+    }
+    assert.ok(sawTruncation, 'the fixture must have one message across several tests');
+});
+
 test('failures filter by message substring, case-insensitively', () => {
     const all = groupFailuresByMessage(bucket);
     const first = all.find((group) => group.message !== null);
