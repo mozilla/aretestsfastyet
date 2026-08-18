@@ -21,6 +21,7 @@ import {
     checkDaily,
     checkErrors,
     checkIndex,
+    checkIntermittents,
     checkIssues,
     checkIssuesWithTaskIds,
     checkManifests,
@@ -56,6 +57,13 @@ function checkerFor(name: string): { check: Check; ctx: FileContext } | undefine
     }
     if (name.startsWith('stackwalk-')) {
         return { check: checkStackwalk, ctx };
+    }
+    // Before the daily pattern below: the name ends in a date, and this is not a
+    // daily timing file. It is a recorded Treeherder API response — the only
+    // fixture here that is someone else's format — and `checkIntermittents`
+    // explains why it is checked at all.
+    if (name.startsWith('intermittents-')) {
+        return { check: checkIntermittents, ctx };
     }
     // Before the bucket pattern: a revision ends in hex, so `try-7d16bff8.json`
     // matches it too — the same collision the daily/bucket ordering below

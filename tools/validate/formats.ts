@@ -1695,3 +1695,156 @@ export function checkTryPush(c: Checker, data: unknown, _ctx: FileContext): void
         c.observe('tryTimingStatuses', String(timing['status']));
     }
 }
+
+/**
+ * A recorded Treeherder intermittents response, as
+ * `test/intermittents-fixture-gen.ts` writes it.
+ *
+ * Someone else's API rather than this repository's output, but checked for the
+ * reason the rest of this file exists: the fixture joins two responses, and the
+ * join breaks silently. A `failuresbybug` key absent from `failures` means
+ * occurrences were kept for a bug no ranking holds.
+ */
+export function checkIntermittents(c: Checker, data: unknown, _ctx: FileContext): void {
+    if (!c.object(data)) {
+        return;
+    }
+    c.noExtraKeys(data, [
+        'note',
+        'tree',
+        'startday',
+        'endday',
+        'failures',
+        'summaries',
+        'knownTestPaths',
+        'failuresbybug',
+    ]);
+    c.string(data['note'], '.note');
+    c.string(data['tree'], '.tree');
+    c.date(data['startday'], '.startday');
+    c.date(data['endday'], '.endday');
+
+    /** The bug numbers the ranking holds, for the join below. */
+    const ranked = new Set<number>();
+    if (c.array(data['failures'], '.failures')) {
+        let previous = Infinity;
+        for (const [i, row] of (data['failures'] as unknown[]).entries()) {
+            const at = `.failures[${i}]`;
+            if (!c.object(row, at)) {
+                continue;
+            }
+            c.noExtraKeys(row, ['bug_id', 'bug_count'], at);
+            // Nullable: the largest group is regularly the no-bug one.
+            if (c.integer(row['bug_id'], `${at}.bug_id`, 'nullable')) {
+                ranked.add(row['bug_id'] as number);
+            }
+            if (c.integer(row['bug_count'], `${at}.bug_count`)) {
+                const bugCount = row['bug_count'] as number;
+                // Scans walk this in arrival order, so a differently sorted
+                // fixture would make "the top N" mean nothing.
+                if (bugCount > previous) {
+                    c.error(
+                        `bug_count ${bugCount} is above the previous row's ${previous}; ` +
+                            `the ranking must be count-descending`,
+                        `${at}.bug_count`
+                    );
+                }
+                previous = bugCount;
+            }
+        }
+    }
+
+    // Every ranked bug needs a summary: classification reads it, so a bug
+    // recorded without one would classify as "no test path" for the wrong
+    // reason and a test asserting that would pass vacuously.
+    if (c.object(data['summaries'], '.summaries')) {
+        const summaries = data['summaries'] as Record<string, unknown>;
+        for (const bug of ranked) {
+            if (!(String(bug) in summaries)) {
+                c.error(`bug ${bug} is ranked but has no summary`, '.summaries');
+            }
+        }
+        for (const [key, value] of Object.entries(summaries)) {
+            c.string(value, `.summaries["${key}"]`);
+        }
+    }
+
+    if (c.object(data['knownTestPaths'], '.knownTestPaths')) {
+        const known = data['knownTestPaths'] as Record<string, unknown>;
+        c.noExtraKeys(known, ['mochitest', 'xpcshell'], '.knownTestPaths');
+        for (const harness of ['mochitest', 'xpcshell']) {
+            const at = `.knownTestPaths.${harness}`;
+            if (c.array(known[harness], at)) {
+                for (const [i, path] of (known[harness] as unknown[]).entries()) {
+                    c.string(path, `${at}[${i}]`);
+                }
+            }
+        }
+    }
+
+    if (!c.object(data['failuresbybug'], '.failuresbybug')) {
+        return;
+    }
+    for (const [key, rows] of Object.entries(data['failuresbybug'] as Record<string, unknown>)) {
+        const at = `.failuresbybug["${key}"]`;
+        const bug = Number(key);
+        if (!Number.isInteger(bug)) {
+            c.error('key is not a bug number', at);
+            continue;
+        }
+        // The join this checker exists for.
+        if (!ranked.has(bug)) {
+            c.error(`bug ${bug} has occurrences but is not in .failures`, at);
+        }
+        if (!c.array(rows, at)) {
+            continue;
+        }
+        for (const [i, row] of (rows as unknown[]).entries()) {
+            const rowAt = `${at}[${i}]`;
+            if (!c.object(row, rowAt)) {
+                continue;
+            }
+            c.noExtraKeys(
+                row,
+                [
+                    'bug_id',
+                    'test_suite',
+                    'platform',
+                    'build_type',
+                    'revision',
+                    'tree',
+                    'push_time',
+                    'job_id',
+                    'machine_name',
+                    'task_id',
+                    'lines',
+                ],
+                rowAt
+            );
+            c.integer(row['bug_id'], `${rowAt}.bug_id`, 'nullable');
+            c.string(row['test_suite'], `${rowAt}.test_suite`);
+            c.string(row['platform'], `${rowAt}.platform`);
+            c.string(row['build_type'], `${rowAt}.build_type`);
+            c.string(row['revision'], `${rowAt}.revision`);
+            c.string(row['tree'], `${rowAt}.tree`);
+            c.string(row['push_time'], `${rowAt}.push_time`);
+            c.integer(row['job_id'], `${rowAt}.job_id`);
+            c.string(row['machine_name'], `${rowAt}.machine_name`);
+            // `"unknown"` when Treeherder has no Taskcluster metadata for the
+            // job (`intermittents_view.py:98`), so it is a string and never
+            // absent.
+            c.string(row['task_id'], `${rowAt}.task_id`);
+            if (c.array(row['lines'], `${rowAt}.lines`)) {
+                for (const [j, line] of (row['lines'] as unknown[]).entries()) {
+                    c.string(line, `${rowAt}.lines[${j}]`);
+                }
+            }
+            if (row['bug_id'] !== null && row['bug_id'] !== bug) {
+                c.error(
+                    `row reports bug ${String(row['bug_id'])} under key ${bug}`,
+                    `${rowAt}.bug_id`
+                );
+            }
+        }
+    }
+}

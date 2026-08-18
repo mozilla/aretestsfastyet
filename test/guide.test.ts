@@ -36,7 +36,7 @@ import { ExitCode } from '../cli/errors.ts';
 import { captureStreams } from '../cli/context.ts';
 import { diskCache } from '../cli/cache.ts';
 import { GLOBAL_OPTION_SPECS } from '../cli/options.ts';
-import { run } from '../cli/main.ts';
+import { COMMAND_NAMES, run } from '../cli/main.ts';
 import {
     COMMAND_FACTS,
     EXIT_CODE_FACTS,
@@ -299,10 +299,15 @@ test('the guide is right that errors defaults to mochitest', async () => {
 });
 
 test('the guide is right about which commands have a surprising harness default', async () => {
-    // Only `errors` should carry `defaultHarness`. If another command's default
-    // changed and the guide were not updated, this notices.
+    // `errors` and `intermittent` should carry `defaultHarness`. If another
+    // command's default changed and the guide were not updated, this notices.
+    //
+    // `intermittent` defaults to mochitest for a different reason from
+    // `errors`: its harness filter is a per-bug scan rather than a file choice,
+    // so "both harnesses" would double the requests and leave a row's count
+    // ambiguous. The default is checked against behaviour below.
     const surprising = COMMAND_FACTS.filter((fact) => fact.defaultHarness !== undefined);
-    assert.deepEqual(surprising.map((fact) => fact.name), ['errors']);
+    assert.deepEqual(surprising.map((fact) => fact.name), ['intermittent', 'errors']);
 
     // …and the ordinary default really is xpcshell for a tree-wide command.
     const { requested } = await invoke(['issues', '--json', '--limit', '1']);
@@ -385,27 +390,20 @@ test('every flag the guide mentions in a workflow actually exists', async () => 
     // will paste them. Every `--flag` in the rendered guide has to be real.
     const text = render();
     const flags = new Set([...text.matchAll(/(?:^|\s)(--[a-z][a-z-]+)/g)].map((m) => m[1]!));
-    // Collect every flag the CLI accepts anywhere.
+    // Collect every flag the CLI accepts anywhere, by asking each registered
+    // command for its own `--help`.
+    //
+    // Derived from `COMMAND_NAMES` rather than from a hand-written list of
+    // modules, because the list drifted: it omitted `flaky.ts` and then
+    // `intermittent.ts`, so a workflow naming one of their flags would have
+    // failed this check for the wrong reason — "no command accepts --scan" when
+    // one does. Driving it off the dispatch table means a new command's flags
+    // are in scope the moment it lands.
     const known = new Set(Object.keys(GLOBAL_OPTION_SPECS).map((name) => `--${name}`));
-    const modules = await Promise.all([
-        import('../cli/commands/errors.ts'),
-        import('../cli/commands/manifests.ts'),
-        import('../cli/commands/crash.ts'),
-        import('../cli/commands/issues.ts'),
-        import('../cli/commands/test.ts'),
-        import('../cli/commands/try.ts'),
-        import('../cli/commands/summary.ts'),
-        import('../cli/commands/cache.ts'),
-    ]);
-    for (const module of modules) {
-        for (const value of Object.values(module)) {
-            if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-                for (const key of Object.keys(value)) {
-                    if (/^[a-z][a-z-]*$/.test(key)) {
-                        known.add(`--${key}`);
-                    }
-                }
-            }
+    for (const name of COMMAND_NAMES) {
+        const { stdout: help } = await invoke([name, '--help']);
+        for (const match of help.matchAll(/^ {2}(--[a-z][a-z-]*)/gm)) {
+            known.add(match[1]!);
         }
     }
     for (const flag of flags) {

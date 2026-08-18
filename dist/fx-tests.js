@@ -230,7 +230,7 @@ var GLOBAL_OPTION_SPECS = {
   },
   help: { type: "boolean", describe: "Show this help." }
 };
-function readGlobalOptions(args, env = {}) {
+function readGlobalOptions(args, env = {}, extraHarnessValues = []) {
   const wantsJson = boolOption(args, "json");
   const wantsMarkdown = boolOption(args, "markdown");
   if (wantsJson && wantsMarkdown) {
@@ -240,9 +240,10 @@ function readGlobalOptions(args, env = {}) {
     );
   }
   const harnessValue = stringOption(args, "harness");
-  if (harnessValue !== void 0 && harnessValue !== "xpcshell" && harnessValue !== "mochitest") {
+  const allowed = ["xpcshell", "mochitest", ...extraHarnessValues];
+  if (harnessValue !== void 0 && !allowed.includes(harnessValue)) {
     throw usageError(
-      `--harness expects xpcshell or mochitest, got "${harnessValue}"`
+      `--harness expects ${allowed.slice(0, -1).join(", ")} or ${allowed[allowed.length - 1]}, got "${harnessValue}"`
     );
   }
   const day = stringOption(args, "day");
@@ -264,7 +265,10 @@ function readGlobalOptions(args, env = {}) {
   }
   return {
     format: wantsJson ? "json" : wantsMarkdown ? "markdown" : "text",
-    harness: harnessValue,
+    // Narrow on purpose: a widened value is not a harness any other
+    // command understands, so it stays out of the shared field and the
+    // command reads it from the raw argument.
+    harness: harnessValue === "xpcshell" || harnessValue === "mochitest" ? harnessValue : void 0,
     limit: numberOption(args, "limit"),
     config: listOption(args, "config"),
     excludeConfig: listOption(args, "exclude-config"),
@@ -349,6 +353,7 @@ function dataFileKey(name) {
 var AGGREGATE_KIND = "aggregate";
 var TASK_ARTIFACT_KIND = "task-artifact";
 var PUSH_JOBS_KIND = "push-jobs";
+var QUERY_KIND = "query";
 function isImmutableKind(kind) {
   return kind === TASK_ARTIFACT_KIND;
 }
@@ -459,6 +464,27 @@ function diskCache(options = {}) {
       await writeEntry(urlCacheHash(key), bytes2, {
         key,
         kind: PUSH_JOBS_KIND,
+        fetchedAt: new Date(now()).toISOString(),
+        bytes: bytes2.byteLength
+      });
+    },
+    async getQuery(url) {
+      const hash = urlCacheHash(url);
+      const meta = await readMeta(hash);
+      if (meta === null || meta.kind !== QUERY_KIND) {
+        return null;
+      }
+      const age = now() - Date.parse(meta.fetchedAt);
+      if (!Number.isFinite(age) || age < 0 || age > QUERY_TTL_MS) {
+        return null;
+      }
+      return readBytes(hash);
+    },
+    async putQuery(url, bytes2) {
+      await writeEntry(urlCacheHash(url), bytes2, {
+        key: url,
+        kind: QUERY_KIND,
+        url,
         fetchedAt: new Date(now()).toISOString(),
         bytes: bytes2.byteLength
       });
@@ -618,6 +644,47 @@ function isSettledPush(jobs) {
   return jobs.length > 0 && jobs.every((job) => TERMINAL_JOB_STATES.has(job.state));
 }
 var SETTLED_PUSH_TTL_MS = 24 * 60 * 60 * 1e3;
+var QUERY_TTL_MS = 60 * 60 * 1e3;
+function cachedIntermittents(inner, cache, hooks = {}) {
+  async function through(key, compute) {
+    const cached = await cache.getQuery(key);
+    if (cached !== null) {
+      try {
+        return JSON.parse(new TextDecoder().decode(cached));
+      } catch {
+      }
+    }
+    const value = await compute();
+    try {
+      await cache.putQuery(key, new TextEncoder().encode(JSON.stringify(value)));
+    } catch (error) {
+      hooks.onWarning?.(describeCacheWriteFailure(cache.directory, error));
+    }
+    return value;
+  }
+  return {
+    ...inner,
+    rankBugs(tree, range) {
+      return through(
+        `intermittents:failures:${tree}:${range.start}:${range.end}`,
+        () => inner.rankBugs(tree, range)
+      );
+    },
+    occurrencesOfBug(tree, range, bug) {
+      return through(
+        `intermittents:failuresbybug:${tree}:${range.start}:${range.end}:${bug}`,
+        () => inner.occurrencesOfBug(tree, range, bug)
+      );
+    },
+    async bugSummaries(bugs) {
+      const key = `bugzilla:summaries:${[...bugs].sort((a, b) => a - b).join(",")}`;
+      const entries = await through(key, async () => [
+        ...await inner.bugSummaries(bugs)
+      ]);
+      return new Map(entries);
+    }
+  };
+}
 function describeCacheWriteFailure(directory, error) {
   const message = error?.message ?? String(error);
   const code2 = error?.code;
@@ -4641,6 +4708,13 @@ var COMMAND_FACTS = [
     defaultLimit: 20
   },
   {
+    name: "intermittent",
+    reads: "Treeherder /api/failures/ + /api/failuresbybug/ + Bugzilla /rest/bug",
+    answers: "Which annotated intermittents cost sheriffs the most, tree-wide, and with which bug?",
+    defaultHarness: "mochitest",
+    defaultLimit: 20
+  },
+  {
     name: "errors",
     reads: "{harness}-{date}-errors.json",
     answers: "What is loudest in the logs? Is this message ambient or specific to one test?",
@@ -4754,6 +4828,17 @@ var TRAPS = [
       "**refuse** `--config` and `--minidumps` rather than return an empty table, because",
       "a filter that silently matches nothing looks exactly like a clean tree. Use",
       "`fx-tests test <path>` for per-config detail."
+    ]
+  },
+  {
+    id: "annotations-are-not-failures",
+    title: "`intermittent` counts sheriff annotations, not failures",
+    body: [
+      "A row is a bug a **sheriff** attached to failing jobs, so an untriaged failure has",
+      "no row: this ranks what costs sheriffs time, while `issues`/`flaky` rank what fails",
+      "most. A bug belongs to a harness when its summary names a test that harness runs;",
+      "one naming no known test \u2014 a [taskcluster:error], a suite this tool does not read \u2014",
+      "is `unknown`. --harness picks one of the three, and omitting it ranks them all."
     ]
   },
   {
@@ -4998,7 +5083,7 @@ function chunkNumber(jobName) {
 function parseJobName(jobName) {
   const slash = jobName.indexOf("/");
   const configuration = stripChunkSuffix(jobName);
-  const chunk = chunkNumber(jobName);
+  const chunk2 = chunkNumber(jobName);
   if (slash === -1) {
     return {
       raw: jobName,
@@ -5008,7 +5093,7 @@ function parseJobName(jobName) {
       os: null,
       buildType: null,
       suite: null,
-      chunk
+      chunk: chunk2
     };
   }
   const head = jobName.slice(0, slash);
@@ -5027,7 +5112,7 @@ function parseJobName(jobName) {
     os: platform === null ? null : operatingSystem(platform),
     buildType: buildType === "" ? null : buildType,
     suite,
-    chunk
+    chunk: chunk2
   };
 }
 function operatingSystem(platform) {
@@ -6581,6 +6666,857 @@ function oneLine2(value) {
   return value.replace(/\s*\r?\n\s*/g, " \u23CE ").trim();
 }
 
+// lib/sources/treeherder.ts
+var TREEHERDER_ROOT2 = "https://treeherder.mozilla.org";
+var FAILED_JOB_RESULTS = /* @__PURE__ */ new Set([
+  "testfailed",
+  "busted",
+  "exception"
+]);
+var TreeherderError = class extends Error {
+  url;
+  status;
+  constructor(message, url, status) {
+    super(message);
+    this.name = "TreeherderError";
+    this.url = url;
+    this.status = status;
+  }
+};
+var PushNotFoundError = class extends Error {
+  revision;
+  repository;
+  constructor(revision, repository) {
+    super(`no push found for revision ${revision} on ${repository}`);
+    this.name = "PushNotFoundError";
+    this.revision = revision;
+    this.repository = repository;
+  }
+};
+function treeherderClient(options) {
+  const root = options.root ?? TREEHERDER_ROOT2;
+  const maxPages = options.maxPages ?? 100;
+  async function getJson(url) {
+    let response;
+    try {
+      response = await options.fetch(url);
+    } catch (error) {
+      throw new TreeherderError(
+        `request to Treeherder failed: ${error.message}`,
+        url
+      );
+    }
+    if (!response.ok) {
+      throw new TreeherderError(
+        `Treeherder returned HTTP ${response.status}`,
+        url,
+        response.status
+      );
+    }
+    const text = new TextDecoder().decode(await response.arrayBuffer());
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      throw new TreeherderError(
+        `Treeherder response is not valid JSON: ${error.message}`,
+        url
+      );
+    }
+  }
+  return {
+    async findPush(repository, revision) {
+      const url = `${root}/api/project/${encodeURIComponent(repository)}/push/?full=true&count=10&revision=${encodeURIComponent(revision)}`;
+      const data = await getJson(url);
+      const first = data.results?.[0];
+      if (first === void 0) {
+        throw new PushNotFoundError(revision, repository);
+      }
+      if (typeof first.id !== "number") {
+        throw new TreeherderError(
+          `push for ${revision} has no numeric id`,
+          url
+        );
+      }
+      return {
+        pushId: first.id,
+        revision: first.revision ?? revision,
+        repository,
+        revisions: first.revisions ?? []
+      };
+    },
+    async jobsOfPush(pushId) {
+      const jobs = [];
+      let url = `${root}/api/jobs/?push_id=${pushId}`;
+      let propertyNames = null;
+      let pages = 0;
+      while (url !== null) {
+        if (++pages > maxPages) {
+          throw new TreeherderError(
+            `job listing for push ${pushId} exceeded ${maxPages} pages; refusing to keep following "next"`,
+            url
+          );
+        }
+        const data = await getJson(url);
+        propertyNames ??= data.job_property_names ?? null;
+        if (propertyNames === null) {
+          throw new TreeherderError(
+            `Treeherder returned jobs with no job_property_names, so the positional rows cannot be decoded`,
+            url
+          );
+        }
+        const columns = jobColumns(propertyNames, url);
+        for (const row of data.results ?? []) {
+          jobs.push(readJob(row, columns));
+        }
+        url = data.next ?? null;
+      }
+      return jobs;
+    }
+  };
+}
+function jobColumns(propertyNames, url) {
+  const required = ["id", "job_type_name", "task_id", "retry_id", "state", "result"];
+  const missing = required.filter((name) => !propertyNames.includes(name));
+  if (missing.length > 0) {
+    throw new TreeherderError(
+      `Treeherder's job_property_names is missing ${missing.join(", ")}; got: ${propertyNames.join(", ")}`,
+      url
+    );
+  }
+  return {
+    jobId: propertyNames.indexOf("id"),
+    jobName: propertyNames.indexOf("job_type_name"),
+    taskId: propertyNames.indexOf("task_id"),
+    retryId: propertyNames.indexOf("retry_id"),
+    state: propertyNames.indexOf("state"),
+    result: propertyNames.indexOf("result")
+  };
+}
+function readJob(row, columns) {
+  return {
+    jobId: Number(row[columns.jobId] ?? 0),
+    jobName: String(row[columns.jobName] ?? ""),
+    taskId: String(row[columns.taskId] ?? ""),
+    // A null `retry_id` means run 0, which is how Treeherder writes the
+    // first run of a task.
+    retryId: Number(row[columns.retryId] ?? 0),
+    state: String(row[columns.state] ?? ""),
+    result: String(row[columns.result] ?? "")
+  };
+}
+
+// lib/sources/intermittents.ts
+var BUGZILLA_ROOT = "https://bugzilla.mozilla.org";
+var IntermittentsError = class extends Error {
+  url;
+  status;
+  constructor(message, url, status) {
+    super(message);
+    this.name = "IntermittentsError";
+    this.url = url;
+    this.status = status;
+  }
+};
+var TREE_GROUPS = ["trunk", "firefox-releases", "comm-releases"];
+function intermittentsClient(options) {
+  const root = options.root ?? TREEHERDER_ROOT2;
+  const bugzillaRoot = options.bugzillaRoot ?? BUGZILLA_ROOT;
+  async function getJson(url) {
+    let response;
+    try {
+      response = await options.fetch(url);
+    } catch (error) {
+      throw new IntermittentsError(
+        `request failed: ${error.message}`,
+        url
+      );
+    }
+    if (!response.ok) {
+      throw new IntermittentsError(`HTTP ${response.status}`, url, response.status);
+    }
+    const text = new TextDecoder().decode(await response.arrayBuffer());
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      throw new IntermittentsError(
+        `response is not valid JSON: ${error.message}`,
+        url
+      );
+    }
+  }
+  return {
+    async rankBugs(tree, range) {
+      const url = `${root}/api/failures/?${rangeQuery(tree, range)}`;
+      const rows2 = await getJson(url);
+      return rows2.map((row) => ({ bugId: row.bug_id, count: row.bug_count }));
+    },
+    async occurrencesOfBug(tree, range, bug) {
+      const url = `${root}/api/failuresbybug/?${rangeQuery(tree, range)}&bug=${bug}`;
+      const rows2 = await getJson(url);
+      return rows2.map((row) => ({
+        bugId: row.bug_id,
+        testSuite: row.test_suite,
+        platform: row.platform,
+        buildType: row.build_type,
+        revision: row.revision,
+        tree: row.tree,
+        pushTime: row.push_time,
+        machineName: row.machine_name,
+        taskId: row.task_id,
+        lines: row.lines
+      }));
+    },
+    async bugSummaries(bugs) {
+      const found = /* @__PURE__ */ new Map();
+      for (const batch of chunk(bugs, BUG_BATCH_SIZE)) {
+        if (batch.length === 0) {
+          continue;
+        }
+        const url = `${bugzillaRoot}/rest/bug?id=${batch.join(",")}&include_fields=id,summary`;
+        const data = await getJson(url);
+        for (const bug of data.bugs ?? []) {
+          found.set(bug.id, bug.summary);
+        }
+      }
+      return found;
+    }
+  };
+}
+var BUG_BATCH_SIZE = 100;
+function rangeQuery(tree, range) {
+  return `startday=${encodeURIComponent(range.start)}&endday=${encodeURIComponent(range.end)}&tree=${encodeURIComponent(tree)}`;
+}
+function chunk(items, size) {
+  const batches = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+function harnessOfOccurrence(testSuite) {
+  if (/(^|-)mochitest(-|$)/.test(testSuite)) {
+    return "mochitest";
+  }
+  return /(^|-)xpcshell(-|$)/.test(testSuite) ? "xpcshell" : null;
+}
+function stripSuiteChunk(testSuite) {
+  return testSuite.replace(/-\d+$/, "");
+}
+function testPathCandidates(summary) {
+  const found = [];
+  for (const match of summary.matchAll(TEST_PATH_TOKEN)) {
+    const path = match[1];
+    if (!found.includes(path)) {
+      found.push(path);
+    }
+  }
+  return found;
+}
+var TEST_PATH_TOKEN = /\b((?:[\w.+-]+\/)+[\w.+-]+\.(?:js|mjs|html|xhtml|xul|sjs|py|toml|ini))\b/g;
+function summaryRemainder(summary, path) {
+  let rest = summary.replace(TRIAGE_PREFIX, "");
+  if (path !== null) {
+    rest = rest.replace(path, "");
+  }
+  return rest.replace(/^[\s|:-]+/, "").replace(/[\s|]+$/, "").trim();
+}
+var TRIAGE_PREFIX = /^(?:(?:perma|frequent|intermittent|high frequ[en]*cy|\[meta\]|\[tier \d\]|\[?not ?a ?leak\]?)[\s|:-]*)+/i;
+function testPathOfLine(line) {
+  const marker = line.indexOf("TEST-UNEXPECTED-FAIL");
+  if (marker === -1) {
+    return null;
+  }
+  const fields2 = line.slice(marker).split("|");
+  const candidate = fields2[1]?.trim();
+  if (candidate === void 0 || candidate.length === 0) {
+    return null;
+  }
+  return candidate;
+}
+
+// lib/query/intermittents.ts
+function scanBugs(options) {
+  const { ranking, summaries, harnessOfPath } = options;
+  const noBugCount = ranking.filter((row) => row.bugId === null).reduce((sum, row) => sum + row.count, 0);
+  const candidates = ranking.filter(
+    (row) => row.bugId !== null
+  );
+  const rows2 = candidates.map((candidate) => {
+    const summary = summaries.get(candidate.bugId) ?? "";
+    const verified = testPathCandidates(summary).map((path) => ({ path, harness: harnessOfPath(path) })).find((entry) => entry.harness !== null);
+    return verified === void 0 ? {
+      bugId: candidate.bugId,
+      count: candidate.count,
+      harness: "unknown",
+      test: null,
+      failure: summaryRemainder(summary, null)
+    } : {
+      bugId: candidate.bugId,
+      count: candidate.count,
+      harness: verified.harness,
+      test: verified.path,
+      failure: summaryRemainder(summary, verified.path)
+    };
+  });
+  const ordered = [...rows2].sort((a, b) => b.count - a.count);
+  const count2 = (harness) => ordered.filter((row) => row.harness === harness).length;
+  return {
+    rows: ordered,
+    coverage: {
+      ranked: ranking.length,
+      scanned: candidates.length,
+      mochitest: count2("mochitest"),
+      xpcshell: count2("xpcshell"),
+      unknown: count2("unknown"),
+      noBugCount
+    }
+  };
+}
+function selectHarness(rows2, harness) {
+  return harness === void 0 ? [...rows2] : rows2.filter((row) => row.harness === harness);
+}
+function tallyTests(occurrences) {
+  return tally(
+    occurrences.flatMap((row) => [
+      ...new Set(
+        row.lines.map((line) => testPathOfLine(line)).filter((path) => path !== null)
+      )
+    ])
+  );
+}
+function tally(names) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const name of names) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts].map(([name, count2]) => ({ name, count: count2 })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+function occurrenceConfig(row) {
+  return `${row.platform}/${row.buildType}`;
+}
+function summariseBug(bugId, occurrences, filter = {}) {
+  const rows2 = filterOccurrences(occurrences, filter);
+  return {
+    bugId,
+    occurrences: rows2.length,
+    totalOccurrences: occurrences.length,
+    jobNames: tally(rows2.map((row) => stripSuiteChunk(row.testSuite))),
+    platforms: tally(rows2.map((row) => row.platform)),
+    buildTypes: tally(rows2.map((row) => row.buildType)),
+    trees: tally(rows2.map((row) => row.tree)),
+    tests: tallyTests(rows2),
+    // Per occurrence, like every other tally here: a job emits the marker
+    // once per failing assertion, so counting raw lines reports a job that
+    // failed eighteen assertions as eighteen jobs.
+    lines: tally(rows2.flatMap((row) => [...new Set(row.lines.map(failureLineDetail))])),
+    unclassifiedOccurrences: rows2.filter(
+      (row) => harnessOfOccurrence(row.testSuite) === null
+    ).length
+  };
+}
+function filterOccurrences(occurrences, filter = {}) {
+  const matchesConfig = configFilter(filter.config ?? [], filter.excludeConfig ?? []);
+  return occurrences.filter(
+    (row) => (filter.harness === void 0 || harnessOfOccurrence(row.testSuite) === filter.harness) && matchesConfig(occurrenceConfig(row))
+  );
+}
+function stripLogTimestamp(line) {
+  return line.replace(/^\d{2}:\d{2}:\d{2}\s+\w+\s+-\s+/, "").trim();
+}
+function failureLineDetail(line) {
+  const stripped = stripLogTimestamp(line);
+  const marker = stripped.indexOf("TEST-UNEXPECTED-FAIL");
+  if (marker === -1) {
+    return stripped;
+  }
+  const fields2 = stripped.slice(marker).split("|");
+  const rest = fields2.slice(2).join("|").trim();
+  return rest.length === 0 ? stripped : normaliseDuration(rest);
+}
+function normaliseDuration(message) {
+  return message.replace(/\b\d+ms\b/g, "<n>ms");
+}
+
+// cli/commands/intermittent.ts
+var DEFAULT_LIMIT4 = 20;
+var DEFAULT_DAYS = 7;
+var MIXED_CELL_WIDTH = 96;
+var DRILLDOWN_ROWS = 10;
+var INTERMITTENT_OPTIONS = {
+  // Two globals whose shared wording is wrong here, restated rather than left
+  // to mislead. A command's own spec wins the merge in `dispatch()`, so this
+  // is the supported way to say what the flag means for this command — the
+  // same rule as declaring a global rejected, applied to a flag that works but
+  // works differently.
+  harness: {
+    type: "string",
+    placeholder: "<mochitest|xpcshell|unknown>",
+    describe: "Rank only bugs naming a test of this harness. `unknown` is the bugs naming no known test. Omit for all three."
+  },
+  day: {
+    type: "string",
+    placeholder: "<date>",
+    describe: "One day, YYYY-MM-DD. No today/yesterday: this is a live API, not the published window."
+  },
+  since: {
+    type: "number",
+    placeholder: "<n>",
+    describe: "The last n days, ending today (UTC). Default 7."
+  },
+  tree: {
+    type: "string",
+    placeholder: "<name>",
+    describe: "Repository, repo group (trunk, firefox-releases, comm-releases) or all. Default trunk."
+  },
+  bug: {
+    type: "number",
+    placeholder: "<id>",
+    describe: "Drill into one bug: its occurrences, platforms, task ids and log lines."
+  }
+};
+var INTERMITTENT_NOTES = [
+  "What a row is:",
+  "  One bug a sheriff attached to failing jobs, and how many jobs. These are human",
+  "  judgements, not computed rates: a failure nobody triaged has no row here. So",
+  "  this ranks what is costing sheriffs time; `fx-tests issues` and `fx-tests flaky`",
+  "  rank what fails most.",
+  "",
+  "How a bug is placed:",
+  "  Treeherder ranks bugs with no harness parameter, so a bug counts as a mochitest",
+  "  (or xpcshell) bug when its summary names a test path that harness's data holds \u2014",
+  "  the same test lists `fx-tests test` resolves against. A bug naming no test this",
+  "  tool knows is `unknown`: an infrastructure failure, a suite this tool does not",
+  "  read, or a summary that never named a path.",
+  "",
+  "  With no --harness every annotated bug is ranked together, which is the whole",
+  "  picture. --harness mochitest, xpcshell or unknown ranks one group of it.",
+  "",
+  "  Every bug in the window is classified \u2014 there is no per-bug request to economise",
+  "  on \u2014 so the ranking is complete. --limit sets how many rows print, and --json",
+  "  prints them all. Use `fx-tests test <path>` to dig into one of the tests named.",
+  "",
+  "The window:",
+  "  --day <date> is one day, --since <n> the last n days ending today (UTC), default",
+  "  7. Unlike everywhere else in this CLI there is no published window and no",
+  '  "today"/"yesterday" keyword \u2014 this is a live API, not the nightly aggregates.'
+];
+async function runIntermittent(context, args) {
+  if (args.positionals.length > 0) {
+    throw usageError(
+      `intermittent takes no arguments, got "${args.positionals[0]}"`,
+      "Use --bug <id> to drill into one bug, or no argument for the ranked list."
+    );
+  }
+  const client = context.intermittents;
+  if (client === void 0) {
+    throw new Error("intermittent requires an intermittents client");
+  }
+  const { globals } = context;
+  const tree = stringOption(args, "tree") ?? "trunk";
+  const range = resolveRange(globals.day, globals.since);
+  const bug = numberOption(args, "bug");
+  if (bug !== void 0) {
+    await runDrilldown(context, client, tree, range, bug);
+    return;
+  }
+  if (globals.config.length > 0 || globals.excludeConfig.length > 0) {
+    throw usageError(
+      "--config cannot be applied to the ranked list: its rows are bugs, and a bug spans every configuration it was annotated on",
+      "Use --bug <id> --config <substring> to filter one bug\u2019s occurrences."
+    );
+  }
+  await runRanking(context, client, tree, range, args);
+}
+async function runRanking(context, client, tree, range, args) {
+  const { globals } = context;
+  const harness = readHarnessSelector(args);
+  const limit = globals.limit ?? DEFAULT_LIMIT4;
+  progress(context, `Ranking annotated bugs on ${tree} for ${range.start}..${range.end}\u2026`);
+  const ranking = await withUpstreamErrors(() => client.rankBugs(tree, range), tree);
+  const candidates = ranking.filter((row) => row.bugId !== null).map((row) => row.bugId);
+  progress(context, `Reading ${candidates.length} bug summaries\u2026`);
+  const summaries = await withUpstreamErrors(() => client.bugSummaries(candidates), tree);
+  progress(context, "Reading the mochitest and xpcshell test lists\u2026");
+  const harnessOfPath = await loadHarnessOfPath(context);
+  const scan = scanBugs({ ranking, summaries, harnessOfPath });
+  const selected = selectHarness(scan.rows, harness);
+  const shown = applyLimit(selected, limit);
+  if (globals.format === "json") {
+    emit(
+      context,
+      toJson({
+        harness: harness ?? null,
+        tree,
+        startday: range.start,
+        endday: range.end,
+        coverage: scan.coverage,
+        matchCount: selected.length,
+        rows: selected
+      })
+    );
+    return;
+  }
+  emit(
+    context,
+    globals.format === "markdown" ? renderRankingMarkdown(harness, tree, range, shown, selected, scan) : renderRankingText(harness, tree, range, shown, selected, scan)
+  );
+}
+function readHarnessSelector(args) {
+  const value = stringOption(args, "harness");
+  if (value === void 0) {
+    return void 0;
+  }
+  if (value !== "mochitest" && value !== "xpcshell" && value !== "unknown") {
+    throw usageError(
+      `--harness expects mochitest, xpcshell or unknown, got "${value}"`,
+      "Omit --harness to rank every annotated bug, whatever its classification."
+    );
+  }
+  return value;
+}
+async function loadHarnessOfPath(context) {
+  const known = /* @__PURE__ */ new Map();
+  for (const harness of ["mochitest", "xpcshell"]) {
+    const file = await fetchJson(context.source, {
+      index: timingsIndex(harness),
+      filename: `${harness}-issues.json`
+    });
+    for (const path of collectTestPaths([file])) {
+      if (!known.has(path)) {
+        known.set(path, harness);
+      }
+    }
+  }
+  return (path) => known.get(path) ?? null;
+}
+async function runDrilldown(context, client, tree, range, bug) {
+  const { globals } = context;
+  progress(context, `Reading occurrences of bug ${bug} on ${tree} for ${range.start}..${range.end}\u2026`);
+  const occurrences = await withUpstreamErrors(
+    () => client.occurrencesOfBug(tree, range, bug),
+    tree
+  );
+  if (occurrences.length === 0) {
+    throw notFoundError(
+      `no sheriff annotations for bug ${bug} on ${tree} between ${range.start} and ${range.end}`,
+      "Annotations are per tree and per day range: widen with --since <n>, or try --tree all. A bug with no annotations in the window is not in this data at all."
+    );
+  }
+  const filter = {
+    ...globals.harness === void 0 ? {} : { harness: globals.harness },
+    ...globals.config.length === 0 ? {} : { config: globals.config },
+    ...globals.excludeConfig.length === 0 ? {} : { excludeConfig: globals.excludeConfig }
+  };
+  const summary = summariseBug(bug, occurrences, filter);
+  const shownOccurrences = filterOccurrences(occurrences, filter);
+  if (shownOccurrences.length === 0) {
+    throw notFoundError(
+      `bug ${bug} has ${occurrences.length} annotations on ${tree}, but none match the filter`,
+      "Run without --harness/--config to see every configuration it was annotated on."
+    );
+  }
+  const summaries = await withUpstreamErrors(() => client.bugSummaries([bug]), tree);
+  const bugSummary = summaries.get(bug) ?? null;
+  if (globals.format === "json") {
+    emit(
+      context,
+      toJson({
+        ...summary,
+        tree,
+        startday: range.start,
+        endday: range.end,
+        summary: bugSummary,
+        occurrenceRows: shownOccurrences
+      })
+    );
+    return;
+  }
+  emit(
+    context,
+    globals.format === "markdown" ? renderBugMarkdown(summary, bugSummary, tree, range, shownOccurrences) : renderBugText(summary, bugSummary, tree, range, shownOccurrences, globals.limit)
+  );
+}
+function resolveRange(day, since, today = /* @__PURE__ */ new Date()) {
+  if (day !== void 0) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      throw usageError(
+        `--day expects YYYY-MM-DD, got "${day}"`,
+        'This command queries a live API rather than the published window, so the "today" and "yesterday" keywords \u2014 which mean "the newest day with data" elsewhere \u2014 do not apply. Use --since <n> for a relative range.'
+      );
+    }
+    return { start: day, end: day };
+  }
+  const days = since ?? DEFAULT_DAYS;
+  const end = isoDay(today);
+  const start = isoDay(new Date(today.getTime() - (days - 1) * 24 * 60 * 60 * 1e3));
+  return { start, end };
+}
+function isoDay(date) {
+  return date.toISOString().slice(0, 10);
+}
+async function withUpstreamErrors(work, tree) {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof IntermittentsError) {
+      if (error.status === 400) {
+        throw usageError(
+          `Treeherder rejected the query, which for these endpoints means an unknown tree: "${tree}"`,
+          `--tree takes a repository name (autoland, mozilla-central, \u2026), a repo group (${TREE_GROUPS.join(", ")}), or all.`
+        );
+      }
+      throw upstreamError(
+        `${error.message} from ${error.url}`,
+        "Treeherder\u2019s intermittents API and Bugzilla are both live services; retrying may work."
+      );
+    }
+    throw error;
+  }
+}
+function coverageLines(coverage, harness, selected) {
+  const lines = [];
+  if (harness === void 0) {
+    lines.push(
+      `All ${count(coverage.scanned)} annotated bugs, ranked by count: ${count(coverage.mochitest)} name a mochitest test, ${count(coverage.xpcshell)} an xpcshell test, and ${count(coverage.unknown)} name no test this tool knows.`
+    );
+    lines.push(
+      "A bug is placed by the test path in its summary, checked against the published test lists. --harness mochitest, xpcshell or unknown ranks one group."
+    );
+  } else if (harness === "unknown") {
+    lines.push(
+      `${count(selected)} of ${count(coverage.scanned)} annotated bugs name no test this tool knows \u2014 infrastructure failures, suites it does not read, and tests whose summary does not name a path.`
+    );
+  } else {
+    lines.push(
+      `${count(selected)} of ${count(coverage.scanned)} annotated bugs name a verified ${harness} test. The rest: ${count(harness === "mochitest" ? coverage.xpcshell : coverage.mochitest)} name a test of the other harness, ${count(coverage.unknown)} name no test this tool knows (--harness unknown ranks those).`
+    );
+  }
+  if (coverage.noBugCount > 0) {
+    lines.push(
+      `Excluded: ${count(coverage.noBugCount)} annotations with no bug attached, which carry no summary to read a test path from.`
+    );
+  }
+  lines.push("");
+  lines.push("count = jobs sheriffs annotated with this bug.");
+  return lines;
+}
+function testCell(row, marked) {
+  if (row.test !== null) {
+    return row.test;
+  }
+  return marked ? `(no test named) ${row.failure}` : row.failure;
+}
+function failureCell(row) {
+  return row.test === null ? "" : row.failure;
+}
+function rankingTitle(harness, tree, range) {
+  const what = harness === void 0 ? "Sheriff-annotated intermittents" : harness === "unknown" ? "Sheriff-annotated bugs naming no known test" : `Sheriff-annotated ${harness} intermittents`;
+  return `${what} on ${tree}, ${range.start} to ${range.end}`;
+}
+function renderRankingText(harness, tree, range, shown, selected, scan) {
+  const lines = [
+    rankingTitle(harness, tree, range),
+    "",
+    ...coverageLines(scan.coverage, harness, selected.length),
+    ""
+  ];
+  if (shown.length === 0) {
+    lines.push(emptySelectionLine(harness, scan));
+    return joinLines(lines);
+  }
+  const columns = harness === "unknown" ? [
+    { header: "count", align: "right", sort: "desc" },
+    { header: "bug", align: "right" },
+    { header: "summary" }
+  ] : [
+    { header: "count", align: "right", sort: "desc" },
+    { header: "bug", align: "right" },
+    // A `path` column only when every row is one. Path truncation
+    // cuts from the front to save a basename, which mangles a
+    // sentence — and an unknown row's cell is a sentence. A mixed
+    // list therefore gets a plain width-capped column, so one
+    // 240-character summary cannot push `failure` off screen.
+    harness === void 0 ? { header: "test / summary", maxWidth: MIXED_CELL_WIDTH } : { header: "test", path: true },
+    { header: "failure", maxWidth: 60 }
+  ];
+  lines.push(
+    ...tableSection(
+      columns,
+      shown.map(
+        (row) => harness === "unknown" ? [count(row.count), String(row.bugId), testCell(row, false)] : [
+          count(row.count),
+          String(row.bugId),
+          testCell(row, harness === void 0),
+          failureCell(row)
+        ]
+      ),
+      { total: selected.length, shown: shown.length }
+    )
+  );
+  return joinLines(lines);
+}
+function emptySelectionLine(harness, scan) {
+  if (harness === void 0) {
+    return "No bug was annotated in this window.";
+  }
+  if (harness === "unknown") {
+    return `Every one of the ${count(scan.coverage.scanned)} annotated bugs named a test this tool knows.`;
+  }
+  return `No bug among the ${count(scan.coverage.scanned)} annotated named a verified ${harness} test.`;
+}
+function renderRankingMarkdown(harness, tree, range, shown, selected, scan) {
+  const lines = [
+    heading(rankingTitle(harness, tree, range)),
+    "",
+    ...coverageLines(scan.coverage, harness, selected.length),
+    ""
+  ];
+  if (shown.length === 0) {
+    lines.push(emptySelectionLine(harness, scan));
+    return joinLines(lines);
+  }
+  const link = (row) => `[${row.bugId}](https://bugzilla.mozilla.org/show_bug.cgi?id=${row.bugId})`;
+  lines.push(
+    ...table2(
+      harness === "unknown" ? [{ header: "count", align: "right" }, { header: "bug" }, { header: "summary" }] : [
+        { header: "count", align: "right" },
+        { header: "bug" },
+        { header: harness === void 0 ? "test / summary" : "test" },
+        { header: "failure" }
+      ],
+      // Untruncated: `--markdown` is for pasting into a bug.
+      shown.map(
+        (row) => harness === "unknown" ? [count(row.count), link(row), testCell(row, false)] : [
+          count(row.count),
+          link(row),
+          testCell(row, harness === void 0),
+          failureCell(row)
+        ]
+      )
+    )
+  );
+  const more = moreLine2(selected.length, shown.length);
+  if (more !== null) {
+    lines.push("");
+    lines.push(more);
+  }
+  return joinLines(lines);
+}
+function drilldownCountLine(drilldown, tree, range) {
+  const scope = drilldown.occurrences === drilldown.totalOccurrences ? `${count(drilldown.occurrences)} sheriff annotations` : `${count(drilldown.occurrences)} of ${count(drilldown.totalOccurrences)} sheriff annotations match the filter`;
+  return `${scope} on ${tree}, ${range.start} to ${range.end}`;
+}
+function renderBugText(drilldown, bugSummary, tree, range, occurrences, limit) {
+  const lines = [
+    `Bug ${drilldown.bugId} \u2014 ${bugSummary ?? "(no summary from Bugzilla)"}`,
+    drilldownCountLine(drilldown, tree, range),
+    ""
+  ];
+  lines.push(...tallySection("Job names, chunk numbers merged", drilldown.jobNames, limit));
+  lines.push(...tallySection("Platforms", drilldown.platforms, limit));
+  lines.push(...tallySection("Build types", drilldown.buildTypes, limit));
+  lines.push(...tallySection("Trees", drilldown.trees, limit));
+  lines.push(...tallySection("Tests named, per annotated job", drilldown.tests, limit));
+  if (drilldown.tests.length === 0) {
+    lines.push("Tests named, per annotated job");
+    lines.push(
+      "  (none: no occurrence carried a TEST-UNEXPECTED-FAIL line naming a test \u2014 the API only keeps lines matching that marker)"
+    );
+    lines.push("");
+  }
+  lines.push(...tallySection("Failure messages, per annotated job", drilldown.lines, limit, 140));
+  const rows2 = applyLimit(occurrences, limit ?? DRILLDOWN_ROWS);
+  lines.push(`Occurrences (${count(occurrences.length)})`);
+  lines.push(
+    ...table(
+      [
+        { header: "push time" },
+        { header: "tree" },
+        { header: "platform" },
+        { header: "build" },
+        { header: "job name" },
+        { header: "task id" }
+      ],
+      rows2.map((row) => [
+        row.pushTime,
+        row.tree,
+        row.platform,
+        row.buildType,
+        row.testSuite,
+        row.taskId
+      ])
+    )
+  );
+  if (rows2.length < occurrences.length) {
+    lines.push(`  \u2026 ${occurrences.length - rows2.length} more (--limit 0 for all)`);
+  }
+  return joinLines(lines);
+}
+function tallySection(title, counts, limit, maxWidth) {
+  if (counts.length === 0) {
+    return [];
+  }
+  const shown = applyLimit(counts, limit ?? DRILLDOWN_ROWS);
+  const lines = [
+    title,
+    ...shown.map(
+      (entry) => `  ${String(entry.count).padStart(5)}x  ` + (maxWidth === void 0 ? entry.name : truncate(entry.name, maxWidth))
+    )
+  ];
+  if (shown.length < counts.length) {
+    lines.push(`  \u2026 ${counts.length - shown.length} more (--limit 0 for all)`);
+  }
+  lines.push("");
+  return lines;
+}
+function renderBugMarkdown(drilldown, bugSummary, tree, range, occurrences) {
+  const lines = [
+    heading(`Bug ${drilldown.bugId} \u2014 ${bugSummary ?? "(no summary from Bugzilla)"}`),
+    "",
+    `${drilldownCountLine(drilldown, tree, range)}.`,
+    "",
+    ...table2(
+      [
+        { header: "count", align: "right" },
+        { header: "job name" },
+        { header: "platform" },
+        { header: "build type" }
+      ],
+      // The three axes side by side rather than as three tables: pasted
+      // into a bug this is one block to read.
+      zipTallies(drilldown.jobNames, drilldown.platforms, drilldown.buildTypes)
+    ),
+    ""
+  ];
+  if (drilldown.lines.length > 0) {
+    lines.push(heading("Failure messages, per annotated job", 2));
+    lines.push("");
+    for (const entry of drilldown.lines) {
+      lines.push(`- ${entry.count}x ${code(entry.name)}`);
+    }
+    lines.push("");
+  }
+  lines.push(heading("Task IDs", 2));
+  lines.push("");
+  for (const row of occurrences) {
+    lines.push(`- \`${row.taskId}\` \u2014 ${row.platform}/${row.buildType} ${row.testSuite}`);
+  }
+  return joinLines(lines);
+}
+function zipTallies(suites, platforms, buildTypes) {
+  const rows2 = [];
+  const height = Math.max(suites.length, platforms.length, buildTypes.length);
+  for (let i = 0; i < height; i++) {
+    rows2.push([
+      suites[i] === void 0 ? "" : String(suites[i].count),
+      suites[i]?.name ?? "",
+      platforms[i] === void 0 ? "" : `${platforms[i].count}x ${platforms[i].name}`,
+      buildTypes[i] === void 0 ? "" : `${buildTypes[i].count}x ${buildTypes[i].name}`
+    ]);
+  }
+  return rows2;
+}
+
 // lib/formats/manifests.ts
 function decodeManifests(file) {
   const { runs, tasks, metadata } = file;
@@ -6834,7 +7770,7 @@ var MANIFESTS_OPTIONS = {
     describe: "Only manifests with a median above this, e.g. 30s, 5m, 500ms."
   }
 };
-var DEFAULT_LIMIT4 = 10;
+var DEFAULT_LIMIT5 = 10;
 async function runManifests(context, args) {
   if (args.positionals.length > 1) {
     throw usageError(
@@ -6866,7 +7802,7 @@ async function runManifests(context, args) {
     );
   }
   const sorted = sortManifests(stats, sort);
-  const limit = context.globals.limit ?? DEFAULT_LIMIT4;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT5;
   const shown = wanted === void 0 ? applyLimit(sorted, limit) : sorted;
   const result = {
     manifest: wanted ?? null,
@@ -7719,7 +8655,7 @@ var TEST_OPTIONS = {
   },
   history: { type: "boolean", describe: "A per-day sparkline of pass/fail counts." }
 };
-var DEFAULT_LIMIT5 = 10;
+var DEFAULT_LIMIT6 = 10;
 async function lookUpTest(context, testPath) {
   if (context.loadTimingFile !== void 0) {
     const { harness } = resolveHarness(testPath, context.globals.harness);
@@ -7763,7 +8699,7 @@ async function lookUpTest(context, testPath) {
     );
   }
   if (resolution.kind === "ambiguous") {
-    const shown = applyLimit(resolution.candidates, context.globals.limit ?? DEFAULT_LIMIT5);
+    const shown = applyLimit(resolution.candidates, context.globals.limit ?? DEFAULT_LIMIT6);
     const hidden = resolution.total - shown.length;
     throw notFoundError(
       `"${resolution.query}" is not a test path, and ${resolution.total} tests match it. Nothing was measured; pick one:
@@ -7890,7 +8826,7 @@ async function runTest(context, args) {
     emit(context, toJson(result));
     return;
   }
-  const limit = context.globals.limit ?? DEFAULT_LIMIT5;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT6;
   emit(
     context,
     context.globals.format === "markdown" ? renderMarkdown7(result, limit) : renderText7(result, limit)
@@ -8886,145 +9822,6 @@ function describeTestPathDrop(id) {
   return id === null || id === void 0 || id === "" ? "no-id" : "not-a-test-path";
 }
 
-// lib/sources/treeherder.ts
-var TREEHERDER_ROOT2 = "https://treeherder.mozilla.org";
-var FAILED_JOB_RESULTS = /* @__PURE__ */ new Set([
-  "testfailed",
-  "busted",
-  "exception"
-]);
-var TreeherderError = class extends Error {
-  url;
-  status;
-  constructor(message, url, status) {
-    super(message);
-    this.name = "TreeherderError";
-    this.url = url;
-    this.status = status;
-  }
-};
-var PushNotFoundError = class extends Error {
-  revision;
-  repository;
-  constructor(revision, repository) {
-    super(`no push found for revision ${revision} on ${repository}`);
-    this.name = "PushNotFoundError";
-    this.revision = revision;
-    this.repository = repository;
-  }
-};
-function treeherderClient(options) {
-  const root = options.root ?? TREEHERDER_ROOT2;
-  const maxPages = options.maxPages ?? 100;
-  async function getJson(url) {
-    let response;
-    try {
-      response = await options.fetch(url);
-    } catch (error) {
-      throw new TreeherderError(
-        `request to Treeherder failed: ${error.message}`,
-        url
-      );
-    }
-    if (!response.ok) {
-      throw new TreeherderError(
-        `Treeherder returned HTTP ${response.status}`,
-        url,
-        response.status
-      );
-    }
-    const text = new TextDecoder().decode(await response.arrayBuffer());
-    try {
-      return JSON.parse(text);
-    } catch (error) {
-      throw new TreeherderError(
-        `Treeherder response is not valid JSON: ${error.message}`,
-        url
-      );
-    }
-  }
-  return {
-    async findPush(repository, revision) {
-      const url = `${root}/api/project/${encodeURIComponent(repository)}/push/?full=true&count=10&revision=${encodeURIComponent(revision)}`;
-      const data = await getJson(url);
-      const first = data.results?.[0];
-      if (first === void 0) {
-        throw new PushNotFoundError(revision, repository);
-      }
-      if (typeof first.id !== "number") {
-        throw new TreeherderError(
-          `push for ${revision} has no numeric id`,
-          url
-        );
-      }
-      return {
-        pushId: first.id,
-        revision: first.revision ?? revision,
-        repository,
-        revisions: first.revisions ?? []
-      };
-    },
-    async jobsOfPush(pushId) {
-      const jobs = [];
-      let url = `${root}/api/jobs/?push_id=${pushId}`;
-      let propertyNames = null;
-      let pages = 0;
-      while (url !== null) {
-        if (++pages > maxPages) {
-          throw new TreeherderError(
-            `job listing for push ${pushId} exceeded ${maxPages} pages; refusing to keep following "next"`,
-            url
-          );
-        }
-        const data = await getJson(url);
-        propertyNames ??= data.job_property_names ?? null;
-        if (propertyNames === null) {
-          throw new TreeherderError(
-            `Treeherder returned jobs with no job_property_names, so the positional rows cannot be decoded`,
-            url
-          );
-        }
-        const columns = jobColumns(propertyNames, url);
-        for (const row of data.results ?? []) {
-          jobs.push(readJob(row, columns));
-        }
-        url = data.next ?? null;
-      }
-      return jobs;
-    }
-  };
-}
-function jobColumns(propertyNames, url) {
-  const required = ["id", "job_type_name", "task_id", "retry_id", "state", "result"];
-  const missing = required.filter((name) => !propertyNames.includes(name));
-  if (missing.length > 0) {
-    throw new TreeherderError(
-      `Treeherder's job_property_names is missing ${missing.join(", ")}; got: ${propertyNames.join(", ")}`,
-      url
-    );
-  }
-  return {
-    jobId: propertyNames.indexOf("id"),
-    jobName: propertyNames.indexOf("job_type_name"),
-    taskId: propertyNames.indexOf("task_id"),
-    retryId: propertyNames.indexOf("retry_id"),
-    state: propertyNames.indexOf("state"),
-    result: propertyNames.indexOf("result")
-  };
-}
-function readJob(row, columns) {
-  return {
-    jobId: Number(row[columns.jobId] ?? 0),
-    jobName: String(row[columns.jobName] ?? ""),
-    taskId: String(row[columns.taskId] ?? ""),
-    // A null `retry_id` means run 0, which is how Treeherder writes the
-    // first run of a task.
-    retryId: Number(row[columns.retryId] ?? 0),
-    state: String(row[columns.state] ?? ""),
-    result: String(row[columns.result] ?? "")
-  };
-}
-
 // lib/model/try-jobs.ts
 var SUPPORTED_HARNESSES = ["mochitest", "xpcshell"];
 function isTestJob(jobName) {
@@ -9146,7 +9943,7 @@ var TRY_OPTIONS = {
     describe: "How many job profiles to fetch at once. Default 8."
   }
 };
-var DEFAULT_LIMIT6 = 10;
+var DEFAULT_LIMIT7 = 10;
 var PERMA_FAIL_DESCRIPTION = "failed in every run of at least one configuration here. Each row says what central shows on that same configuration.";
 var DEFAULT_CONCURRENCY = 8;
 async function runTry(context, args) {
@@ -9254,7 +10051,7 @@ async function runTry(context, args) {
     emit(context, toJson(result));
     return;
   }
-  const limit = context.globals.limit ?? DEFAULT_LIMIT6;
+  const limit = context.globals.limit ?? DEFAULT_LIMIT7;
   emit(
     context,
     context.globals.format === "markdown" ? renderMarkdown8(result, limit, boolOption(args, "perma-only"), boolOption(args, "other-jobs")) : renderText8(
@@ -10410,6 +11207,22 @@ var COMMANDS = [
     run: runFlaky
   },
   {
+    name: "intermittent",
+    summary: "The sheriff-annotated top offenders, tree-wide, with bug numbers.",
+    usage: "fx-tests intermittent [--harness <h>] [--bug <id>] [options]",
+    options: INTERMITTENT_OPTIONS,
+    extraHarnessValues: ["unknown"],
+    rejectsGlobals: [
+      {
+        names: ["data-source"],
+        message: "--data-source cannot be applied to intermittent: the ranking comes from Treeherder\u2019s sheriff annotations, which are tree-wide, and neither try nor a local directory has an equivalent of them",
+        hint: "Use --tree to choose a repository, and --bug <id> to drill into one bug."
+      }
+    ],
+    notes: INTERMITTENT_NOTES,
+    run: runIntermittent
+  },
+  {
     name: "errors",
     summary: "What is loudest in the test logs on one day. Defaults to mochitest.",
     usage: "fx-tests errors [options]",
@@ -10519,6 +11332,11 @@ async function run(options) {
 `);
       return ExitCode.Upstream;
     }
+    if (error instanceof IntermittentsError) {
+      streams.err(`fx-tests: ${error.message} from ${error.url}
+`);
+      return ExitCode.Upstream;
+    }
     throw error;
   } finally {
     resetTruncation();
@@ -10565,7 +11383,7 @@ async function dispatch(options) {
     streams.out(commandHelp(command, specs));
     return ExitCode.Success;
   }
-  const globals = readGlobalOptions(args, options.env ?? {});
+  const globals = readGlobalOptions(args, options.env ?? {}, command.extraHarnessValues ?? []);
   for (const rejected of command.rejectsGlobals ?? []) {
     if (rejected.names.some((name) => args.options.has(name))) {
       throw usageError(rejected.message, rejected.hint);
@@ -10586,6 +11404,14 @@ async function dispatch(options) {
     streams,
     source: options.source ?? buildSource(globals, cache, streams),
     ...options.treeherder === void 0 ? { treeherder: buildTreeherder(globals, cache, streams, options.httpFetch ?? nodeFetch2) } : { treeherder: options.treeherder },
+    ...options.intermittents === void 0 ? {
+      intermittents: buildIntermittents(
+        globals,
+        cache,
+        streams,
+        options.httpFetch ?? nodeFetch2
+      )
+    } : { intermittents: options.intermittents },
     // Per-task artifacts keep their own **error handling** — an expired
     // artifact is exit 4 while a missing index file is exit 2, which is
     // `PLAN.md` §4's new dependency shape — but they are cached, on their
@@ -10665,6 +11491,16 @@ function buildTreeherder(globals, cache, streams, http) {
     return client;
   }
   return cachedTreeherderJobs(client, cache, {
+    onWarning: (message) => streams.err(`warning: ${message}
+`)
+  });
+}
+function buildIntermittents(globals, cache, streams, http) {
+  const client = intermittentsClient({ fetch: http });
+  if (globals.noCache) {
+    return client;
+  }
+  return cachedIntermittents(client, cache, {
     onWarning: (message) => streams.err(`warning: ${message}
 `)
   });

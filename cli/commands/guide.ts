@@ -153,6 +153,14 @@ export const COMMAND_FACTS: readonly CommandFact[] = [
         defaultLimit: 20,
     },
     {
+        name: 'intermittent',
+        reads: 'Treeherder /api/failures/ + /api/failuresbybug/ + Bugzilla /rest/bug',
+        answers:
+            'Which annotated intermittents cost sheriffs the most, tree-wide, and with which bug?',
+        defaultHarness: 'mochitest',
+        defaultLimit: 20,
+    },
+    {
         name: 'errors',
         reads: '{harness}-{date}-errors.json',
         answers: 'What is loudest in the logs? Is this message ambient or specific to one test?',
@@ -301,6 +309,17 @@ export const TRAPS: readonly TrapFact[] = [
             '**refuse** `--config` and `--minidumps` rather than return an empty table, because',
             'a filter that silently matches nothing looks exactly like a clean tree. Use',
             '`fx-tests test <path>` for per-config detail.',
+        ],
+    },
+    {
+        id: 'annotations-are-not-failures',
+        title: '`intermittent` counts sheriff annotations, not failures',
+        body: [
+            'A row is a bug a **sheriff** attached to failing jobs, so an untriaged failure has',
+            'no row: this ranks what costs sheriffs time, while `issues`/`flaky` rank what fails',
+            'most. A bug belongs to a harness when its summary names a test that harness runs;',
+            'one naming no known test — a [taskcluster:error], a suite this tool does not read —',
+            'is `unknown`. --harness picks one of the three, and omitting it ranks them all.',
         ],
     },
     {

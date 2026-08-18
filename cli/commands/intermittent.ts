@@ -1,0 +1,852 @@
+/**
+ * `fx-tests intermittent` — the sheriff-annotated top offenders, tree-wide.
+ *
+ * Every other view in this CLI is scoped by path, component or push and reads a
+ * nightly aggregate. This one is tree-wide and reads a live API, so its rows are
+ * *annotations* rather than failures: a failure nobody triaged has no row. It
+ * ranks what costs sheriffs time; `issues` and `flaky` rank what fails most.
+ *
+ * The ranking API has no harness parameter, so `--harness` is a client-side scan
+ * at one request per candidate bug — see `lib/query/intermittents.ts`. The list
+ * is therefore a prefix of the ranking, and every run prints its own depth.
+ */
+
+import type { OptionSpecs, ParsedArgs } from '../args.ts';
+import { numberOption, stringOption } from '../args.ts';
+import { type CommandContext, emit, progress } from '../context.ts';
+import { notFoundError, upstreamError, usageError } from '../errors.ts';
+import * as md from '../format/markdown.ts';
+import { toJson } from '../format/json.ts';
+import {
+    type Column,
+    applyLimit,
+    count as fmtCount,
+    joinLines,
+    table,
+    tableSection,
+    truncate,
+} from '../format/text.ts';
+import {
+    type BugOccurrence,
+    type DayRange,
+    IntermittentsError,
+    type IntermittentsClient,
+    TREE_GROUPS,
+} from '../../lib/sources/intermittents.ts';
+import {
+    type BugDrilldown,
+    type DrilldownFilter,
+    type HarnessOfPath,
+    type HarnessSelector,
+    type RankedIntermittent,
+    type ScanHarness,
+    type ScanResult,
+    type SuiteCount,
+    filterOccurrences,
+    scanBugs,
+    selectHarness,
+    summariseBug,
+} from '../../lib/query/intermittents.ts';
+import { type IssuesFile } from '../../lib/formats/issues.ts';
+import { collectTestPaths } from '../../lib/query/test-lookup.ts';
+import { fetchJson, timingsIndex } from '../../lib/sources/source.ts';
+
+/** The default number of ranked rows, matching the other tree-wide commands. */
+export const DEFAULT_LIMIT = 20;
+
+/**
+ * How many days the window covers when `--since` and `--day` are both absent.
+ *
+ * Seven, for the reason `fx-tests summary` gives: push volume drops
+ * several-fold at weekends, so a window that is not a whole number of weeks
+ * ranks a different weekday mix each time it is run.
+ */
+export const DEFAULT_DAYS = 7;
+
+/**
+ * How wide the `test` column may get when the list can hold unknown rows.
+ *
+ * A verified test path has a p90 of 86 characters over a live window; an unknown
+ * row's summary has a p90 of 191 and a maximum of 246. Left uncapped, one long
+ * summary sets the column width for the whole table and pushes `failure` past
+ * the right edge. 96 clears the median path and most of the p90, which is the
+ * balance worth striking: the path is the copyable identifier, the summary is
+ * prose that survives being cut.
+ */
+export const MIXED_CELL_WIDTH = 96;
+
+/**
+ * How many rows each of `--bug`'s sections shows by default.
+ *
+ * Lower than `DEFAULT_LIMIT`: the drill-down prints six sections at once, so
+ * twenty each would be 120 lines. `--limit` applies to every section.
+ */
+export const DRILLDOWN_ROWS = 10;
+
+/** Options `intermittent` adds to the globals. */
+export const INTERMITTENT_OPTIONS: OptionSpecs = {
+    // Two globals whose shared wording is wrong here, restated rather than left
+    // to mislead. A command's own spec wins the merge in `dispatch()`, so this
+    // is the supported way to say what the flag means for this command — the
+    // same rule as declaring a global rejected, applied to a flag that works but
+    // works differently.
+    harness: {
+        type: 'string',
+        placeholder: '<mochitest|xpcshell|unknown>',
+        describe:
+            'Rank only bugs naming a test of this harness. `unknown` is the bugs naming no ' +
+            'known test. Omit for all three.',
+    },
+    day: {
+        type: 'string',
+        placeholder: '<date>',
+        describe: 'One day, YYYY-MM-DD. No today/yesterday: this is a live API, not the published window.',
+    },
+    since: {
+        type: 'number',
+        placeholder: '<n>',
+        describe: 'The last n days, ending today (UTC). Default 7.',
+    },
+    tree: {
+        type: 'string',
+        placeholder: '<name>',
+        describe: 'Repository, repo group (trunk, firefox-releases, comm-releases) or all. Default trunk.',
+    },
+    bug: {
+        type: 'number',
+        placeholder: '<id>',
+        describe: 'Drill into one bug: its occurrences, platforms, task ids and log lines.',
+    },
+};
+
+/**
+ * The standing definitions, printed by `--help` rather than on every run.
+ *
+ * Same reasoning as `FLAKY_NOTES`: none of it varies between invocations, and
+ * the primary consumer is an agent that would pay for it every time.
+ */
+export const INTERMITTENT_NOTES: readonly string[] = [
+    'What a row is:',
+    '  One bug a sheriff attached to failing jobs, and how many jobs. These are human',
+    '  judgements, not computed rates: a failure nobody triaged has no row here. So',
+    '  this ranks what is costing sheriffs time; `fx-tests issues` and `fx-tests flaky`',
+    '  rank what fails most.',
+    '',
+    'How a bug is placed:',
+    '  Treeherder ranks bugs with no harness parameter, so a bug counts as a mochitest',
+    '  (or xpcshell) bug when its summary names a test path that harness\'s data holds —',
+    '  the same test lists `fx-tests test` resolves against. A bug naming no test this',
+    '  tool knows is `unknown`: an infrastructure failure, a suite this tool does not',
+    '  read, or a summary that never named a path.',
+    '',
+    '  With no --harness every annotated bug is ranked together, which is the whole',
+    '  picture. --harness mochitest, xpcshell or unknown ranks one group of it.',
+    '',
+    '  Every bug in the window is classified — there is no per-bug request to economise',
+    '  on — so the ranking is complete. --limit sets how many rows print, and --json',
+    '  prints them all. Use `fx-tests test <path>` to dig into one of the tests named.',
+    '',
+    'The window:',
+    '  --day <date> is one day, --since <n> the last n days ending today (UTC), default',
+    '  7. Unlike everywhere else in this CLI there is no published window and no',
+    '  "today"/"yesterday" keyword — this is a live API, not the nightly aggregates.',
+];
+
+/** The `--json` shape for the ranked list. */
+export interface IntermittentListJson {
+    /** The `--harness` selection, or `null` when every bug is ranked. */
+    harness: HarnessSelector | null;
+    tree: string;
+    startday: string;
+    endday: string;
+    /** How the whole window classified, whatever `harness` selected. */
+    coverage: ScanCoverageJson;
+    /** How many rows the selection holds. `rows` is always this long. */
+    matchCount: number;
+    rows: RankedIntermittent[];
+}
+
+/** Re-exported so the JSON shape is one type rather than a structural copy. */
+export type ScanCoverageJson = ScanResult['coverage'];
+
+/** The `--json` shape for `--bug`. */
+export interface IntermittentBugJson extends BugDrilldown {
+    tree: string;
+    startday: string;
+    endday: string;
+    summary: string | null;
+    /** Every occurrence, always in full. */
+    occurrenceRows: BugOccurrence[];
+}
+
+/** Runs the command. */
+export async function runIntermittent(context: CommandContext, args: ParsedArgs): Promise<void> {
+    if (args.positionals.length > 0) {
+        throw usageError(
+            `intermittent takes no arguments, got "${args.positionals[0]}"`,
+            'Use --bug <id> to drill into one bug, or no argument for the ranked list.'
+        );
+    }
+    const client = context.intermittents;
+    if (client === undefined) {
+        throw new Error('intermittent requires an intermittents client');
+    }
+
+    const { globals } = context;
+    const tree = stringOption(args, 'tree') ?? 'trunk';
+    const range = resolveRange(globals.day, globals.since);
+
+    const bug = numberOption(args, 'bug');
+    if (bug !== undefined) {
+        await runDrilldown(context, client, tree, range, bug);
+        return;
+    }
+    if (globals.config.length > 0 || globals.excludeConfig.length > 0) {
+        // Accepted on `--bug`, where each occurrence carries a platform and a
+        // build type, and refused here, where the rows are bugs and there is no
+        // per-occurrence configuration to match. `dispatch()` cannot make that
+        // distinction — `rejectsGlobals` is per command, not per mode — so the
+        // ranking refuses it itself rather than ignoring it.
+        throw usageError(
+            '--config cannot be applied to the ranked list: its rows are bugs, and a bug spans ' +
+                'every configuration it was annotated on',
+            'Use --bug <id> --config <substring> to filter one bug’s occurrences.'
+        );
+    }
+
+    await runRanking(context, client, tree, range, args);
+}
+
+/** The ranked list. */
+async function runRanking(
+    context: CommandContext,
+    client: IntermittentsClient,
+    tree: string,
+    range: DayRange,
+    args: ParsedArgs
+): Promise<void> {
+    const { globals } = context;
+    const harness = readHarnessSelector(args);
+    const limit = globals.limit ?? DEFAULT_LIMIT;
+
+    progress(context, `Ranking annotated bugs on ${tree} for ${range.start}..${range.end}…`);
+    const ranking = await withUpstreamErrors(() => client.rankBugs(tree, range), tree);
+
+    // Every candidate's summary, in one batched Bugzilla request rather than one
+    // per bug: classification reads the summary, so this is not the drill-down's
+    // "look up what I am about to print" but an input to the ranking itself.
+    const candidates = ranking
+        .filter((row) => row.bugId !== null)
+        .map((row) => row.bugId as number);
+    progress(context, `Reading ${candidates.length} bug summaries…`);
+    const summaries = await withUpstreamErrors(() => client.bugSummaries(candidates), tree);
+
+    progress(context, 'Reading the mochitest and xpcshell test lists…');
+    const harnessOfPath = await loadHarnessOfPath(context);
+
+    // Classify everything, then select: with no `--harness` the answer is the
+    // whole ranking, classified and unknown interleaved by count.
+    const scan = scanBugs({ ranking, summaries, harnessOfPath });
+    const selected = selectHarness(scan.rows, harness);
+    const shown = applyLimit(selected, limit);
+
+    if (globals.format === 'json') {
+        // The whole selected set, not `shown`: `--json` is the escape hatch and
+        // a machine-readable array that is silently a prefix of its own count
+        // is the defect this repository's work list calls out twice.
+        emit(
+            context,
+            toJson({
+                harness: harness ?? null,
+                tree,
+                startday: range.start,
+                endday: range.end,
+                coverage: scan.coverage,
+                matchCount: selected.length,
+                rows: selected,
+            } satisfies IntermittentListJson)
+        );
+        return;
+    }
+    emit(
+        context,
+        globals.format === 'markdown'
+            ? renderRankingMarkdown(harness, tree, range, shown, selected, scan)
+            : renderRankingText(harness, tree, range, shown, selected, scan)
+    );
+}
+
+/**
+ * `--harness`, which here takes a third value beyond the two harnesses.
+ *
+ * Read from the raw argument rather than `globals.harness`, because the global
+ * validator only knows the two real harnesses — `unknown` is this command's
+ * own classification bucket, not a harness anyone can run. Validated here so
+ * the error names all three values a reader can actually pass.
+ */
+function readHarnessSelector(args: ParsedArgs): HarnessSelector | undefined {
+    const value = stringOption(args, 'harness');
+    if (value === undefined) {
+        return undefined;
+    }
+    if (value !== 'mochitest' && value !== 'xpcshell' && value !== 'unknown') {
+        throw usageError(
+            `--harness expects mochitest, xpcshell or unknown, got "${value}"`,
+            'Omit --harness to rank every annotated bug, whatever its classification.'
+        );
+    }
+    return value;
+}
+
+/**
+ * Which harness a test path belongs to, from the published 21-day aggregates.
+ *
+ * Two files for the whole run, whatever `--scan` is — the same
+ * `{harness}-issues.json` five other commands already read, so a warm cache
+ * makes this free. Deliberately not the per-test bucket files: those are 3.5 MB
+ * *each* and would make the cost scale with the number of bugs examined, when
+ * the question here is only "is this path a test of this harness". Drilling into
+ * one test is what `fx-tests test <path>` is for, and the path printed in each
+ * row is what it takes.
+ */
+async function loadHarnessOfPath(context: CommandContext): Promise<HarnessOfPath> {
+    const known = new Map<string, ScanHarness>();
+    for (const harness of ['mochitest', 'xpcshell'] as const) {
+        const file = await fetchJson<IssuesFile>(context.source, {
+            index: timingsIndex(harness),
+            filename: `${harness}-issues.json`,
+        });
+        for (const path of collectTestPaths([file])) {
+            // First wins, so a path in both files keeps the mochitest answer
+            // rather than depending on iteration order.
+            if (!known.has(path)) {
+                known.set(path, harness);
+            }
+        }
+    }
+    return (path: string) => known.get(path) ?? null;
+}
+
+/** The `--bug <id>` drill-down. */
+async function runDrilldown(
+    context: CommandContext,
+    client: IntermittentsClient,
+    tree: string,
+    range: DayRange,
+    bug: number
+): Promise<void> {
+    const { globals } = context;
+    progress(context, `Reading occurrences of bug ${bug} on ${tree} for ${range.start}..${range.end}…`);
+    const occurrences = await withUpstreamErrors(
+        () => client.occurrencesOfBug(tree, range, bug),
+        tree
+    );
+    if (occurrences.length === 0) {
+        // Exit 2, and the message names all three things that could be wrong,
+        // because "no rows" here means "no sheriff annotated this bug on this
+        // tree in this window" — not "this bug does not exist".
+        throw notFoundError(
+            `no sheriff annotations for bug ${bug} on ${tree} between ${range.start} and ${range.end}`,
+            'Annotations are per tree and per day range: widen with --since <n>, or try --tree all. ' +
+                'A bug with no annotations in the window is not in this data at all.'
+        );
+    }
+
+    const filter: DrilldownFilter = {
+        ...(globals.harness === undefined ? {} : { harness: globals.harness }),
+        ...(globals.config.length === 0 ? {} : { config: globals.config }),
+        ...(globals.excludeConfig.length === 0 ? {} : { excludeConfig: globals.excludeConfig }),
+    };
+    const summary = summariseBug(bug, occurrences, filter);
+    const shownOccurrences = filterOccurrences(occurrences, filter);
+    if (shownOccurrences.length === 0) {
+        // Exit 2 rather than an empty report: the bug has annotations, the
+        // filter matched none of them, and the two are different answers.
+        throw notFoundError(
+            `bug ${bug} has ${occurrences.length} annotations on ${tree}, but none match the ` +
+                `filter`,
+            'Run without --harness/--config to see every configuration it was annotated on.'
+        );
+    }
+    const summaries = await withUpstreamErrors(() => client.bugSummaries([bug]), tree);
+    const bugSummary = summaries.get(bug) ?? null;
+
+    if (globals.format === 'json') {
+        emit(
+            context,
+            toJson({
+                ...summary,
+                tree,
+                startday: range.start,
+                endday: range.end,
+                summary: bugSummary,
+                occurrenceRows: shownOccurrences,
+            } satisfies IntermittentBugJson)
+        );
+        return;
+    }
+    emit(
+        context,
+        globals.format === 'markdown'
+            ? renderBugMarkdown(summary, bugSummary, tree, range, shownOccurrences)
+            : renderBugText(summary, bugSummary, tree, range, shownOccurrences, globals.limit)
+    );
+}
+
+/**
+ * The window, mapped onto the API's required `startday`/`endday`.
+ *
+ * UTC, because Treeherder's push times are: a local-time end date asks for
+ * tomorrow east of Greenwich, which the API answers with an empty tail.
+ */
+export function resolveRange(
+    day: string | undefined,
+    since: number | undefined,
+    today: Date = new Date()
+): DayRange {
+    if (day !== undefined) {
+        // No `today`/`yesterday` keywords here, deliberately: elsewhere they
+        // mean "the newest day with published data", which is a property of the
+        // index this command does not read. Offering the same word for a
+        // different meaning is worse than not offering it.
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+            throw usageError(
+                `--day expects YYYY-MM-DD, got "${day}"`,
+                'This command queries a live API rather than the published window, so the ' +
+                    '"today" and "yesterday" keywords — which mean "the newest day with data" ' +
+                    'elsewhere — do not apply. Use --since <n> for a relative range.'
+            );
+        }
+        return { start: day, end: day };
+    }
+    const days = since ?? DEFAULT_DAYS;
+    const end = isoDay(today);
+    const start = isoDay(new Date(today.getTime() - (days - 1) * 24 * 60 * 60 * 1000));
+    return { start, end };
+}
+
+/** A `Date` as `YYYY-MM-DD` in UTC. */
+function isoDay(date: Date): string {
+    return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Turns a transport or HTTP failure into the CLI's exit codes.
+ *
+ * A 400 from Treeherder is almost always a `tree` it does not know — that is the
+ * one thing `validate_tree` rejects — so it becomes a usage error naming the
+ * groups it does accept, rather than exit 3 telling the user to retry a request
+ * that will fail identically forever.
+ */
+async function withUpstreamErrors<T>(work: () => Promise<T>, tree: string): Promise<T> {
+    try {
+        return await work();
+    } catch (error) {
+        if (error instanceof IntermittentsError) {
+            if (error.status === 400) {
+                throw usageError(
+                    `Treeherder rejected the query, which for these endpoints means an unknown ` +
+                        `tree: "${tree}"`,
+                    `--tree takes a repository name (autoland, mozilla-central, …), a repo group ` +
+                        `(${TREE_GROUPS.join(', ')}), or all.`
+                );
+            }
+            throw upstreamError(
+                `${error.message} from ${error.url}`,
+                'Treeherder’s intermittents API and Bugzilla are both live services; retrying may work.'
+            );
+        }
+        throw error;
+    }
+}
+
+/**
+ * What the window holds, and what this run selected from it.
+ *
+ * Two framings of the same numbers, because they answer different questions.
+ * Unfiltered, the reader wants the composition of the list in front of them.
+ * Filtered, they want to know what was selected and out of what — so the same
+ * counts appear, but as a denominator rather than as a breakdown.
+ */
+function coverageLines(
+    coverage: ScanCoverageJson,
+    harness: HarnessSelector | undefined,
+    selected: number
+): string[] {
+    const lines: string[] = [];
+    if (harness === undefined) {
+        lines.push(
+            `All ${fmtCount(coverage.scanned)} annotated bugs, ranked by count: ` +
+                `${fmtCount(coverage.mochitest)} name a mochitest test, ` +
+                `${fmtCount(coverage.xpcshell)} an xpcshell test, and ` +
+                `${fmtCount(coverage.unknown)} name no test this tool knows.`
+        );
+        lines.push(
+            'A bug is placed by the test path in its summary, checked against the published ' +
+                'test lists. --harness mochitest, xpcshell or unknown ranks one group.'
+        );
+    } else if (harness === 'unknown') {
+        lines.push(
+            `${fmtCount(selected)} of ${fmtCount(coverage.scanned)} annotated bugs name no test ` +
+                `this tool knows — infrastructure failures, suites it does not read, and tests ` +
+                `whose summary does not name a path.`
+        );
+    } else {
+        lines.push(
+            `${fmtCount(selected)} of ${fmtCount(coverage.scanned)} annotated bugs name a ` +
+                `verified ${harness} test. The rest: ` +
+                `${fmtCount(harness === 'mochitest' ? coverage.xpcshell : coverage.mochitest)} ` +
+                `name a test of the other harness, ` +
+                `${fmtCount(coverage.unknown)} name no test this tool knows ` +
+                `(--harness unknown ranks those).`
+        );
+    }
+    if (coverage.noBugCount > 0) {
+        lines.push(
+            `Excluded: ${fmtCount(coverage.noBugCount)} annotations with no bug attached, which ` +
+                `carry no summary to read a test path from.`
+        );
+    }
+    lines.push('');
+    lines.push('count = jobs sheriffs annotated with this bug.');
+    return lines;
+}
+
+/**
+ * A row's `test` cell.
+ *
+ * An `unknown` row has no path, and its summary is the only thing it carries —
+ * measured over a live window, those summaries have a median of 96 characters
+ * against 69 for a test path, so splitting them across two columns would waste
+ * width in both. The summary therefore fills this cell, marked so it cannot be
+ * mistaken for a path, and the `failure` cell is left to the rows that have one.
+ */
+function testCell(row: RankedIntermittent, marked: boolean): string {
+    if (row.test !== null) {
+        return row.test;
+    }
+    // The marker earns its width only in a list that also holds paths. Under
+    // `--harness unknown` every row is one, the column says `summary`, and
+    // repeating it on all 408 rows is noise.
+    return marked ? `(no test named) ${row.failure}` : row.failure;
+}
+
+/** A row's `failure` cell — empty on an `unknown` row, whose text is in `test`. */
+function failureCell(row: RankedIntermittent): string {
+    return row.test === null ? '' : row.failure;
+}
+
+/** The title line, which says what the list is. */
+function rankingTitle(harness: HarnessSelector | undefined, tree: string, range: DayRange): string {
+    const what =
+        harness === undefined
+            ? 'Sheriff-annotated intermittents'
+            : harness === 'unknown'
+              ? 'Sheriff-annotated bugs naming no known test'
+              : `Sheriff-annotated ${harness} intermittents`;
+    return `${what} on ${tree}, ${range.start} to ${range.end}`;
+}
+
+/** The ranked list, as text. */
+function renderRankingText(
+    harness: HarnessSelector | undefined,
+    tree: string,
+    range: DayRange,
+    shown: readonly RankedIntermittent[],
+    selected: readonly RankedIntermittent[],
+    scan: ScanResult
+): string {
+    const lines: (string | null)[] = [
+        rankingTitle(harness, tree, range),
+        '',
+        ...coverageLines(scan.coverage, harness, selected.length),
+        '',
+    ];
+    if (shown.length === 0) {
+        lines.push(emptySelectionLine(harness, scan));
+        return joinLines(lines);
+    }
+    // Under `--harness unknown` no row has a path, so the two text columns
+    // collapse into one: a `failure` column that is empty on every row is a
+    // header with nothing under it.
+    const columns: Column[] =
+        harness === 'unknown'
+            ? [
+                  { header: 'count', align: 'right', sort: 'desc' },
+                  { header: 'bug', align: 'right' },
+                  { header: 'summary' },
+              ]
+            : [
+                  { header: 'count', align: 'right', sort: 'desc' },
+                  { header: 'bug', align: 'right' },
+                  // A `path` column only when every row is one. Path truncation
+                  // cuts from the front to save a basename, which mangles a
+                  // sentence — and an unknown row's cell is a sentence. A mixed
+                  // list therefore gets a plain width-capped column, so one
+                  // 240-character summary cannot push `failure` off screen.
+                  harness === undefined
+                      ? { header: 'test / summary', maxWidth: MIXED_CELL_WIDTH }
+                      : { header: 'test', path: true },
+                  { header: 'failure', maxWidth: 60 },
+              ];
+    lines.push(
+        ...tableSection(
+            columns,
+            shown.map((row) =>
+                harness === 'unknown'
+                    ? [fmtCount(row.count), String(row.bugId), testCell(row, false)]
+                    : [
+                          fmtCount(row.count),
+                          String(row.bugId),
+                          testCell(row, harness === undefined),
+                          failureCell(row),
+                      ]
+            ),
+            { total: selected.length, shown: shown.length }
+        )
+    );
+    return joinLines(lines);
+}
+
+/** Why the selection is empty, in the terms the caller asked in. */
+function emptySelectionLine(harness: HarnessSelector | undefined, scan: ScanResult): string {
+    if (harness === undefined) {
+        return 'No bug was annotated in this window.';
+    }
+    if (harness === 'unknown') {
+        return `Every one of the ${fmtCount(scan.coverage.scanned)} annotated bugs named a test this tool knows.`;
+    }
+    return `No bug among the ${fmtCount(scan.coverage.scanned)} annotated named a verified ${harness} test.`;
+}
+
+/** The ranked list, as Markdown. */
+function renderRankingMarkdown(
+    harness: HarnessSelector | undefined,
+    tree: string,
+    range: DayRange,
+    shown: readonly RankedIntermittent[],
+    selected: readonly RankedIntermittent[],
+    scan: ScanResult
+): string {
+    const lines: (string | null)[] = [
+        md.heading(rankingTitle(harness, tree, range)),
+        '',
+        ...coverageLines(scan.coverage, harness, selected.length),
+        '',
+    ];
+    if (shown.length === 0) {
+        lines.push(emptySelectionLine(harness, scan));
+        return joinLines(lines);
+    }
+    const link = (row: RankedIntermittent): string =>
+        `[${row.bugId}](https://bugzilla.mozilla.org/show_bug.cgi?id=${row.bugId})`;
+    lines.push(
+        ...md.table(
+            harness === 'unknown'
+                ? [{ header: 'count', align: 'right' }, { header: 'bug' }, { header: 'summary' }]
+                : [
+                      { header: 'count', align: 'right' },
+                      { header: 'bug' },
+                      { header: harness === undefined ? 'test / summary' : 'test' },
+                      { header: 'failure' },
+                  ],
+            // Untruncated: `--markdown` is for pasting into a bug.
+            shown.map((row) =>
+                harness === 'unknown'
+                    ? [fmtCount(row.count), link(row), testCell(row, false)]
+                    : [
+                          fmtCount(row.count),
+                          link(row),
+                          testCell(row, harness === undefined),
+                          failureCell(row),
+                      ]
+            )
+        )
+    );
+    const more = md.moreLine(selected.length, shown.length);
+    if (more !== null) {
+        lines.push('');
+        lines.push(more);
+    }
+    return joinLines(lines);
+}
+
+/**
+ * The line under the bug's title, stating the filter's effect.
+ *
+ * `127 of 168 sheriff annotations` rather than a bare `127`: a filtered number
+ * on its own is indistinguishable from the bug having got quieter, and the
+ * reader cannot tell the filter worked.
+ */
+function drilldownCountLine(
+    drilldown: BugDrilldown,
+    tree: string,
+    range: DayRange
+): string {
+    const scope =
+        drilldown.occurrences === drilldown.totalOccurrences
+            ? `${fmtCount(drilldown.occurrences)} sheriff annotations`
+            : `${fmtCount(drilldown.occurrences)} of ${fmtCount(drilldown.totalOccurrences)} ` +
+              `sheriff annotations match the filter`;
+    return `${scope} on ${tree}, ${range.start} to ${range.end}`;
+}
+
+/** The drill-down, as text. */
+function renderBugText(
+    drilldown: BugDrilldown,
+    bugSummary: string | null,
+    tree: string,
+    range: DayRange,
+    occurrences: readonly BugOccurrence[],
+    limit: number | undefined
+): string {
+    const lines: (string | null)[] = [
+        `Bug ${drilldown.bugId} — ${bugSummary ?? '(no summary from Bugzilla)'}`,
+        drilldownCountLine(drilldown, tree, range),
+        '',
+    ];
+    lines.push(...tallySection('Job names, chunk numbers merged', drilldown.jobNames, limit));
+    lines.push(...tallySection('Platforms', drilldown.platforms, limit));
+    lines.push(...tallySection('Build types', drilldown.buildTypes, limit));
+    lines.push(...tallySection('Trees', drilldown.trees, limit));
+    lines.push(...tallySection('Tests named, per annotated job', drilldown.tests, limit));
+    if (drilldown.tests.length === 0) {
+        // The `lines` array is empty for jobs whose `TEST-UNEXPECTED-FAIL`
+        // lines Treeherder did not keep, and a silent absence here reads as
+        // "this bug has no test", which is a claim about Firefox rather than
+        // about the data.
+        lines.push('Tests named, per annotated job');
+        lines.push(
+            '  (none: no occurrence carried a TEST-UNEXPECTED-FAIL line naming a test — ' +
+                'the API only keeps lines matching that marker)'
+        );
+        lines.push('');
+    }
+    // 140 rather than 100: the number that made this useful was measured, not
+    // chosen. With the marker and the path stripped (`failureLineDetail`) the
+    // messages on live bug 2019094 diverge between characters 30 and 120, so a
+    // 100-character cut still lost the discriminator on some rows.
+    lines.push(...tallySection('Failure messages, per annotated job', drilldown.lines, limit, 140));
+
+    const rows = applyLimit(occurrences, limit ?? DRILLDOWN_ROWS);
+    lines.push(`Occurrences (${fmtCount(occurrences.length)})`);
+    lines.push(
+        ...table(
+            [
+                { header: 'push time' },
+                { header: 'tree' },
+                { header: 'platform' },
+                { header: 'build' },
+                { header: 'job name' },
+                { header: 'task id' },
+            ],
+            rows.map((row) => [
+                row.pushTime,
+                row.tree,
+                row.platform,
+                row.buildType,
+                row.testSuite,
+                row.taskId,
+            ])
+        )
+    );
+    if (rows.length < occurrences.length) {
+        lines.push(`  … ${occurrences.length - rows.length} more (--limit 0 for all)`);
+    }
+    return joinLines(lines);
+}
+
+/** One counted group of the drill-down, or nothing when it is empty. */
+function tallySection(
+    title: string,
+    counts: readonly SuiteCount[],
+    limit: number | undefined,
+    maxWidth?: number
+): string[] {
+    if (counts.length === 0) {
+        return [];
+    }
+    const shown = applyLimit(counts, limit ?? DRILLDOWN_ROWS);
+    const lines = [
+        title,
+        ...shown.map(
+            (entry) =>
+                `  ${String(entry.count).padStart(5)}x  ` +
+                (maxWidth === undefined ? entry.name : truncate(entry.name, maxWidth))
+        ),
+    ];
+    if (shown.length < counts.length) {
+        lines.push(`  … ${counts.length - shown.length} more (--limit 0 for all)`);
+    }
+    lines.push('');
+    return lines;
+}
+
+/**
+ * The drill-down, as Markdown.
+ *
+ * **Nothing here is truncated and `--limit` is ignored**: Markdown is for
+ * pasting into a bug, so a silently partial list is the defect a capped `--json`
+ * array would be. The text renderer is where `--limit` applies and marks cuts.
+ */
+function renderBugMarkdown(
+    drilldown: BugDrilldown,
+    bugSummary: string | null,
+    tree: string,
+    range: DayRange,
+    occurrences: readonly BugOccurrence[]
+): string {
+    const lines: (string | null)[] = [
+        md.heading(`Bug ${drilldown.bugId} — ${bugSummary ?? '(no summary from Bugzilla)'}`),
+        '',
+        `${drilldownCountLine(drilldown, tree, range)}.`,
+        '',
+        ...md.table(
+            [
+                { header: 'count', align: 'right' },
+                { header: 'job name' },
+                { header: 'platform' },
+                { header: 'build type' },
+            ],
+            // The three axes side by side rather than as three tables: pasted
+            // into a bug this is one block to read.
+            zipTallies(drilldown.jobNames, drilldown.platforms, drilldown.buildTypes)
+        ),
+        '',
+    ];
+    if (drilldown.lines.length > 0) {
+        lines.push(md.heading('Failure messages, per annotated job', 2));
+        lines.push('');
+        for (const entry of drilldown.lines) {
+            // Untruncated, per `--markdown` being a file format: the cut-off
+            // part of a failure message is regularly the discriminator.
+            lines.push(`- ${entry.count}x ${md.code(entry.name)}`);
+        }
+        lines.push('');
+    }
+    lines.push(md.heading('Task IDs', 2));
+    lines.push('');
+    for (const row of occurrences) {
+        lines.push(`- \`${row.taskId}\` — ${row.platform}/${row.buildType} ${row.testSuite}`);
+    }
+    return joinLines(lines);
+}
+
+/** Pads three tallies to the same length so they can share one table. */
+function zipTallies(
+    suites: readonly SuiteCount[],
+    platforms: readonly SuiteCount[],
+    buildTypes: readonly SuiteCount[]
+): string[][] {
+    const rows: string[][] = [];
+    const height = Math.max(suites.length, platforms.length, buildTypes.length);
+    for (let i = 0; i < height; i++) {
+        rows.push([
+            suites[i] === undefined ? '' : String(suites[i]!.count),
+            suites[i]?.name ?? '',
+            platforms[i] === undefined ? '' : `${platforms[i]!.count}x ${platforms[i]!.name}`,
+            buildTypes[i] === undefined ? '' : `${buildTypes[i]!.count}x ${buildTypes[i]!.name}`,
+        ]);
+    }
+    return rows;
+}

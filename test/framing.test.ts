@@ -752,6 +752,12 @@ const FRAMING: FramingEntry[] = [
  * not to cover this" from "forgot". Each says why there is nothing to compare.
  */
 const UNCOVERED_COMMANDS: Record<string, string> = {
+    intermittent:
+        'Reads Treeherder’s sheriff-annotation endpoints and Bugzilla, not this repository’s ' +
+        'aggregates, so there is no page here to diverge from. The upstream equivalent is ' +
+        'treeherder.mozilla.org/intermittent-failures/, which is not ours to keep in parity ' +
+        'with — and its framing already differs deliberately: it ranks bugs tree-wide with no ' +
+        'harness notion, while this command ranks a bug on its occurrences in one harness.',
     guide: 'Prose about what the data can and cannot tell you. No page, and no rows to frame.',
     dates: 'Lists which dates have published data. A provenance query, not a view of test data.',
     cache: 'Inspects the local on-disk cache. Nothing upstream to compare against.',

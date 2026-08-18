@@ -1055,6 +1055,183 @@ Grouping is by source location (file + line) as well as message text, following
 `errors.html`'s change to group by location rather than message alone — the same
 message from two different files is two different problems.
 
+### `fx-tests intermittent` — the sheriff-annotated top offenders
+
+Queries Treeherder's intermittent-failures endpoints live — the data behind
+<https://treeherder.mozilla.org/intermittent-failures/> — and answers a question
+no other view can: *give me the top N most annoying mochitest (or xpcshell)
+intermittents, tree-wide.* Every other command is scoped by path, component or
+push, and reads a nightly aggregate rather than these live annotations.
+
+A row is one bug a **sheriff** attached to failing jobs. That is a human
+judgement rather than a computed rate, which is what makes it assignable — the
+bug number is right there — and what makes it a poor proxy for "what fails most":
+a failure nobody triaged has no row at all. Use `issues` and `flaky` for the
+aggregates' view.
+
+```
+$ fx-tests intermittent --limit 5
+
+Sheriff-annotated mochitest intermittents on trunk, 2026-08-12 to 2026-08-18
+
+All 731 annotated bugs, ranked by count: 277 name a mochitest test, 46 an xpcshell test, and 408 name no test this tool knows.
+A bug is placed by the test path in its summary, checked against the published test lists. --harness mochitest, xpcshell or unknown ranks one group.
+Excluded: 1,319 annotations with no bug attached, which carry no summary to read a test path from.
+
+count = jobs sheriffs annotated with this bug.
+
+  count ▼      bug  test                                                                        failure
+      435  1980036  browser/components/tabbrowser/test/browser/tabs/browser_tab_preview.js      single tracking bug
+      354  2063231  browser/base/content/test/performance/browser_startup_flicker.js            unexpected changed rect: ({x1:0, x2:1279, y1:86, y2:89, w:1…
+      302  2062444  browser/components/sidebar/tests/browser/browser_opentabs_hover_preview.js  single tracking bug
+      165  2019094  toolkit/content/tests/browser/browser_findbar_marks.js                      single tracking bug
+      156  2038933  browser/components/sidebar/tests/browser/browser_syncedtabs_sidebar.js      single tracking bug
+  … 272 more (--limit 0 for all)
+  (a further 46 named an xpcshell test; --harness xpcshell ranks those)
+```
+
+Options: `--tree <name>` (a repository, a repo group — `trunk`,
+`firefox-releases`, `comm-releases` — or `all`; default `trunk`), `--bug <id>`,
+`--harness <mochitest|xpcshell|unknown>`. Omit `--harness` for every bug; `--since <n>` / `--day <date>` set the window, default 7 days.
+
+The test path is a real path, so it pastes straight into `fx-tests test <path>`,
+which is where you dig into one of these failures.
+
+#### A bug is classified by the test its summary names
+
+`/api/failures/` has **no harness parameter** — `startday`, `endday`, `tree` and
+`bug` are the whole vocabulary — so `--harness mochitest` cannot be a query
+parameter, and it is not derived from the job either. A bug counts as a mochitest
+bug when **its summary names a test path that the mochitest data holds**: the
+same published test lists `fx-tests test` resolves a name against.
+
+That is a fact about a published list rather than an inference. The alternative —
+reading Treeherder's `test_suite` — describes the *job* that ran, not the test
+that failed, and it presents an infrastructure bug that fires across every job as
+a mochitest intermittent. It also misreads the string: `test_suite` is computed
+by subtracting the platform and build type out of the job name, so an ASAN
+mochitest arrives as `opt-mochitest-chrome-1proc-4` and an Android one as
+`geckoview-mochitest-plain-3`.
+
+Extraction alone is not enough either, which is why the path is checked rather
+than trusted: summaries name the xpcshell harness script, wpt tests, reftest
+files and crash source locations, and none of those is a test this tool holds.
+
+**A bug naming no verifiable test is `unknown`** — an infrastructure failure, a
+suite this tool does not read, or a summary that never named a path. That is a
+third value of the classification, not an error, so it sits on the same axis as
+the two harnesses:
+
+| | ranks |
+| --- | --- |
+| no `--harness` | every annotated bug, the three groups interleaved by count |
+| `--harness mochitest` | bugs naming a verified mochitest test |
+| `--harness xpcshell` | bugs naming a verified xpcshell test |
+| `--harness unknown` | bugs naming no test this tool knows |
+
+The unfiltered list is the honest default: the tool ranks what sheriffs
+annotated, and the harness is an attribute of a row rather than a precondition
+for appearing. An `[taskcluster:error]` bug outranking every real test failure is
+a fact about the window, so it appears — marked `(no test named)`, since it has
+no path to show, and never silently blank.
+
+#### What it costs, and why the ranking is complete
+
+**Every annotated bug in the window is classified.** There is no depth flag,
+because there is nothing per-bug to economise on: the whole ranked list is one
+`/api/failures/` request, a batch of Bugzilla summaries per hundred bugs, and two
+`{harness}-issues.json` reads — the same files `issues`, `failures`, `crashes`,
+`skips` and `flaky` already read. Measured on a live `trunk` week, the default is
+**11 requests and under 7 s cold**, and effectively instant warm.
+
+Per-test bucket files are deliberately not read: they are 3.5 MB each and would
+make the cost scale with the number of bugs examined, when the question here is
+only "is this path a test of this harness". Drilling into one test is what
+`fx-tests test <path>` is for.
+
+The header states how many bugs matched, how many named the other harness's test,
+and how many named no test this tool knows. That last group is **counted but not
+listed** — it is a diagnostic about classification rather than an answer about
+this harness, and it is larger than the ranking. `--harness unknown` ranks it.
+
+`--limit` is display only. It does **not** bound the scan — tying the two
+together would make `--limit 1` classify one candidate, leaving `--json --limit 1`
+a prefix with no fuller answer to ask for — and `--json` always carries every
+row of the selection.
+
+#### `--bug <id>` — one bug's occurrences
+
+```
+$ fx-tests intermittent --bug 1829935
+
+Bug 1829935 — Frequent netwerk/test/browser/browser_103_cleanup.js | single tracking bug
+127 sheriff annotations on trunk, 2026-08-12 to 2026-08-18
+
+Job names, chunk numbers merged
+     99x  mochitest-browser-chrome
+     28x  mochitest-browser-chrome-no-nv
+
+Platforms
+     99x  macosx1500-aarch64
+     28x  macosx1500-aarch64-shippable
+
+Build types
+    114x  opt
+     13x  debug
+```
+
+Job names, platforms, build types, trees, tests and failure messages, then the
+occurrence rows with their task IDs.
+
+**Chunk numbers are merged.** `mochitest-browser-chrome-1` through `-12` are one
+configuration run twelve ways, so grouping the raw values answers "where does
+this bug fail" with twelve rows of noise. Variant suffixes are not chunks and
+survive, because `-no-nv` really is a different configuration. The raw
+per-occurrence values are in `--json`.
+
+**Every tally is per annotated job, not per log line**: a job emits
+`TEST-UNEXPECTED-FAIL` once per failing assertion, so counting lines reported one
+test path 2,486 times against 140 occurrences.
+
+##### Filtering one bug
+
+`--harness` and `--config` both narrow the drill-down, and compose:
+
+```
+$ fx-tests intermittent --bug 1829935 --config debug
+
+Bug 1829935 — Frequent netwerk/test/browser/browser_103_cleanup.js | single tracking bug
+13 of 127 sheriff annotations match the filter on trunk, 2026-08-12 to 2026-08-18
+
+Job names, chunk numbers merged
+     13x  mochitest-browser-chrome
+
+Platforms
+     13x  macosx1500-aarch64
+
+Build types
+     13x  debug
+```
+
+`--config` matches a substring of `<platform>/<buildType>`, the same way
+`fx-tests test --config` matches a job name — so `macosx1500-aarch64`, `debug`
+and `macosx1500-aarch64/debug` all work.
+
+Two properties worth relying on. **The header states the filter's effect** —
+`13 of 127`, not a bare `13` — because a smaller number on its own is
+indistinguishable from the bug having got quieter. And **every section comes from
+the same filtered population**: the counts in Job names, Platforms, Build types
+and Trees all sum to the header's figure, so no table disagrees with the total
+above it. A filter that matches nothing is exit 2 saying so, rather than an empty
+report.
+
+`--harness` here reads each occurrence's own job name, which is a different
+question from the ranked list's: there, a bug is classified by the test its
+summary names, because a bug spans many jobs; here the row itself says what ran.
+
+`--config` is **refused on the ranked list**, where the rows are bugs and a bug
+spans every configuration it was annotated on. The refusal points at `--bug`.
+
 ### `fx-tests summary` — the landing-page numbers
 
 The 7-day topline: flaky test-failure rate, flaky job-failure rate, skip
@@ -1423,6 +1600,7 @@ code.
 | `crash <task-id> <minidump>` | task artifact | What crashed or deadlocked, and where? |
 | `manifests [name]` | `manifests.json` | Which manifest is eating a job's time budget? |
 | `errors` | `{harness}-{date}-errors.json` | What is loudest in the logs? Is this message ambient or specific? |
+| `intermittent` | Treeherder `/failures/` + `/failuresbybug/` + Bugzilla | Which annotated intermittents cost sheriffs the most, tree-wide, and with which bug? |
 | `summary` | `-stats.json` | The 7-day topline. |
 | `skips` | `-issues.json` | What is disabled, and where? |
 | `flaky` | `-issues.json` | Which folder should I book a flakiness-burndown session on? |

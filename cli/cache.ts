@@ -135,6 +135,15 @@ export interface CacheEntryMeta {
  */
 export const PUSH_JOBS_KIND = 'push-jobs';
 
+/**
+ * One live API query's response — the intermittents endpoints and Bugzilla.
+ *
+ * A fourth kind because neither other rule fits: there is no `generatedAt` for
+ * the aggregates' TTL to track, and a range ending today keeps gaining
+ * annotations, so it is not immutable either. See `QUERY_TTL_MS`.
+ */
+export const QUERY_KIND = 'query';
+
 /** Whether an entry's kind means it never goes stale. See `AGGREGATE_KIND`. */
 export function isImmutableKind(kind: string | undefined): boolean {
     return kind === TASK_ARTIFACT_KIND;
@@ -241,6 +250,13 @@ export interface DiskCache {
     getPushJobs(key: string): Promise<Uint8Array | null>;
     /** Stores a settled push's job list. Only call it for a settled push. */
     putPushJobs(key: string, bytes: Uint8Array): Promise<void>;
+    /**
+     * A live query's cached response, or `null` when absent or past
+     * `QUERY_TTL_MS`. See `QUERY_KIND`.
+     */
+    getQuery(url: string): Promise<Uint8Array | null>;
+    /** Stores a live query's response under its URL. */
+    putQuery(url: string, bytes: Uint8Array): Promise<void>;
     /**
      * Evicts the oldest task artifacts until they fit the budget.
      *
@@ -374,6 +390,29 @@ export function diskCache(options: DiskCacheOptions = {}): DiskCache {
             await writeEntry(urlCacheHash(key), bytes, {
                 key,
                 kind: PUSH_JOBS_KIND,
+                fetchedAt: new Date(now()).toISOString(),
+                bytes: bytes.byteLength,
+            });
+        },
+
+        async getQuery(url: string): Promise<Uint8Array | null> {
+            const hash = urlCacheHash(url);
+            const meta = await readMeta(hash);
+            if (meta === null || meta.kind !== QUERY_KIND) {
+                return null;
+            }
+            const age = now() - Date.parse(meta.fetchedAt);
+            if (!Number.isFinite(age) || age < 0 || age > QUERY_TTL_MS) {
+                return null;
+            }
+            return readBytes(hash);
+        },
+
+        async putQuery(url: string, bytes: Uint8Array): Promise<void> {
+            await writeEntry(urlCacheHash(url), bytes, {
+                key: url,
+                kind: QUERY_KIND,
+                url,
                 fetchedAt: new Date(now()).toISOString(),
                 bytes: bytes.byteLength,
             });
@@ -700,6 +739,81 @@ export function isSettledPush(jobs: readonly { state: string }[]): boolean {
  * up without anyone reaching for `--no-cache`.
  */
 export const SETTLED_PUSH_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long a live query's response is served from cache. See `QUERY_KIND`.
+ *
+ * An hour: the window moves continuously, but a ranking over days does not
+ * reorder within one, and the scan costs a request per candidate bug — so
+ * re-running with a different `--limit` must not repeat them.
+ */
+export const QUERY_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Wraps an intermittents client so its responses are cached on disk.
+ *
+ * Keyed on the query, rebuilt here from the arguments. Nothing is cached on
+ * failure, for the reason `cachedArtifactFetcher` gives: a remembered outage is
+ * sticky, and a remembered 400 would outlive the typo that caused it.
+ */
+export function cachedIntermittents<
+    C extends {
+        rankBugs(tree: string, range: { start: string; end: string }): Promise<unknown>;
+        occurrencesOfBug(
+            tree: string,
+            range: { start: string; end: string },
+            bug: number
+        ): Promise<unknown>;
+        bugSummaries(bugs: readonly number[]): Promise<Map<number, string>>;
+    },
+>(
+    inner: C,
+    cache: DiskCache,
+    hooks: { onWarning?: ((message: string) => void) | undefined } = {}
+): C {
+    async function through<T>(key: string, compute: () => Promise<T>): Promise<T> {
+        const cached = await cache.getQuery(key);
+        if (cached !== null) {
+            try {
+                return JSON.parse(new TextDecoder().decode(cached)) as T;
+            } catch {
+                // A corrupt entry means "no usable entry", as everywhere else
+                // in this file: re-fetch rather than throw.
+            }
+        }
+        const value = await compute();
+        try {
+            await cache.putQuery(key, new TextEncoder().encode(JSON.stringify(value)));
+        } catch (error) {
+            hooks.onWarning?.(describeCacheWriteFailure(cache.directory, error));
+        }
+        return value;
+    }
+
+    return {
+        ...inner,
+        rankBugs(tree: string, range: { start: string; end: string }) {
+            return through(`intermittents:failures:${tree}:${range.start}:${range.end}`, () =>
+                inner.rankBugs(tree, range)
+            );
+        },
+        occurrencesOfBug(tree: string, range: { start: string; end: string }, bug: number) {
+            return through(
+                `intermittents:failuresbybug:${tree}:${range.start}:${range.end}:${bug}`,
+                () => inner.occurrencesOfBug(tree, range, bug)
+            );
+        },
+        async bugSummaries(bugs: readonly number[]): Promise<Map<number, string>> {
+            // A `Map` does not survive `JSON.stringify`, so the entry array is
+            // the cached form. Sorted so call order does not split the entry.
+            const key = `bugzilla:summaries:${[...bugs].sort((a, b) => a - b).join(',')}`;
+            const entries = await through(key, async () => [
+                ...(await inner.bugSummaries(bugs)),
+            ]);
+            return new Map(entries);
+        },
+    };
+}
 
 /**
  * Turns a cache-write failure into something the reader can act on.

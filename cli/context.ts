@@ -16,6 +16,7 @@
 
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
 import type { DataSource } from '../lib/sources/source.ts';
+import type { IntermittentsClient } from '../lib/sources/intermittents.ts';
 import type { TreeherderClient } from '../lib/sources/treeherder.ts';
 import type { GlobalOptions } from './options.ts';
 
@@ -54,6 +55,13 @@ export interface CommandContext {
     taskArtifacts?: DataSource | undefined;
     /** Treeherder, for `fx-tests try`. Absent when a command does not need it. */
     treeherder?: TreeherderClient | undefined;
+    /**
+     * The intermittents endpoints plus Bugzilla, for `fx-tests intermittent`.
+     *
+     * Separate from `treeherder`: a different caching rule, and it reaches
+     * Bugzilla, which the push client does not.
+     */
+    intermittents?: IntermittentsClient | undefined;
     /**
      * Overrides how a test's timing file is loaded.
      *

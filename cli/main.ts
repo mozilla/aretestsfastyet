@@ -14,6 +14,7 @@ import { type OptionSpecs, parseArgs, boolOption } from './args.ts';
 import {
     type DiskCache,
     cachedArtifactFetcher,
+    cachedIntermittents,
     cachedSource,
     cachedTaskArtifactSource,
     cachedTreeherderJobs,
@@ -40,10 +41,16 @@ import {
     runIssues,
     runSkips,
 } from './commands/issues.ts';
+import {
+    INTERMITTENT_NOTES,
+    INTERMITTENT_OPTIONS,
+    runIntermittent,
+} from './commands/intermittent.ts';
 import { MANIFESTS_OPTIONS, runManifests } from './commands/manifests.ts';
 import { SUMMARY_OPTIONS, runSummary } from './commands/summary.ts';
 import { TEST_OPTIONS, runTest } from './commands/test.ts';
 import { TRY_OPTIONS, runTry } from './commands/try.ts';
+import { IntermittentsError, intermittentsClient } from '../lib/sources/intermittents.ts';
 import {
     DataFetchError,
     DataFileNotFoundError,
@@ -68,6 +75,14 @@ interface CommandSpec {
     options: OptionSpecs;
     /** Globals this command refuses: omitted from `--help`, refused by `dispatch()`. */
     rejectsGlobals?: readonly RejectedGlobals[];
+    /**
+     * Extra `--harness` values this command accepts beyond the two harnesses.
+     *
+     * Only `intermittent`, which classifies a bug as mochitest, xpcshell or
+     * `unknown` and takes the third on the same flag rather than on a second
+     * one. Declared here so the shared validator does not reject it first.
+     */
+    extraHarnessValues?: readonly string[];
     /**
      * Standing definitions printed after the options, for a command whose output
      * would otherwise have to carry them on every run.
@@ -134,6 +149,25 @@ const COMMANDS: CommandSpec[] = [
         options: FLAKY_OPTIONS,
         notes: FLAKY_NOTES,
         run: runFlaky,
+    },
+    {
+        name: 'intermittent',
+        summary: 'The sheriff-annotated top offenders, tree-wide, with bug numbers.',
+        usage: 'fx-tests intermittent [--harness <h>] [--bug <id>] [options]',
+        options: INTERMITTENT_OPTIONS,
+        extraHarnessValues: ['unknown'],
+        rejectsGlobals: [
+            {
+                names: ['data-source'],
+                message:
+                    '--data-source cannot be applied to intermittent: the ranking comes from ' +
+                    'Treeherder’s sheriff annotations, which are tree-wide, and neither try nor a ' +
+                    'local directory has an equivalent of them',
+                hint: 'Use --tree to choose a repository, and --bug <id> to drill into one bug.',
+            },
+        ],
+        notes: INTERMITTENT_NOTES,
+        run: runIntermittent,
     },
     {
         name: 'errors',
@@ -248,6 +282,8 @@ export interface RunOptions {
     cache?: DiskCache | undefined;
     /** Overrides Treeherder, for `fx-tests try` tests. */
     treeherder?: CommandContext['treeherder'];
+    /** Overrides the intermittents API, for `fx-tests intermittent` tests. */
+    intermittents?: CommandContext['intermittents'];
     /**
      * Replaces per-URL artifact fetching outright, cache and all.
      *
@@ -339,6 +375,13 @@ export async function run(options: RunOptions): Promise<ExitCodeValue> {
             streams.err(`fx-tests: ${error.message}\n`);
             return ExitCode.Upstream;
         }
+        // A last resort: `fx-tests intermittent` maps these itself, since a 400
+        // there means an unknown tree and is exit 1. One reaching here is a
+        // transport or parse failure on a request the command did not wrap.
+        if (error instanceof IntermittentsError) {
+            streams.err(`fx-tests: ${error.message} from ${error.url}\n`);
+            return ExitCode.Upstream;
+        }
         throw error;
     } finally {
         // Load-bearing: `run()` is called many times in one process, and left
@@ -399,7 +442,7 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         return ExitCode.Success;
     }
 
-    const globals = readGlobalOptions(args, options.env ?? {});
+    const globals = readGlobalOptions(args, options.env ?? {}, command.extraHarnessValues ?? []);
 
     // Must stay after `readGlobalOptions`, which validates every global's value:
     // refusing first masks a typo'd `--harness` behind a complaint about an
@@ -437,6 +480,16 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         ...(options.treeherder === undefined
             ? { treeherder: buildTreeherder(globals, cache, streams, options.httpFetch ?? nodeFetch) }
             : { treeherder: options.treeherder }),
+        ...(options.intermittents === undefined
+            ? {
+                  intermittents: buildIntermittents(
+                      globals,
+                      cache,
+                      streams,
+                      options.httpFetch ?? nodeFetch
+                  ),
+              }
+            : { intermittents: options.intermittents }),
         // Per-task artifacts keep their own **error handling** — an expired
         // artifact is exit 4 while a missing index file is exit 2, which is
         // `PLAN.md` §4's new dependency shape — but they are cached, on their
@@ -580,6 +633,28 @@ function buildTreeherder(
         return client;
     }
     return cachedTreeherderJobs(client, cache, {
+        onWarning: (message) => streams.err(`warning: ${message}\n`),
+    });
+}
+
+/**
+ * Treeherder's intermittents endpoints and Bugzilla, cached unless
+ * `--no-cache`.
+ *
+ * Cached on a one-hour TTL rather than the aggregates' twelve: these are live
+ * queries with no `generatedAt` to key on. See `QUERY_KIND` in `cli/cache.ts`.
+ */
+function buildIntermittents(
+    globals: ReturnType<typeof readGlobalOptions>,
+    cache: DiskCache,
+    streams: OutputStreams,
+    http: FetchLike
+): NonNullable<CommandContext['intermittents']> {
+    const client = intermittentsClient({ fetch: http });
+    if (globals.noCache) {
+        return client;
+    }
+    return cachedIntermittents(client, cache, {
         onWarning: (message) => streams.err(`warning: ${message}\n`),
     });
 }

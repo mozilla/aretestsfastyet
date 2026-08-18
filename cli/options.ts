@@ -134,7 +134,8 @@ export const GLOBAL_OPTION_SPECS: OptionSpecs = {
  */
 export function readGlobalOptions(
     args: ParsedArgs,
-    env: Record<string, string | undefined> = {}
+    env: Record<string, string | undefined> = {},
+    extraHarnessValues: readonly string[] = []
 ): GlobalOptions {
     const wantsJson = boolOption(args, 'json');
     const wantsMarkdown = boolOption(args, 'markdown');
@@ -145,10 +146,17 @@ export function readGlobalOptions(
         );
     }
 
+    // `extraHarnessValues` lets one command widen this without every command
+    // learning its vocabulary: `intermittent` classifies a bug as mochitest,
+    // xpcshell or unknown, and `unknown` is a value on that same axis rather
+    // than a second flag. The command validates its own meaning; this only
+    // stops the shared check rejecting the value before the command sees it.
     const harnessValue = stringOption(args, 'harness');
-    if (harnessValue !== undefined && harnessValue !== 'xpcshell' && harnessValue !== 'mochitest') {
+    const allowed = ['xpcshell', 'mochitest', ...extraHarnessValues];
+    if (harnessValue !== undefined && !allowed.includes(harnessValue)) {
         throw usageError(
-            `--harness expects xpcshell or mochitest, got "${harnessValue}"`
+            `--harness expects ${allowed.slice(0, -1).join(', ')} or ` +
+                `${allowed[allowed.length - 1]}, got "${harnessValue}"`
         );
     }
 
@@ -177,7 +185,13 @@ export function readGlobalOptions(
 
     return {
         format: wantsJson ? 'json' : wantsMarkdown ? 'markdown' : 'text',
-        harness: harnessValue,
+        // Narrow on purpose: a widened value is not a harness any other
+        // command understands, so it stays out of the shared field and the
+        // command reads it from the raw argument.
+        harness:
+            harnessValue === 'xpcshell' || harnessValue === 'mochitest'
+                ? harnessValue
+                : undefined,
         limit: numberOption(args, 'limit'),
         config: listOption(args, 'config'),
         excludeConfig: listOption(args, 'exclude-config'),
