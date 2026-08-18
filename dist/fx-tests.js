@@ -9129,6 +9129,11 @@ var TRY_OPTIONS = {
     type: "boolean",
     describe: "List the non-test job failures (builds, lint) the header already counts."
   },
+  test: {
+    type: "string",
+    placeholder: "<path>",
+    describe: "Report one test per configuration: ran/pass/fail/skip/timeout. Needs --all-jobs for the pass counts."
+  },
   "task-ids": { type: "boolean", describe: "Print the task IDs behind each failure." },
   profiles: { type: "boolean", describe: "Print raw profile artifact URLs." },
   messages: {
@@ -9192,16 +9197,31 @@ async function runTry(context, args) {
       Number(args.options.get("concurrency") ?? DEFAULT_CONCURRENCY)
     );
   }
+  const testPath = stringOption(args, "test");
+  if (testPath !== void 0) {
+    emit(
+      context,
+      renderTestReport(
+        context,
+        push.revision,
+        project,
+        testPath,
+        timings,
+        runsPerJobName,
+        readPassingJobs
+      )
+    );
+    return;
+  }
   const failures = aggregateFailures(timings, runsPerJobName);
   if (failures.length > 0) {
     progress(context, `Comparing ${failures.length} failing tests against central\u2026`);
     await attachCentralHistory(context, failures);
   }
-  const withTaskIds = boolOption(args, "task-ids");
-  const withProfiles = boolOption(args, "profiles");
-  if (withTaskIds || withProfiles) {
-    attachProvenance(failures, timings, withTaskIds, withProfiles);
-  }
+  const asJson = context.globals.format === "json";
+  const withTaskIds = asJson || boolOption(args, "task-ids");
+  const withProfiles = asJson || boolOption(args, "profiles");
+  attachProvenance(failures, timings, withTaskIds, withProfiles);
   const blamed = new Set(
     timings.filter((timing) => isFailureStatus(timing.status)).map(runKeyOf)
   );
@@ -9726,6 +9746,11 @@ function attachProvenance(failures, timings, withTaskIds, withProfiles) {
     list.push(timing);
     byPath.set(timing.path, list);
   }
+  for (const list of byPath.values()) {
+    list.sort(
+      (a, b) => a.jobName.localeCompare(b.jobName) || a.taskId.localeCompare(b.taskId) || a.retryId - b.retryId
+    );
+  }
   for (const failure of failures) {
     const list = byPath.get(failure.path) ?? [];
     if (withTaskIds) {
@@ -9869,6 +9894,111 @@ function universeLine(result) {
     return `Read ${result.profilesRead} test job profiles, including the ${result.passingTestJobCount} that passed (--all-jobs).`;
   }
   return `Read ${result.profilesRead} failed test job profiles. The ${result.passingTestJobCount} test jobs that passed were not read, so a test that failed and then passed on retry is not here; --all-jobs reads them too.`;
+}
+function renderTestReport(context, revision, project, testPath, timings, runsPerJobName, readPassingJobs) {
+  const exact = timings.filter((timing) => timing.path === testPath);
+  const matching = exact.length > 0 ? exact : timings.filter((timing) => timing.path.endsWith(`/${testPath}`));
+  const resolved = new Set(matching.map((timing) => timing.path));
+  const lines = [];
+  if (resolved.size > 1) {
+    lines.push(`${resolved.size} tests in this push end with ${testPath}:`);
+    for (const path2 of [...resolved].sort()) {
+      lines.push(`  ${path2}`);
+    }
+    lines.push("Pass one of them to --test.");
+    return joinLines(lines);
+  }
+  const attemptsByRun = /* @__PURE__ */ new Map();
+  for (const timing of matching) {
+    const key = runKeyOf(timing);
+    const list = attemptsByRun.get(key) ?? [];
+    list.push(timing);
+    attemptsByRun.set(key, list);
+  }
+  const byConfig = /* @__PURE__ */ new Map();
+  for (const attempts of attemptsByRun.values()) {
+    const jobName = attempts[0].jobName;
+    let row = byConfig.get(jobName);
+    if (row === void 0) {
+      row = { jobName, jobs: 0, passed: 0, passedOnRetry: 0, failed: 0 };
+      byConfig.set(jobName, row);
+    }
+    row.jobs++;
+    if (!attempts.some((attempt) => isFailureStatus(attempt.status))) {
+      row.passed++;
+    } else if (attempts.some((attempt) => attempt.isRerun && attempt.status.startsWith("PASS"))) {
+      row.passedOnRetry++;
+    } else {
+      row.failed++;
+    }
+  }
+  const configs = [...byConfig.values()].sort((a, b) => a.jobName.localeCompare(b.jobName));
+  const path = [...resolved][0] ?? testPath;
+  if (!readPassingJobs) {
+    for (const row of configs) {
+      row.jobs = runsPerJobName.get(row.jobName) ?? row.jobs;
+    }
+  }
+  if (context.globals.format === "json") {
+    const json = { revision, project, test: path, readPassingJobs, configs };
+    return toJson(json);
+  }
+  lines.push(`Try push ${revision.slice(0, 12)} (${project}) \u2014 ${path}`);
+  if (!readPassingJobs) {
+    lines.push(
+      "Only the failed jobs were downloaded, so a pass the harness rescued on a retry is invisible here. jobs and failed are exact; the rest are bounds."
+    );
+  }
+  lines.push(treeherderPushUrl(project, revision));
+  lines.push("");
+  if (configs.length === 0) {
+    lines.push(
+      readPassingJobs ? "No run of this test was found in any of the job profiles read. Either it did not run on this push, or the path does not match one." : 'This test failed in none of the failed jobs read. That is not the same as "it passed" and not the same as "it did not run" \u2014 neither question can be answered without --all-jobs.'
+    );
+    return joinLines(lines);
+  }
+  if (readPassingJobs) {
+    lines.push("Every job run that ran this test, counted once by how it ended.");
+    lines.push("");
+    lines.push(
+      ...table(
+        [
+          { header: "configuration" },
+          { header: "jobs", align: "right" },
+          { header: "passed", align: "right" },
+          { header: "passed on retry", align: "right" },
+          { header: "failed", align: "right" }
+        ],
+        configs.map((row) => [
+          row.jobName,
+          String(row.jobs),
+          String(row.passed),
+          String(row.passedOnRetry),
+          String(row.failed)
+        ])
+      )
+    );
+    return joinLines(lines);
+  }
+  lines.push(
+    ...table(
+      [
+        { header: "configuration" },
+        { header: "jobs", align: "right" },
+        { header: "failed", align: "right" },
+        { header: "passed on retry", align: "right" },
+        { header: "passed", align: "right" }
+      ],
+      configs.map((row) => [
+        row.jobName,
+        String(row.jobs),
+        String(row.failed),
+        `\u2265${row.passedOnRetry}`,
+        `\u2264${row.jobs - row.failed - row.passedOnRetry}`
+      ])
+    )
+  );
+  return joinLines(lines);
 }
 function renderText8(result, limit, permaOnly, otherJobs, allMessages) {
   const lines = [];
@@ -10045,19 +10175,7 @@ function section(title, failures, description, limit, allMessages) {
       );
     }
     lines.push(...messageLines(failure, allMessages));
-    if (failure.taskIds !== void 0) {
-      for (const entry of failure.taskIds.slice(0, 5)) {
-        lines.push(`    task ${entry.taskId}.${entry.retryId}  ${entry.jobName}`);
-      }
-    }
-    if (failure.profiles !== void 0) {
-      for (const entry of failure.profiles.slice(0, 5)) {
-        lines.push(`    profile ${entry.resourceUsage}`);
-        for (const url of entry.testProfiles ?? []) {
-          lines.push(`    test profile ${url}`);
-        }
-      }
-    }
+    lines.push(...provenanceLines(failure, "    "));
   }
   const more = moreLine(failures.length, shown.length);
   if (more !== null) {
@@ -10103,14 +10221,12 @@ function compactSection(title, failures, description, limit) {
   );
   lines.push(...rendered.lines);
   for (const failure of shown) {
+    lines.push(`    ${basename(failure.path)}: ${configsPhrase(failure)}`);
     if (failure.passedOnRerun) {
-      lines.push(`    ${basename(failure.path)}: passed on harness rerun`);
+      lines.push("      passed on harness rerun");
     }
-    const headlineLines = centralHeadlineLines(failure, "      ");
-    if (headlineLines.length > 0) {
-      lines.push(`    ${basename(failure.path)}:`);
-      lines.push(...headlineLines);
-    }
+    lines.push(...centralHeadlineLines(failure, "      "));
+    lines.push(...provenanceLines(failure, "      "));
   }
   lines.push(...fullPathLines(rendered.shortenedPaths));
   const more = moreLine(failures.length, shown.length);
@@ -10121,6 +10237,40 @@ function compactSection(title, failures, description, limit) {
 }
 function basename(path) {
   return path.slice(path.lastIndexOf("/") + 1);
+}
+function configsPhrase(failure) {
+  const names = failure.jobNames;
+  const [only] = names;
+  if (names.length === 1 && only !== void 0) {
+    return only;
+  }
+  return `${names.length} configs: ${names.slice(0, 3).join(", ")}` + (names.length > 3 ? `, +${names.length - 3} more` : "");
+}
+var PROVENANCE_ROWS = 5;
+function provenanceLines(failure, indent) {
+  const lines = [];
+  if (failure.taskIds !== void 0) {
+    for (const entry of failure.taskIds.slice(0, PROVENANCE_ROWS)) {
+      lines.push(`${indent}task ${entry.taskId}.${entry.retryId}  ${entry.jobName}`);
+    }
+    const hidden = failure.taskIds.length - PROVENANCE_ROWS;
+    if (hidden > 0) {
+      lines.push(`${indent}\u2026 ${hidden} more task${hidden === 1 ? "" : "s"}`);
+    }
+  }
+  if (failure.profiles !== void 0) {
+    for (const entry of failure.profiles.slice(0, PROVENANCE_ROWS)) {
+      lines.push(`${indent}profile ${entry.resourceUsage}`);
+      for (const url of entry.testProfiles ?? []) {
+        lines.push(`${indent}test profile ${url}`);
+      }
+    }
+    const hidden = failure.profiles.length - PROVENANCE_ROWS;
+    if (hidden > 0) {
+      lines.push(`${indent}\u2026 ${hidden} more profile${hidden === 1 ? "" : "s"}`);
+    }
+  }
+  return lines;
 }
 function renderMarkdown8(result, limit, permaOnly, otherJobs) {
   const lines = [];

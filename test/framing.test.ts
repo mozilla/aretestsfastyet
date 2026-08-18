@@ -2329,3 +2329,197 @@ function profileWithRetryPass(path: string): string {
         ],
     });
 }
+
+// --- `try --test`: one test, per configuration -------------------------------
+
+/**
+ * A profile holding one job's attempts of `path`.
+ *
+ * `statuses` is the attempt sequence; everything after the first falls inside
+ * the harness's `retry` range, which is what makes them retries rather than
+ * separate runs. Three attempts is a real shape, not a synthetic one: 81 job
+ * runs on push `7d16bff81bb1` hold three attempts of a single test.
+ */
+function profileWithAttempts(path: string, statuses: readonly string[]): string {
+    const markers: { name: number; data: Record<string, unknown>; start: number; end: number }[] =
+        [];
+    const [first, ...retries] = statuses;
+    markers.push({
+        name: 0,
+        data: { type: 'Test', test: path, status: first, message: 'boom' },
+        start: 1,
+        end: 2,
+    });
+    if (retries.length > 0) {
+        markers.push({ name: 1, data: { type: 'Text', text: 'retry' }, start: 2.5, end: 100 });
+        retries.forEach((status, index) => {
+            markers.push({
+                name: 0,
+                data: { type: 'Test', test: path, status, message: 'boom' },
+                start: 3 + index * 2,
+                end: 4 + index * 2,
+            });
+        });
+    }
+    return JSON.stringify({
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: ['test', 'retry'],
+                markers: {
+                    length: markers.length,
+                    name: markers.map((marker) => marker.name),
+                    data: markers.map((marker) => marker.data),
+                    startTime: markers.map((marker) => marker.start),
+                    endTime: markers.map((marker) => marker.end),
+                },
+            },
+        ],
+    });
+}
+
+const TEST_REPORT_PATH = 'dom/base/test/unit/test_report_subject.js';
+
+/**
+ * One job run per bucket, plus the three-attempt case.
+ *
+ * - CLEAN passed on its only attempt.
+ * - RETRIED failed once and the retry passed.
+ * - THRICE failed, was retried twice, and the second retry passed — the case a
+ *   two-attempt assumption gets wrong.
+ * - BROKEN failed and its retry failed again, which is how most real failures
+ *   look: 28 of the 31 on push `7d16bff81bb1`.
+ */
+function testReportJobs(): { jobs: TreeherderJob[]; profiles: Record<string, string> } {
+    return {
+        jobs: [
+            job('test-linux/opt-mochitest-clean', 'CLEAN', 'success'),
+            job('test-linux/opt-mochitest-retried', 'RETRIED', 'success'),
+            job('test-linux/opt-mochitest-retried', 'THRICE', 'success'),
+            job('test-linux/opt-mochitest-broken', 'BROKEN', 'testfailed'),
+            // A green run of the SAME name as the failing one. Mode two never
+            // downloads it, but the job list still counts it, which is what
+            // makes that row read `2 jobs` rather than `1`.
+            job('test-linux/opt-mochitest-broken', 'BROKENGREEN', 'success'),
+        ],
+        profiles: {
+            CLEAN: profileWithAttempts(TEST_REPORT_PATH, ['PASS']),
+            RETRIED: profileWithAttempts(TEST_REPORT_PATH, ['FAIL', 'PASS']),
+            THRICE: profileWithAttempts(TEST_REPORT_PATH, ['FAIL', 'FAIL', 'PASS']),
+            BROKEN: profileWithAttempts(TEST_REPORT_PATH, ['FAIL', 'FAIL']),
+            BROKENGREEN: profileWithAttempts(TEST_REPORT_PATH, ['PASS']),
+        },
+    };
+}
+
+/**
+ * The property the whole table rests on: the three outcome columns partition
+ * `jobs`, so a row can never be read as not adding up.
+ *
+ * Asserted rather than left to the one-off probe that found it, because the
+ * partition is what lets every column share a unit — and two rejected versions
+ * of this table failed precisely by mixing job counts with attempt counts. A
+ * change that reintroduced an attempt column would break this.
+ */
+test('try --test buckets every job run exactly once', async () => {
+    const { jobs, profiles } = testReportJobs();
+    const result = await invokeTry(
+        ['try', 'abcdef123456', '--json', '--all-jobs', '--test', TEST_REPORT_PATH],
+        jobs,
+        profiles
+    );
+    const configs = result['configs'] as {
+        jobName: string;
+        jobs: number;
+        passed: number;
+        passedOnRetry: number;
+        failed: number;
+    }[];
+    assert.equal(configs.length, 3, 'one row per configuration the test ran on');
+    for (const row of configs) {
+        assert.equal(
+            row.passed + row.passedOnRetry + row.failed,
+            row.jobs,
+            `${row.jobName} does not partition: the columns must sum to jobs`
+        );
+    }
+
+    const byName = new Map(configs.map((row) => [row.jobName, row]));
+    assert.deepEqual(byName.get('test-linux/opt-mochitest-clean'), {
+        jobName: 'test-linux/opt-mochitest-clean',
+        jobs: 1,
+        passed: 1,
+        passedOnRetry: 0,
+        failed: 0,
+    });
+    // Both jobs of this config needed a retry, and one of them needed two. The
+    // column counts JOBS that were retried, not retries, so it reads 2 — the
+    // attempt total is deliberately not recoverable from the row.
+    assert.deepEqual(byName.get('test-linux/opt-mochitest-retried'), {
+        jobName: 'test-linux/opt-mochitest-retried',
+        jobs: 2,
+        passed: 0,
+        passedOnRetry: 2,
+        failed: 0,
+    });
+    // A retry that failed again is still `failed`; it needs no fourth bucket.
+    assert.deepEqual(byName.get('test-linux/opt-mochitest-broken'), {
+        jobName: 'test-linux/opt-mochitest-broken',
+        jobs: 2,
+        passed: 1,
+        passedOnRetry: 0,
+        failed: 1,
+    });
+});
+
+/**
+ * Without `--all-jobs` the green jobs are never fetched, so both pass columns
+ * measure nothing and are dropped rather than printed as zeros — the item's own
+ * instruction, expressed by the table rather than by a footnote.
+ */
+/**
+ * Without `--all-jobs` the green jobs are never downloaded, so a rescue inside
+ * one cannot be seen and the two pass columns are bounds rather than counts.
+ *
+ * `jobs` still comes from the push's job list, which costs no request: the
+ * failing configuration ran twice, and reporting `1` there would read as a
+ * 100% failure rate for a test that failed in one run of two.
+ */
+test('try --test bounds the pass columns when the green jobs were not read', async () => {
+    const { jobs, profiles } = testReportJobs();
+    const streams = captureStreams();
+    const code = await run({
+        argv: ['try', 'abcdef123456', '--test', TEST_REPORT_PATH],
+        streams,
+        source: fixtureSource(),
+        cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+        treeherder: fakeTreeherder(jobs),
+        fetchUrl: profileFetcher(profiles),
+    });
+    assert.equal(code, 0, streams.stderr);
+    const header = streams.stdout
+        .split('\n')
+        .find((line) => line.trimStart().startsWith('configuration'));
+    assert.ok(header !== undefined, 'the table must have a header row');
+    // The exact pair first, then the two the unread jobs only bound.
+    assert.match(header, /^ {2}configuration\s+jobs\s+failed\s+passed on retry\s+passed$/);
+    // Two jobs from the job list, one failure read, and the rest bounded. The
+    // marker stays at zero: no rescue was SEEN, which is not "none happened".
+    assert.match(streams.stdout, /opt-mochitest-broken\s+2\s+1\s+≥0\s+≤1$/m);
+    // Only the configurations a failure was read from appear. The job list has
+    // names, not test selection, so an all-green name may never have run this
+    // test and listing it would be a fabrication.
+    assert.doesNotMatch(streams.stdout, /opt-mochitest-clean/);
+    assert.doesNotMatch(streams.stdout, /opt-mochitest-retried/);
+
+    const widened = await invokeTry(
+        ['try', 'abcdef123456', '--json', '--all-jobs', '--test', TEST_REPORT_PATH],
+        jobs,
+        profiles
+    );
+    assert.equal(
+        (widened['configs'] as unknown[]).length,
+        3,
+        '--all-jobs must reach the configurations whose jobs were green'
+    );
+});

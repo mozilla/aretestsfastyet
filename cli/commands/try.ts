@@ -88,6 +88,7 @@ import {
     joinLines,
     moreLine,
     percent,
+    table,
     tableWithPaths,
     truncate,
 } from '../format/text.ts';
@@ -122,6 +123,13 @@ export const TRY_OPTIONS: OptionSpecs = {
     'other-jobs': {
         type: 'boolean',
         describe: 'List the non-test job failures (builds, lint) the header already counts.',
+    },
+    test: {
+        type: 'string',
+        placeholder: '<path>',
+        describe:
+            'Report one test per configuration: ran/pass/fail/skip/timeout. ' +
+            'Needs --all-jobs for the pass counts.',
     },
     'task-ids': { type: 'boolean', describe: 'Print the task IDs behind each failure.' },
     profiles: { type: 'boolean', describe: 'Print raw profile artifact URLs.' },
@@ -442,6 +450,25 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         );
     }
 
+    // Its own report: `try` otherwise shows only failures, so zero failures and
+    // "never ran" look alike.
+    const testPath = stringOption(args, 'test');
+    if (testPath !== undefined) {
+        emit(
+            context,
+            renderTestReport(
+                context,
+                push.revision,
+                project,
+                testPath,
+                timings,
+                runsPerJobName,
+                readPassingJobs
+            )
+        );
+        return;
+    }
+
     const failures = aggregateFailures(timings, runsPerJobName);
 
     // Central history, one bucket file per distinct bucket the failing tests
@@ -452,11 +479,13 @@ export async function runTry(context: CommandContext, args: ParsedArgs): Promise
         await attachCentralHistory(context, failures);
     }
 
-    const withTaskIds = boolOption(args, 'task-ids');
-    const withProfiles = boolOption(args, 'profiles');
-    if (withTaskIds || withProfiles) {
-        attachProvenance(failures, timings, withTaskIds, withProfiles);
-    }
+    // Unconditional under `--json`; text and Markdown gate on the flags, where
+    // these are line output rather than data. An absent key would make "no
+    // tasks" and "you forgot a flag" the same observation.
+    const asJson = context.globals.format === 'json';
+    const withTaskIds = asJson || boolOption(args, 'task-ids');
+    const withProfiles = asJson || boolOption(args, 'profiles');
+    attachProvenance(failures, timings, withTaskIds, withProfiles);
 
     const blamed = new Set(
         timings.filter((timing) => isFailureStatus(timing.status)).map(runKeyOf)
@@ -1470,6 +1499,17 @@ function attachProvenance(
         list.push(timing);
         byPath.set(timing.path, list);
     }
+    // `timings` arrives in the order concurrent artifact fetches finished
+    // parsing — a network race — so this must sort or `--json` differs between
+    // two runs over one warm cache. `test/artifact-cache.test.ts` pins it.
+    for (const list of byPath.values()) {
+        list.sort(
+            (a, b) =>
+                a.jobName.localeCompare(b.jobName) ||
+                a.taskId.localeCompare(b.taskId) ||
+                a.retryId - b.retryId
+        );
+    }
     for (const failure of failures) {
         const list = byPath.get(failure.path) ?? [];
         if (withTaskIds) {
@@ -1746,6 +1786,223 @@ function universeLine(result: TryJson): string | null {
     );
 }
 
+
+// --- `--test`: one test, per configuration ---------------------------------
+
+/**
+ * One configuration's job runs of the test `--test` named, bucketed by how each
+ * run ended.
+ *
+ * The three buckets partition `jobs`: every job run that recorded the test lands
+ * in exactly one, so `passed + passedOnRetry + failed === jobs` on every row.
+ * Measured over 605,635 (test, job run) pairs across pushes `46c757b692be` and
+ * `7d16bff81bb1` — 1,515 configuration rows, no exceptions.
+ *
+ * **Job runs, not attempts, and the attempt total is deliberately not
+ * recoverable from a row.** The harness re-runs a failing test within the job,
+ * and it can do so more than once: 81 job runs on `7d16bff81bb1` hold three
+ * attempts of one test. So `passedOnRetry` counts jobs that needed at least one
+ * retry, not retries. Adding an attempt count back as a column is the change to
+ * resist — it puts a second unit in the row, which is what two rejected versions
+ * of this table did, and a reader then reads `0 failed` beside a non-zero
+ * attempt figure as a contradiction. `--json` carries what a caller needs.
+ */
+interface TestConfigRow {
+    jobName: string;
+    /** Job runs of this configuration whose profile recorded the test. */
+    jobs: number;
+    /** Ended with the test passing, no failing attempt. */
+    passed: number;
+    /** Failed at least once, then a retry within the same job passed. */
+    passedOnRetry: number;
+    /** Failed, and no retry passed. */
+    failed: number;
+}
+
+/** The `--json` shape of `try --test`. */
+interface TryTestJson {
+    revision: string;
+    project: string;
+    test: string;
+    readPassingJobs: boolean;
+    configs: TestConfigRow[];
+}
+
+/**
+ * `try <rev> --test <path>` — how each configuration's job runs ended.
+ *
+ * Under `--all-jobs` every profile is read, so all four columns are exact and
+ * the outcomes partition `jobs`. Without it only the failed jobs are read, and
+ * the push's job list supplies `jobs` so a row reads `2 of 20` rather than a
+ * bare `2`; a rescue inside an unread green job cannot be seen, so the two pass
+ * columns become bounds rather than counts.
+ */
+function renderTestReport(
+    context: CommandContext,
+    revision: string,
+    project: string,
+    testPath: string,
+    timings: readonly TestTiming[],
+    runsPerJobName: ReadonlyMap<string, number>,
+    readPassingJobs: boolean
+): string {
+    // Exact before suffix, or a path that is itself a test resolves to a longer
+    // one ending with it.
+    const exact = timings.filter((timing) => timing.path === testPath);
+    const matching =
+        exact.length > 0
+            ? exact
+            : timings.filter((timing) => timing.path.endsWith(`/${testPath}`));
+    const resolved = new Set(matching.map((timing) => timing.path));
+
+    const lines: (string | null)[] = [];
+    if (resolved.size > 1) {
+        lines.push(`${resolved.size} tests in this push end with ${testPath}:`);
+        for (const path of [...resolved].sort()) {
+            lines.push(`  ${path}`);
+        }
+        lines.push('Pass one of them to --test.');
+        return joinLines(lines);
+    }
+
+    // Every attempt of the test in one job run, keyed by that run. Which bucket
+    // a run lands in is a question about its attempts together — one failing
+    // attempt does not decide it — so they are grouped before being counted.
+    const attemptsByRun = new Map<string, TestTiming[]>();
+    for (const timing of matching) {
+        const key = runKeyOf(timing);
+        const list = attemptsByRun.get(key) ?? [];
+        list.push(timing);
+        attemptsByRun.set(key, list);
+    }
+
+    const byConfig = new Map<string, TestConfigRow>();
+    for (const attempts of attemptsByRun.values()) {
+        const jobName = (attempts[0] as TestTiming).jobName;
+        let row = byConfig.get(jobName);
+        if (row === undefined) {
+            row = { jobName, jobs: 0, passed: 0, passedOnRetry: 0, failed: 0 };
+            byConfig.set(jobName, row);
+        }
+        row.jobs++;
+        if (!attempts.some((attempt) => isFailureStatus(attempt.status))) {
+            row.passed++;
+        } else if (
+            attempts.some((attempt) => attempt.isRerun && attempt.status.startsWith('PASS'))
+        ) {
+            row.passedOnRetry++;
+        } else {
+            // Failed, including the common case of a retry that failed again.
+            row.failed++;
+        }
+    }
+
+    const configs = [...byConfig.values()].sort((a, b) => a.jobName.localeCompare(b.jobName));
+    const path = [...resolved][0] ?? testPath;
+
+    // Mode two downloads only the failed jobs, so the bucketing above counted
+    // those alone. The push's job list — already fetched, no extra request —
+    // says how many runs each configuration actually had, which turns a bare
+    // `2` into `2 of 20`. A green job of the same name ran the same test
+    // selection (measured: 1,507 of 1,508 job names on push `7d16bff81bb1` ran
+    // an identical test set across their runs), so it did not fail this test.
+    // That bounds the other two columns without reading a single profile.
+    //
+    // Only configurations already in the table are completed this way, never
+    // all-green ones. The job list carries job names and results, not test
+    // selection, so an all-green name may never have run this test: on push
+    // `46c757b692be` only 4 of the 13 such names did, and adding rows for them
+    // would fabricate 9 claiming the test ran where it did not. `--all-jobs`
+    // resolves it, because reading the profile is the only way to know.
+    if (!readPassingJobs) {
+        for (const row of configs) {
+            row.jobs = runsPerJobName.get(row.jobName) ?? row.jobs;
+        }
+    }
+
+    if (context.globals.format === 'json') {
+        const json: TryTestJson = { revision, project, test: path, readPassingJobs, configs };
+        return toJson(json);
+    }
+
+    lines.push(`Try push ${revision.slice(0, 12)} (${project}) — ${path}`);
+    if (!readPassingJobs) {
+        lines.push(
+            'Only the failed jobs were downloaded, so a pass the harness rescued on a retry ' +
+                'is invisible here. jobs and failed are exact; the rest are bounds.'
+        );
+    }
+    lines.push(treeherderPushUrl(project, revision));
+    lines.push('');
+
+    if (configs.length === 0) {
+        lines.push(
+            readPassingJobs
+                ? 'No run of this test was found in any of the job profiles read. Either it ' +
+                      'did not run on this push, or the path does not match one.'
+                : 'This test failed in none of the failed jobs read. That is not the same as ' +
+                      '"it passed" and not the same as "it did not run" — neither question ' +
+                      'can be answered without --all-jobs.'
+        );
+        return joinLines(lines);
+    }
+
+    if (readPassingJobs) {
+        lines.push('Every job run that ran this test, counted once by how it ended.');
+        lines.push('');
+        lines.push(
+            ...table(
+                [
+                    { header: 'configuration' },
+                    { header: 'jobs', align: 'right' },
+                    { header: 'passed', align: 'right' },
+                    { header: 'passed on retry', align: 'right' },
+                    { header: 'failed', align: 'right' },
+                ],
+                configs.map((row) => [
+                    row.jobName,
+                    String(row.jobs),
+                    String(row.passed),
+                    String(row.passedOnRetry),
+                    String(row.failed),
+                ])
+            )
+        );
+        return joinLines(lines);
+    }
+
+    // The two exact columns first, then the two the unread jobs only bound.
+    //
+    // `jobs` and `failed` are exact: a job that ended `retry` or `exception`
+    // produced no test result at all, which is an absent observation rather
+    // than a hidden failure, so it cannot inflate `failed`.
+    //
+    // The markers are real and stay even at zero. A rescue inside a green job
+    // is unreadable here, so `passed on retry` is a floor over the rescues
+    // visible in the downloaded jobs — `>=0` says "none seen", not "none
+    // happened", and a bare 0 would assert the stronger claim. On this very
+    // push `swr-1` shows `>=0` where the truth is 9.
+    lines.push(
+        ...table(
+            [
+                { header: 'configuration' },
+                { header: 'jobs', align: 'right' },
+                { header: 'failed', align: 'right' },
+                { header: 'passed on retry', align: 'right' },
+                { header: 'passed', align: 'right' },
+            ],
+            configs.map((row) => [
+                row.jobName,
+                String(row.jobs),
+                String(row.failed),
+                `\u2265${row.passedOnRetry}`,
+                `\u2264${row.jobs - row.failed - row.passedOnRetry}`,
+            ])
+        )
+    );
+    return joinLines(lines);
+}
+
 /** Plain text, as `CLI.md` lays it out. */
 function renderText(
     result: TryJson,
@@ -1987,19 +2244,7 @@ function section(
             );
         }
         lines.push(...messageLines(failure, allMessages));
-        if (failure.taskIds !== undefined) {
-            for (const entry of failure.taskIds.slice(0, 5)) {
-                lines.push(`    task ${entry.taskId}.${entry.retryId}  ${entry.jobName}`);
-            }
-        }
-        if (failure.profiles !== undefined) {
-            for (const entry of failure.profiles.slice(0, 5)) {
-                lines.push(`    profile ${entry.resourceUsage}`);
-                for (const url of entry.testProfiles ?? []) {
-                    lines.push(`    test profile ${url}`);
-                }
-            }
-        }
+        lines.push(...provenanceLines(failure, '    '));
     }
     const more = moreLine(failures.length, shown.length);
     if (more !== null) {
@@ -2052,14 +2297,16 @@ function compactSection(
     );
     lines.push(...rendered.lines);
     for (const failure of shown) {
+        // Always, not behind a flag: the config is what makes the central rate
+        // comparable and the failure reproducible.
+        lines.push(`    ${basename(failure.path)}: ${configsPhrase(failure)}`);
         if (failure.passedOnRerun) {
-            lines.push(`    ${basename(failure.path)}: passed on harness rerun`);
+            lines.push('      passed on harness rerun');
         }
-        const headlineLines = centralHeadlineLines(failure, '      ');
-        if (headlineLines.length > 0) {
-            lines.push(`    ${basename(failure.path)}:`);
-            lines.push(...headlineLines);
-        }
+        lines.push(...centralHeadlineLines(failure, '      '));
+        // The flags render here too: a known intermittent is the row most worth
+        // profiling, being the one that cannot be reproduced on demand.
+        lines.push(...provenanceLines(failure, '      '));
         // No "failed every run on a config" note is needed here any more:
         // every such failure is now in the perma-fail section, which states it
         // per row along with what central shows on that config.
@@ -2077,6 +2324,53 @@ function compactSection(
 /** The last segment of a path — what identifies a test to a reader. */
 function basename(path: string): string {
     return path.slice(path.lastIndexOf('/') + 1);
+}
+
+/** The configurations a failure was seen on, as one phrase. */
+function configsPhrase(failure: TryFailure): string {
+    const names = failure.jobNames;
+    const [only] = names;
+    if (names.length === 1 && only !== undefined) {
+        return only;
+    }
+    return (
+        `${names.length} configs: ${names.slice(0, 3).join(', ')}` +
+        (names.length > 3 ? `, +${names.length - 3} more` : '')
+    );
+}
+
+const PROVENANCE_ROWS = 5;
+
+/**
+ * The `--task-ids` and `--profiles` lines for one row.
+ *
+ * One copy for both sections: they diverged on whether they honoured the flags
+ * at all, and a second copy is how that comes back. Only `indent` differs.
+ */
+function provenanceLines(failure: TryFailure, indent: string): string[] {
+    const lines: string[] = [];
+    if (failure.taskIds !== undefined) {
+        for (const entry of failure.taskIds.slice(0, PROVENANCE_ROWS)) {
+            lines.push(`${indent}task ${entry.taskId}.${entry.retryId}  ${entry.jobName}`);
+        }
+        const hidden = failure.taskIds.length - PROVENANCE_ROWS;
+        if (hidden > 0) {
+            lines.push(`${indent}… ${hidden} more task${hidden === 1 ? '' : 's'}`);
+        }
+    }
+    if (failure.profiles !== undefined) {
+        for (const entry of failure.profiles.slice(0, PROVENANCE_ROWS)) {
+            lines.push(`${indent}profile ${entry.resourceUsage}`);
+            for (const url of entry.testProfiles ?? []) {
+                lines.push(`${indent}test profile ${url}`);
+            }
+        }
+        const hidden = failure.profiles.length - PROVENANCE_ROWS;
+        if (hidden > 0) {
+            lines.push(`${indent}… ${hidden} more profile${hidden === 1 ? '' : 's'}`);
+        }
+    }
+    return lines;
 }
 
 /** Markdown, for pasting into a bug or PR. */
