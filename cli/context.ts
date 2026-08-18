@@ -106,6 +106,15 @@ export function warn(context: CommandContext, message: string): void {
     context.streams.err(`warning: ${message}\n`);
 }
 
+/**
+ * Writes an unprefixed notice that changes what the output means — the answer
+ * is about a different test from the one asked for. Not progress: it survives
+ * `--quiet` and an agent caller, for the same reason `warn` does.
+ */
+export function notice(context: CommandContext, message: string): void {
+    context.streams.err(`${message}\n`);
+}
+
 /** Writes the command's output, ensuring exactly one trailing newline. */
 export function emit(context: CommandContext, text: string): void {
     if (text.length === 0) {

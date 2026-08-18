@@ -653,6 +653,10 @@ function warn(context, message) {
   context.streams.err(`warning: ${message}
 `);
 }
+function notice(context, message) {
+  context.streams.err(`${message}
+`);
+}
 function emit(context, text) {
   if (text.length === 0) {
     return;
@@ -7681,15 +7685,15 @@ async function lookUpTest(context, testPath) {
   const resolution = await resolveTest(testPath, context.globals.harness, loaders);
   if (resolution.kind === "found") {
     if (resolution.resolvedFrom !== null) {
-      context.streams.err(
-        `Resolved "${resolution.resolvedFrom}" to the one test matching it: ${resolution.testPath}
-`
+      notice(
+        context,
+        `Resolved "${resolution.resolvedFrom}" to the one test matching it: ${resolution.testPath}`
       );
     }
     if (resolution.viaOtherHarness) {
-      context.streams.err(
-        `Found in ${resolution.harness} data, not the ${otherHarness(resolution.harness)} the filename suggests.
-`
+      notice(
+        context,
+        `Found in ${resolution.harness} data, not the ${otherHarness(resolution.harness)} the filename suggests.`
       );
     }
     return {

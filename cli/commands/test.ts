@@ -66,7 +66,7 @@ import {
     uploadedProfileUrl,
 } from '../../lib/links.ts';
 import { type OptionSpecs, type ParsedArgs, boolOption, numberOption } from '../args.ts';
-import { type CommandContext, emit, progress } from '../context.ts';
+import { type CommandContext, emit, notice, progress } from '../context.ts';
 import { notFoundError, usageError } from '../errors.ts';
 import { toJson } from '../format/json.ts';
 import * as md from '../format/markdown.ts';
@@ -329,17 +329,17 @@ async function lookUpTest(context: CommandContext, testPath: string): Promise<Lo
 
     if (resolution.kind === 'found') {
         if (resolution.resolvedFrom !== null) {
-            // Bypasses `progress()`: this says the answer is about a different
-            // string from the one asked for, so it must survive `--quiet`.
-            context.streams.err(
+            notice(
+                context,
                 `Resolved "${resolution.resolvedFrom}" to the one test matching it: ` +
-                    `${resolution.testPath}\n`
+                    `${resolution.testPath}`
             );
         }
         if (resolution.viaOtherHarness) {
-            context.streams.err(
+            notice(
+                context,
                 `Found in ${resolution.harness} data, not the ${otherHarness(resolution.harness)} ` +
-                    'the filename suggests.\n'
+                    'the filename suggests.'
             );
         }
         return {
