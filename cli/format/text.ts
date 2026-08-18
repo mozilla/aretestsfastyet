@@ -81,6 +81,28 @@ function pathColumnCap(): number {
  * path is the same code that reports it, and a caller that renders a table gets
  * the recovered paths whether or not it remembered to want them.
  */
+/**
+ * Options for the renderers that take them.
+ */
+export interface TableOptions {
+    /**
+     * Shrink the table's budgeted columns until the line fits the terminal.
+     *
+     * Opt-in, and that is the point. Per-column `maxWidth` budgets are scaled
+     * against a 90-column baseline, so on a wide terminal they widen and on a
+     * narrow one they shrink — but nothing checks that they *add up*, and three
+     * columns each budgeted near the width give a line twice the width.
+     *
+     * This is the backstop for that, and it is off by default because it
+     * re-cuts cells the caller already sized: a command whose layout is already
+     * balanced does not need it, and applying it everywhere silently shortened
+     * a `(+N more messages)` hint in `fx-tests try` and pushed a duration
+     * column out of `fx-tests manifests`. A caller turns it on for a table it
+     * has measured.
+     */
+    fit?: boolean;
+}
+
 export interface TableWithPaths {
     /** The table's lines, header first. */
     lines: string[];
@@ -100,9 +122,10 @@ export interface TableWithPaths {
 export function table(
     columns: readonly Column[],
     rows: readonly (readonly string[])[],
-    indent = '  '
+    indent = '  ',
+    options: TableOptions = {}
 ): string[] {
-    return tableWithPaths(columns, rows, indent).lines;
+    return tableWithPaths(columns, rows, indent, options).lines;
 }
 
 /**
@@ -115,7 +138,8 @@ export function table(
 export function tableWithPaths(
     columns: readonly Column[],
     rows: readonly (readonly string[])[],
-    indent = '  '
+    indent = '  ',
+    options: TableOptions = {}
 ): TableWithPaths {
     if (rows.length === 0) {
         return { lines: [], shortenedPaths: [] };
@@ -155,12 +179,39 @@ export function tableWithPaths(
         })
     );
     const headers = columns.map(headerLabel);
-    const widths = columns.map((_column, i) =>
-        Math.max(
-            headers[i]!.length,
-            ...cells.map((row) => (row[i] ?? '').length)
-        )
+    const widths = fitToWidth(
+        columns,
+        columns.map((_column, i) =>
+            Math.max(headers[i]!.length, ...cells.map((row) => (row[i] ?? '').length))
+        ),
+        indent.length,
+        options.fit === true
     );
+    // Re-cut against the fitted widths: `widths` is what each column will
+    // actually occupy, and a cell wider than its column is what pushes the line
+    // over. Path columns keep their tail-preserving cut.
+    for (const [r, row] of cells.entries()) {
+        for (let i = 0; i < columns.length; i++) {
+            const cell = row[i] ?? '';
+            const width = widths[i]!;
+            if (cell.length <= width) {
+                continue;
+            }
+            if (columns[i]?.path === true) {
+                row[i] = truncatePath(cell, width);
+                // The **original**, not `cell`: by here `cell` may already be
+                // the first pass's shortened form, and recovery exists to give
+                // back the full path. Recording the cut version would put a
+                // second, still-shortened entry in the block.
+                const original = rows[r]![i] ?? '';
+                if (!shortened.includes(original)) {
+                    shortened.push(original);
+                }
+                continue;
+            }
+            row[i] = truncateTo(cell, width);
+        }
+    }
 
     const line = (values: readonly string[]): string => {
         const parts: string[] = [];
@@ -182,6 +233,75 @@ export function tableWithPaths(
 
     return { lines: [line(headers), ...cells.map(line)], shortenedPaths: shortened };
 }
+
+/**
+ * Shrinks the widest columns until the whole line fits the terminal.
+ *
+ * Per-column `maxWidth` budgets are the caller's statement of intent — how much
+ * a column deserves relative to its neighbours — but nothing was checking that
+ * they *add up*. Three columns each budgeted just under the width produce a line
+ * twice the width, which is how this table reached 162 characters at
+ * `COLUMNS=80`.
+ *
+ * So the budgets stay, and this is the backstop underneath them: take the
+ * measured widths, and while the line is too long, shave a character off
+ * whichever column is currently widest. Taking from the widest is what protects
+ * the narrow columns — `count` and `bug` are never touched, because they are
+ * never the widest — without the caller having to rank them.
+ *
+ * `MIN_CELL_WIDTH` stops a column being shaved to nothing: past that the line is
+ * allowed to overflow, because a table of ellipses answers no question. Returns
+ * the measured widths unchanged when truncation is off (`--markdown`, `--json`,
+ * `--full-messages`), which is what keeps those formats uncut.
+ */
+function fitToWidth(
+    columns: readonly Column[],
+    measured: readonly number[],
+    indentWidth: number,
+    enabled: boolean
+): number[] {
+    const limit = renderWidth();
+    const widths = [...measured];
+    if (!enabled || limit === null) {
+        return widths;
+    }
+    // Only columns the caller marked shrinkable — a `maxWidth` budget or a path
+    // — may be shaved. The others hold values whose text *is* the answer: a
+    // duration, a percentage, a count, an em dash meaning "not recorded". Cut
+    // those and the cell stops meaning anything, which is worse than a line
+    // that wraps in the terminal.
+    const shrinkable = columns
+        .map((column, i) => (column.maxWidth !== undefined || column.path === true ? i : -1))
+        .filter((i) => i >= 0);
+    if (shrinkable.length === 0) {
+        return widths;
+    }
+    // Two spaces between columns, plus the indent.
+    const overhead = indentWidth + Math.max(0, columns.length - 1) * 2;
+    const total = (): number => widths.reduce((sum, width) => sum + width, overhead);
+    while (total() > limit) {
+        let widest = -1;
+        for (const i of shrinkable) {
+            if (widest === -1 || widths[i]! > widths[widest]!) {
+                widest = i;
+            }
+        }
+        if (widest === -1 || widths[widest]! <= MIN_CELL_WIDTH) {
+            // Every shrinkable column is at the floor; overflowing beats
+            // rendering a grid of ellipses.
+            break;
+        }
+        widths[widest]!--;
+    }
+    return widths;
+}
+
+/**
+ * The narrowest a column may be shaved to before the line is left to overflow.
+ *
+ * Twelve characters is enough for `…/browser_x.js` to still identify a row.
+ */
+const MIN_CELL_WIDTH = 12;
 
 /**
  * A column's header, with the sort marker when it is the ordering column.
@@ -238,10 +358,10 @@ export function fullPathLines(shortenedPaths: readonly string[], indent = '  '):
 export function tableSection(
     columns: readonly Column[],
     rows: readonly (readonly string[])[],
-    options: { total: number; shown: number; indent?: string }
+    options: { total: number; shown: number; indent?: string; fit?: boolean }
 ): string[] {
     const indent = options.indent ?? '  ';
-    const rendered = tableWithPaths(columns, rows, indent);
+    const rendered = tableWithPaths(columns, rows, indent, { fit: options.fit === true });
     const lines = [...rendered.lines];
     const more = moreLine(options.total, options.shown, indent);
     if (more !== null) {
@@ -299,6 +419,16 @@ function terminalWidth(): number {
     return BASELINE_WIDTH;
 }
 
+/**
+ * The width a text table may occupy, or `null` when truncation is off.
+ *
+ * `null` under `--markdown`, `--json` and `--full-messages`, which is what keeps
+ * a table that must not be cut from being cut.
+ */
+export function renderWidth(): number | null {
+    return widthScale === null ? null : Math.max(MIN_WIDTH, terminalWidth());
+}
+
 /** Resets truncation to the default. Called per invocation by `run()`. */
 export function resetTruncation(): void {
     widthScale = 1;
@@ -310,6 +440,19 @@ function scaled(maxWidth: number): number {
         return 0;
     }
     return Math.max(1, Math.round(maxWidth * widthScale));
+}
+
+/**
+ * Truncates to an **absolute** width, with a trailing `…`.
+ *
+ * `truncate()` scales its argument against the baseline; this does not, because
+ * `fitToWidth` has already resolved a real width for the real terminal.
+ */
+function truncateTo(value: string, width: number): string {
+    if (width <= 0 || value.length <= width) {
+        return value;
+    }
+    return `${value.slice(0, Math.max(0, width - 1))}…`;
 }
 
 /** Truncates with a trailing `…`. `maxWidth` is a `BASELINE_WIDTH` budget. */
@@ -394,6 +537,58 @@ export function applyLimit<T>(items: readonly T[], limit: number | undefined): T
         return [...items];
     }
     return items.slice(0, limit);
+}
+
+/**
+ * Cuts one hand-built line's variable part to the terminal.
+ *
+ * For output assembled by hand rather than by `table()` — a count column and a
+ * name, say — which otherwise misses the clamp the table applies. `prefixWidth`
+ * is what the fixed part already occupies.
+ *
+ * Returns the text unchanged when truncation is off, so `--markdown` and
+ * `--full-messages` stay whole.
+ */
+export function fitLine(value: string, prefixWidth = 0): string {
+    const width = renderWidth();
+    if (width === null) {
+        return value;
+    }
+    return truncateTo(value, Math.max(MIN_CELL_WIDTH, width - prefixWidth));
+}
+
+/**
+ * Greedy word wrap to a width, defaulting to the terminal's.
+ *
+ * Moved here from `cli/commands/guide.ts`, whose copy was justified as "local
+ * and minimal because only the exit-code table needs it". That stopped being
+ * true: a command's header prose has the same problem, and it is worse there,
+ * because a header sentence is the *first* thing printed and was the longest
+ * line in the output on a narrow terminal.
+ *
+ * Returns the text unwrapped when truncation is off, so `--markdown` and
+ * `--full-messages` keep whole sentences on one line.
+ */
+export function wrapText(text: string, width: number | null = renderWidth()): string[] {
+    if (width === null || width <= 0) {
+        return [text];
+    }
+    const lines: string[] = [];
+    let current = '';
+    for (const word of text.split(' ')) {
+        if (current === '') {
+            current = word;
+        } else if (current.length + 1 + word.length <= width) {
+            current += ` ${word}`;
+        } else {
+            lines.push(current);
+            current = word;
+        }
+    }
+    if (current !== '') {
+        lines.push(current);
+    }
+    return lines;
 }
 
 /** A percentage with one decimal, or `—` when there is no rate to state. */

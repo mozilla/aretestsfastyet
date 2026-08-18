@@ -126,12 +126,43 @@ function fixtureClient(): IntermittentsClient & { calls: string[] } {
     };
 }
 
+/**
+ * The width these tests render at.
+ *
+ * Pinned, and wide: truncation follows `COLUMNS`, so without this every
+ * assertion about a message's text would depend on the terminal the suite runs
+ * in — and would pass locally while failing in CI, where stdout is a pipe. Wide
+ * enough that content assertions are about the content. The tests that are
+ * *about* width set their own.
+ */
+const TEST_COLUMNS = '200';
+
 async function invoke(
     argv: string[],
     client?: IntermittentsClient,
-    source?: DataSource & { requested: string[] }
+    source?: DataSource & { requested: string[] },
+    columns: string = TEST_COLUMNS
 ): Promise<{ code: number; stdout: string; stderr: string; calls: string[] }> {
     const streams = captureStreams();
+    const previousColumns = process.env['COLUMNS'];
+    process.env['COLUMNS'] = columns;
+    try {
+        return await invokeAt(argv, client, source, streams);
+    } finally {
+        if (previousColumns === undefined) {
+            delete process.env['COLUMNS'];
+        } else {
+            process.env['COLUMNS'] = previousColumns;
+        }
+    }
+}
+
+async function invokeAt(
+    argv: string[],
+    client: IntermittentsClient | undefined,
+    source: (DataSource & { requested: string[] }) | undefined,
+    streams: ReturnType<typeof captureStreams>
+): Promise<{ code: number; stdout: string; stderr: string; calls: string[] }> {
     const intermittents = client ?? fixtureClient();
     const code = await run({
         argv,
@@ -760,6 +791,84 @@ test('--bug --json carries every occurrence, not a grouped summary only', async 
     // Unfiltered, so the two counts agree — which is what makes a filtered run
     // legible when they do not.
     assert.equal(parsed.totalOccurrences, recorded.length);
+});
+
+test('every mode fits the terminal width', async () => {
+    // The defect: header prose was never wrapped and the table's column budgets
+    // did not add up, so an 80-column terminal got 162-character lines. Both
+    // halves are checked here, at three widths, in every mode — a single spot
+    // check is what let it ship.
+    const longest = (text: string): number =>
+        Math.max(0, ...text.split('\n').map((line: string) => line.length));
+    const modes = [
+        [],
+        ['--harness', 'mochitest'],
+        ['--harness', 'xpcshell'],
+        ['--harness', 'unknown'],
+        ['--bug', '1980036'],
+    ];
+    for (const columns of ['60', '80', '200']) {
+        for (const mode of modes) {
+            const { stdout } = await invoke(
+                ['intermittent', ...mode, ...WINDOW, '--limit', '5'],
+                undefined,
+                undefined,
+                columns
+            );
+            // Two blocks are deliberately uncut, and both are worse cut. The
+            // full-path recovery block exists precisely to give back a path
+            // that can be pasted into `fx-tests test`. And `--bug`'s occurrence
+            // table is six identifier columns — a timestamp and a task id
+            // shortened are values that cannot be looked up — so
+            // `MIN_CELL_WIDTH` stops shaving before it destroys them, and the
+            // table is allowed to exceed a very narrow terminal.
+            const occurrences = stdout.indexOf('\nOccurrences (');
+            const head = occurrences === -1 ? stdout : stdout.slice(0, occurrences);
+            const body = head
+                .split('\n')
+                .filter((line) => !/^\s*\S+\/\S+$/.test(line))
+                .join('\n');
+            assert.ok(
+                longest(body) <= Number(columns),
+                `${mode.join(' ') || '(no --harness)'} at COLUMNS=${columns}: ` +
+                    `longest line ${longest(body)}`
+            );
+        }
+    }
+});
+
+test('a narrow terminal wraps the header prose rather than overflowing', async () => {
+    const { stdout } = await invoke(
+        ['intermittent', ...WINDOW, '--limit', '1'],
+        undefined,
+        undefined,
+        '60'
+    );
+    // The sentence is still complete, just across lines.
+    assert.match(stdout.replace(/\n/g, ' '), /annotated bugs, ranked by count/);
+    const header = stdout.split('\n').slice(0, 8);
+    assert.ok(
+        header.every((line) => line.length <= 60),
+        header.join('|')
+    );
+});
+
+test('--markdown and --full-messages ignore the terminal width', async () => {
+    // Both exist to produce untruncated text; a narrow terminal must not cut
+    // them. `… N more` is a truncation *marker*, not truncation, so a list that
+    // was limited still carries it.
+    for (const flag of ['--markdown', '--full-messages']) {
+        const { stdout } = await invoke(
+            ['intermittent', ...WINDOW, '--limit', '3', flag],
+            undefined,
+            undefined,
+            '60'
+        );
+        const cuts = stdout
+            .split('\n')
+            .filter((line) => line.includes('…') && !line.includes('more'));
+        assert.deepEqual(cuts, [], `${flag} must not truncate at COLUMNS=60`);
+    }
 });
 
 test('--bug --markdown truncates nothing, in any of its sections', async () => {

@@ -23,8 +23,10 @@ import {
     count as fmtCount,
     joinLines,
     table,
+    fitLine,
     tableSection,
     truncate,
+    wrapText,
 } from '../format/text.ts';
 import {
     type BugOccurrence,
@@ -66,14 +68,23 @@ export const DEFAULT_DAYS = 7;
 /**
  * How wide the `test` column may get when the list can hold unknown rows.
  *
- * A verified test path has a p90 of 86 characters over a live window; an unknown
- * row's summary has a p90 of 191 and a maximum of 246. Left uncapped, one long
- * summary sets the column width for the whole table and pushes `failure` past
- * the right edge. 96 clears the median path and most of the p90, which is the
- * balance worth striking: the path is the copyable identifier, the summary is
- * prose that survives being cut.
+ * A `truncate()` budget, so it is stated against the 90-column baseline and
+ * scaled to the real terminal — not an absolute width. Together with
+ * `FAILURE_WIDTH` and the two numeric columns it has to *add up* to that
+ * baseline: budgets that each nearly fill the width produce a line twice the
+ * width, which is what put this table at 162 characters on an 80-column
+ * terminal.
+ *
+ * A verified test path has a p90 of 86 characters over a live window and an
+ * unknown row's summary a p90 of 191, so neither fits whatever is chosen here;
+ * `fitToWidth` shaves the rest. This splits the text budget in the path's
+ * favour, because it is the copyable identifier and the summary is prose that
+ * survives being cut.
  */
-export const MIXED_CELL_WIDTH = 96;
+export const MIXED_CELL_WIDTH = 44;
+
+/** The `failure` column's budget. See `MIXED_CELL_WIDTH`. */
+export const FAILURE_WIDTH = 26;
 
 /**
  * How many rows each of `--bug`'s sections shows by default.
@@ -473,26 +484,31 @@ function coverageLines(
     harness: HarnessSelector | undefined,
     selected: number
 ): string[] {
+    // Each entry is one sentence, wrapped on the way out: prose stated as a
+    // single string in the source and broken to the terminal here, rather than
+    // hand-wrapped, which fixes it to one width. Under `--markdown` and
+    // `--full-messages` `wrapText` returns it whole.
+    const sentences: string[] = [];
     const lines: string[] = [];
     if (harness === undefined) {
-        lines.push(
+        sentences.push(
             `All ${fmtCount(coverage.scanned)} annotated bugs, ranked by count: ` +
                 `${fmtCount(coverage.mochitest)} name a mochitest test, ` +
                 `${fmtCount(coverage.xpcshell)} an xpcshell test, and ` +
                 `${fmtCount(coverage.unknown)} name no test this tool knows.`
         );
-        lines.push(
+        sentences.push(
             'A bug is placed by the test path in its summary, checked against the published ' +
                 'test lists. --harness mochitest, xpcshell or unknown ranks one group.'
         );
     } else if (harness === 'unknown') {
-        lines.push(
+        sentences.push(
             `${fmtCount(selected)} of ${fmtCount(coverage.scanned)} annotated bugs name no test ` +
                 `this tool knows — infrastructure failures, suites it does not read, and tests ` +
                 `whose summary does not name a path.`
         );
     } else {
-        lines.push(
+        sentences.push(
             `${fmtCount(selected)} of ${fmtCount(coverage.scanned)} annotated bugs name a ` +
                 `verified ${harness} test. The rest: ` +
                 `${fmtCount(harness === 'mochitest' ? coverage.xpcshell : coverage.mochitest)} ` +
@@ -502,10 +518,13 @@ function coverageLines(
         );
     }
     if (coverage.noBugCount > 0) {
-        lines.push(
+        sentences.push(
             `Excluded: ${fmtCount(coverage.noBugCount)} annotations with no bug attached, which ` +
                 `carry no summary to read a test path from.`
         );
+    }
+    for (const sentence of sentences) {
+        lines.push(...wrapText(sentence));
     }
     lines.push('');
     lines.push('count = jobs sheriffs annotated with this bug.');
@@ -557,7 +576,7 @@ function renderRankingText(
     scan: ScanResult
 ): string {
     const lines: (string | null)[] = [
-        rankingTitle(harness, tree, range),
+        ...wrapText(rankingTitle(harness, tree, range)),
         '',
         ...coverageLines(scan.coverage, harness, selected.length),
         '',
@@ -574,7 +593,10 @@ function renderRankingText(
             ? [
                   { header: 'count', align: 'right', sort: 'desc' },
                   { header: 'bug', align: 'right' },
-                  { header: 'summary' },
+                  // The only text column in this mode, so it gets the whole
+                  // remaining width: a budget would just be a second cap under
+                  // the one `fit` already applies.
+                  { header: 'summary', maxWidth: MIXED_CELL_WIDTH + FAILURE_WIDTH },
               ]
             : [
                   { header: 'count', align: 'right', sort: 'desc' },
@@ -587,7 +609,7 @@ function renderRankingText(
                   harness === undefined
                       ? { header: 'test / summary', maxWidth: MIXED_CELL_WIDTH }
                       : { header: 'test', path: true },
-                  { header: 'failure', maxWidth: 60 },
+                  { header: 'failure', maxWidth: FAILURE_WIDTH },
               ];
     lines.push(
         ...tableSection(
@@ -602,7 +624,9 @@ function renderRankingText(
                           failureCell(row),
                       ]
             ),
-            { total: selected.length, shown: shown.length }
+            // Fitted: the test/summary and failure columns are both prose, so
+            // their budgets have to be reconciled against the real width.
+            { total: selected.length, shown: shown.length, fit: true }
         )
     );
     return joinLines(lines);
@@ -701,8 +725,10 @@ function renderBugText(
     limit: number | undefined
 ): string {
     const lines: (string | null)[] = [
-        `Bug ${drilldown.bugId} — ${bugSummary ?? '(no summary from Bugzilla)'}`,
-        drilldownCountLine(drilldown, tree, range),
+        // Both are prose — a Bugzilla summary runs to 200 characters — so they
+        // wrap rather than setting the width of the whole report.
+        ...wrapText(`Bug ${drilldown.bugId} — ${bugSummary ?? '(no summary from Bugzilla)'}`),
+        ...wrapText(drilldownCountLine(drilldown, tree, range)),
         '',
     ];
     lines.push(...tallySection('Job names, chunk numbers merged', drilldown.jobNames, limit));
@@ -735,9 +761,13 @@ function renderBugText(
             [
                 { header: 'push time' },
                 { header: 'tree' },
-                { header: 'platform' },
+                // The two widest columns carry budgets so `fit` has something
+                // to shave: the rest are short enough that cutting them would
+                // destroy the value rather than shorten it — a truncated task
+                // id cannot be looked up, and `opt`/`debug` is already minimal.
+                { header: 'platform', maxWidth: 24 },
                 { header: 'build' },
-                { header: 'job name' },
+                { header: 'job name', maxWidth: 30 },
                 { header: 'task id' },
             ],
             rows.map((row) => [
@@ -747,7 +777,9 @@ function renderBugText(
                 row.buildType,
                 row.testSuite,
                 row.taskId,
-            ])
+            ]),
+            '  ',
+            { fit: true }
         )
     );
     if (rows.length < occurrences.length) {
@@ -767,13 +799,16 @@ function tallySection(
         return [];
     }
     const shown = applyLimit(counts, limit ?? DRILLDOWN_ROWS);
+    // `  NNNNNx  ` — the count column and its padding, which the name shares the
+    // line with. These rows are hand-built rather than rendered by `table()`, so
+    // the terminal clamp `table()` applies has to be applied here too.
+    const prefixWidth = 10;
     const lines = [
         title,
-        ...shown.map(
-            (entry) =>
-                `  ${String(entry.count).padStart(5)}x  ` +
-                (maxWidth === undefined ? entry.name : truncate(entry.name, maxWidth))
-        ),
+        ...shown.map((entry) => {
+            const budgeted = maxWidth === undefined ? entry.name : truncate(entry.name, maxWidth);
+            return `  ${String(entry.count).padStart(5)}x  ${fitLine(budgeted, prefixWidth)}`;
+        }),
     ];
     if (shown.length < counts.length) {
         lines.push(`  … ${counts.length - shown.length} more (--limit 0 for all)`);

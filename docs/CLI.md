@@ -220,6 +220,13 @@ exactly the discriminator — the property name, the `null`, a diagnostic marker
   `process.stdout.columns`, then 90. `COLUMNS` is read first because
   `process.stdout.columns` is `undefined` whenever stdout is a pipe, which is
   every agent invocation and every `> file`.
+- **Two things stay untruncated even so**, because cutting them destroys their
+  only use: the full-path recovery block a table prints under itself, which
+  exists so a shortened path can still be pasted into `fx-tests test`; and
+  identifier columns such as a task ID or a push timestamp, which cannot be
+  looked up once shortened. A table shrinks its prose columns until the line
+  fits and then stops, so a very narrow terminal wraps rather than rendering a
+  grid of ellipses.
 
 ### `--day` and the window
 

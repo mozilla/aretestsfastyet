@@ -742,10 +742,10 @@ var PATH_COLUMN_CAP = 128;
 function pathColumnCap() {
   return widthScale === null ? Number.POSITIVE_INFINITY : PATH_COLUMN_CAP;
 }
-function table(columns, rows2, indent = "  ") {
-  return tableWithPaths(columns, rows2, indent).lines;
+function table(columns, rows2, indent = "  ", options = {}) {
+  return tableWithPaths(columns, rows2, indent, options).lines;
 }
-function tableWithPaths(columns, rows2, indent = "  ") {
+function tableWithPaths(columns, rows2, indent = "  ", options = {}) {
   if (rows2.length === 0) {
     return { lines: [], shortenedPaths: [] };
   }
@@ -774,12 +774,32 @@ function tableWithPaths(columns, rows2, indent = "  ") {
     })
   );
   const headers = columns.map(headerLabel);
-  const widths = columns.map(
-    (_column, i) => Math.max(
-      headers[i].length,
-      ...cells.map((row) => (row[i] ?? "").length)
-    )
+  const widths = fitToWidth(
+    columns,
+    columns.map(
+      (_column, i) => Math.max(headers[i].length, ...cells.map((row) => (row[i] ?? "").length))
+    ),
+    indent.length,
+    options.fit === true
   );
+  for (const [r, row] of cells.entries()) {
+    for (let i = 0; i < columns.length; i++) {
+      const cell = row[i] ?? "";
+      const width = widths[i];
+      if (cell.length <= width) {
+        continue;
+      }
+      if (columns[i]?.path === true) {
+        row[i] = truncatePath(cell, width);
+        const original = rows2[r][i] ?? "";
+        if (!shortened.includes(original)) {
+          shortened.push(original);
+        }
+        continue;
+      }
+      row[i] = truncateTo(cell, width);
+    }
+  }
   const line = (values) => {
     const parts = [];
     for (let i = 0; i < columns.length; i++) {
@@ -797,6 +817,33 @@ function tableWithPaths(columns, rows2, indent = "  ") {
   };
   return { lines: [line(headers), ...cells.map(line)], shortenedPaths: shortened };
 }
+function fitToWidth(columns, measured, indentWidth, enabled) {
+  const limit = renderWidth();
+  const widths = [...measured];
+  if (!enabled || limit === null) {
+    return widths;
+  }
+  const shrinkable = columns.map((column, i) => column.maxWidth !== void 0 || column.path === true ? i : -1).filter((i) => i >= 0);
+  if (shrinkable.length === 0) {
+    return widths;
+  }
+  const overhead = indentWidth + Math.max(0, columns.length - 1) * 2;
+  const total = () => widths.reduce((sum, width) => sum + width, overhead);
+  while (total() > limit) {
+    let widest = -1;
+    for (const i of shrinkable) {
+      if (widest === -1 || widths[i] > widths[widest]) {
+        widest = i;
+      }
+    }
+    if (widest === -1 || widths[widest] <= MIN_CELL_WIDTH) {
+      break;
+    }
+    widths[widest]--;
+  }
+  return widths;
+}
+var MIN_CELL_WIDTH = 12;
 function headerLabel(column) {
   if (column.sort === void 0) {
     return column.header;
@@ -818,7 +865,7 @@ function fullPathLines(shortenedPaths, indent = "  ") {
 }
 function tableSection(columns, rows2, options) {
   const indent = options.indent ?? "  ";
-  const rendered = tableWithPaths(columns, rows2, indent);
+  const rendered = tableWithPaths(columns, rows2, indent, { fit: options.fit === true });
   const lines = [...rendered.lines];
   const more = moreLine(options.total, options.shown, indent);
   if (more !== null) {
@@ -848,6 +895,9 @@ function terminalWidth() {
   }
   return BASELINE_WIDTH;
 }
+function renderWidth() {
+  return widthScale === null ? null : Math.max(MIN_WIDTH, terminalWidth());
+}
 function resetTruncation() {
   widthScale = 1;
 }
@@ -856,6 +906,12 @@ function scaled(maxWidth) {
     return 0;
   }
   return Math.max(1, Math.round(maxWidth * widthScale));
+}
+function truncateTo(value, width) {
+  if (width <= 0 || value.length <= width) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, width - 1))}\u2026`;
 }
 function truncate(value, maxWidth) {
   const limit = scaled(maxWidth);
@@ -895,6 +951,34 @@ function applyLimit(items, limit) {
     return [...items];
   }
   return items.slice(0, limit);
+}
+function fitLine(value, prefixWidth = 0) {
+  const width = renderWidth();
+  if (width === null) {
+    return value;
+  }
+  return truncateTo(value, Math.max(MIN_CELL_WIDTH, width - prefixWidth));
+}
+function wrapText(text, width = renderWidth()) {
+  if (width === null || width <= 0) {
+    return [text];
+  }
+  const lines = [];
+  let current = "";
+  for (const word of text.split(" ")) {
+    if (current === "") {
+      current = word;
+    } else if (current.length + 1 + word.length <= width) {
+      current += ` ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current !== "") {
+    lines.push(current);
+  }
+  return lines;
 }
 function percent(value, digits = 1) {
   if (value === null || value === void 0) {
@@ -4967,24 +5051,6 @@ function runGuide(context, args) {
   emit(context, render());
   return Promise.resolve();
 }
-function wrap(text, width) {
-  const lines = [];
-  let current = "";
-  for (const word of text.split(" ")) {
-    if (current === "") {
-      current = word;
-    } else if (current.length + 1 + word.length <= width) {
-      current += ` ${word}`;
-    } else {
-      lines.push(current);
-      current = word;
-    }
-  }
-  if (current !== "") {
-    lines.push(current);
-  }
-  return lines;
-}
 function render() {
   const lines = [];
   lines.push("fx-tests \u2014 what this data can and cannot tell you");
@@ -5037,7 +5103,7 @@ function render() {
   lines.push("EXIT CODES");
   lines.push("");
   for (const fact of EXIT_CODE_FACTS) {
-    const [first, ...rest] = wrap(fact.meaning, 74);
+    const [first, ...rest] = wrapText(fact.meaning, 74);
     lines.push(`  ${fact.code}  ${first ?? ""}`);
     for (const line of rest) {
       lines.push(`     ${line}`);
@@ -7040,7 +7106,8 @@ function normaliseDuration(message) {
 // cli/commands/intermittent.ts
 var DEFAULT_LIMIT4 = 20;
 var DEFAULT_DAYS = 7;
-var MIXED_CELL_WIDTH = 96;
+var MIXED_CELL_WIDTH = 44;
+var FAILURE_WIDTH = 26;
 var DRILLDOWN_ROWS = 10;
 var INTERMITTENT_OPTIONS = {
   // Two globals whose shared wording is wrong here, restated rather than left
@@ -7274,27 +7341,31 @@ async function withUpstreamErrors(work, tree) {
   }
 }
 function coverageLines(coverage, harness, selected) {
+  const sentences = [];
   const lines = [];
   if (harness === void 0) {
-    lines.push(
+    sentences.push(
       `All ${count(coverage.scanned)} annotated bugs, ranked by count: ${count(coverage.mochitest)} name a mochitest test, ${count(coverage.xpcshell)} an xpcshell test, and ${count(coverage.unknown)} name no test this tool knows.`
     );
-    lines.push(
+    sentences.push(
       "A bug is placed by the test path in its summary, checked against the published test lists. --harness mochitest, xpcshell or unknown ranks one group."
     );
   } else if (harness === "unknown") {
-    lines.push(
+    sentences.push(
       `${count(selected)} of ${count(coverage.scanned)} annotated bugs name no test this tool knows \u2014 infrastructure failures, suites it does not read, and tests whose summary does not name a path.`
     );
   } else {
-    lines.push(
+    sentences.push(
       `${count(selected)} of ${count(coverage.scanned)} annotated bugs name a verified ${harness} test. The rest: ${count(harness === "mochitest" ? coverage.xpcshell : coverage.mochitest)} name a test of the other harness, ${count(coverage.unknown)} name no test this tool knows (--harness unknown ranks those).`
     );
   }
   if (coverage.noBugCount > 0) {
-    lines.push(
+    sentences.push(
       `Excluded: ${count(coverage.noBugCount)} annotations with no bug attached, which carry no summary to read a test path from.`
     );
+  }
+  for (const sentence of sentences) {
+    lines.push(...wrapText(sentence));
   }
   lines.push("");
   lines.push("count = jobs sheriffs annotated with this bug.");
@@ -7315,7 +7386,7 @@ function rankingTitle(harness, tree, range) {
 }
 function renderRankingText(harness, tree, range, shown, selected, scan) {
   const lines = [
-    rankingTitle(harness, tree, range),
+    ...wrapText(rankingTitle(harness, tree, range)),
     "",
     ...coverageLines(scan.coverage, harness, selected.length),
     ""
@@ -7327,7 +7398,10 @@ function renderRankingText(harness, tree, range, shown, selected, scan) {
   const columns = harness === "unknown" ? [
     { header: "count", align: "right", sort: "desc" },
     { header: "bug", align: "right" },
-    { header: "summary" }
+    // The only text column in this mode, so it gets the whole
+    // remaining width: a budget would just be a second cap under
+    // the one `fit` already applies.
+    { header: "summary", maxWidth: MIXED_CELL_WIDTH + FAILURE_WIDTH }
   ] : [
     { header: "count", align: "right", sort: "desc" },
     { header: "bug", align: "right" },
@@ -7337,7 +7411,7 @@ function renderRankingText(harness, tree, range, shown, selected, scan) {
     // list therefore gets a plain width-capped column, so one
     // 240-character summary cannot push `failure` off screen.
     harness === void 0 ? { header: "test / summary", maxWidth: MIXED_CELL_WIDTH } : { header: "test", path: true },
-    { header: "failure", maxWidth: 60 }
+    { header: "failure", maxWidth: FAILURE_WIDTH }
   ];
   lines.push(
     ...tableSection(
@@ -7350,7 +7424,9 @@ function renderRankingText(harness, tree, range, shown, selected, scan) {
           failureCell(row)
         ]
       ),
-      { total: selected.length, shown: shown.length }
+      // Fitted: the test/summary and failure columns are both prose, so
+      // their budgets have to be reconciled against the real width.
+      { total: selected.length, shown: shown.length, fit: true }
     )
   );
   return joinLines(lines);
@@ -7408,8 +7484,10 @@ function drilldownCountLine(drilldown, tree, range) {
 }
 function renderBugText(drilldown, bugSummary, tree, range, occurrences, limit) {
   const lines = [
-    `Bug ${drilldown.bugId} \u2014 ${bugSummary ?? "(no summary from Bugzilla)"}`,
-    drilldownCountLine(drilldown, tree, range),
+    // Both are prose — a Bugzilla summary runs to 200 characters — so they
+    // wrap rather than setting the width of the whole report.
+    ...wrapText(`Bug ${drilldown.bugId} \u2014 ${bugSummary ?? "(no summary from Bugzilla)"}`),
+    ...wrapText(drilldownCountLine(drilldown, tree, range)),
     ""
   ];
   lines.push(...tallySection("Job names, chunk numbers merged", drilldown.jobNames, limit));
@@ -7432,9 +7510,13 @@ function renderBugText(drilldown, bugSummary, tree, range, occurrences, limit) {
       [
         { header: "push time" },
         { header: "tree" },
-        { header: "platform" },
+        // The two widest columns carry budgets so `fit` has something
+        // to shave: the rest are short enough that cutting them would
+        // destroy the value rather than shorten it — a truncated task
+        // id cannot be looked up, and `opt`/`debug` is already minimal.
+        { header: "platform", maxWidth: 24 },
         { header: "build" },
-        { header: "job name" },
+        { header: "job name", maxWidth: 30 },
         { header: "task id" }
       ],
       rows2.map((row) => [
@@ -7444,7 +7526,9 @@ function renderBugText(drilldown, bugSummary, tree, range, occurrences, limit) {
         row.buildType,
         row.testSuite,
         row.taskId
-      ])
+      ]),
+      "  ",
+      { fit: true }
     )
   );
   if (rows2.length < occurrences.length) {
@@ -7457,11 +7541,13 @@ function tallySection(title, counts, limit, maxWidth) {
     return [];
   }
   const shown = applyLimit(counts, limit ?? DRILLDOWN_ROWS);
+  const prefixWidth = 10;
   const lines = [
     title,
-    ...shown.map(
-      (entry) => `  ${String(entry.count).padStart(5)}x  ` + (maxWidth === void 0 ? entry.name : truncate(entry.name, maxWidth))
-    )
+    ...shown.map((entry) => {
+      const budgeted = maxWidth === void 0 ? entry.name : truncate(entry.name, maxWidth);
+      return `  ${String(entry.count).padStart(5)}x  ${fitLine(budgeted, prefixWidth)}`;
+    })
   ];
   if (shown.length < counts.length) {
     lines.push(`  \u2026 ${counts.length - shown.length} more (--limit 0 for all)`);

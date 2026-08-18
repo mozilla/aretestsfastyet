@@ -67,7 +67,7 @@ import type { OptionSpecs, ParsedArgs } from '../args.ts';
 import { type CommandContext, emit } from '../context.ts';
 import { usageError } from '../errors.ts';
 import { toJson } from '../format/json.ts';
-import { joinLines } from '../format/text.ts';
+import { joinLines, wrapText } from '../format/text.ts';
 
 /** `guide` takes no options of its own. */
 export const GUIDE_OPTIONS: OptionSpecs = {};
@@ -459,33 +459,6 @@ export function runGuide(context: CommandContext, args: ParsedArgs): Promise<voi
     return Promise.resolve();
 }
 
-/**
- * Greedy word wrap.
- *
- * Local and minimal because only the exit-code table needs it — every other
- * block in this file is hand-wrapped in its source, which is what lets the
- * prose control its own line breaks. The exit-code meanings cannot be, because
- * they are shared with `--json`.
- */
-function wrap(text: string, width: number): string[] {
-    const lines: string[] = [];
-    let current = '';
-    for (const word of text.split(' ')) {
-        if (current === '') {
-            current = word;
-        } else if (current.length + 1 + word.length <= width) {
-            current += ` ${word}`;
-        } else {
-            lines.push(current);
-            current = word;
-        }
-    }
-    if (current !== '') {
-        lines.push(current);
-    }
-    return lines;
-}
-
 /** The whole guide. */
 export function render(): string {
     const lines: (string | null)[] = [];
@@ -554,7 +527,7 @@ export function render(): string {
     // Wrapped: `ExitCode.Gone`'s meaning is 130 characters and ran off the
     // right of an 80-column terminal, which is where a guide is read.
     for (const fact of EXIT_CODE_FACTS) {
-        const [first, ...rest] = wrap(fact.meaning, 74);
+        const [first, ...rest] = wrapText(fact.meaning, 74);
         lines.push(`  ${fact.code}  ${first ?? ''}`);
         for (const line of rest) {
             lines.push(`     ${line}`);
