@@ -554,6 +554,10 @@ export function render(): string {
     lines.push('');
     lines.push('  Lists are truncated by default and say so (`… 47 more (--limit 0 for all)`).');
     lines.push('  If a list looks short, check for that line before believing it is complete.');
+    lines.push('');
+    lines.push('  Messages are cut to the terminal width, and the cut takes the end — which is');
+    lines.push('  often the discriminator. COLUMNS widens it; --full-messages turns it off, as');
+    lines.push('  does --markdown, which never truncates.');
 
     return joinLines(lines);
 }

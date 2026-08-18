@@ -224,6 +224,10 @@ var GLOBAL_OPTION_SPECS = {
     type: "boolean",
     describe: "Write progress to stderr even when a coding agent is the caller (off by default there). --quiet wins over this."
   },
+  "full-messages": {
+    type: "boolean",
+    describe: "Do not cut messages or paths to the terminal width. Implied by --markdown."
+  },
   help: { type: "boolean", describe: "Show this help." }
 };
 function readGlobalOptions(args, env = {}) {
@@ -271,7 +275,8 @@ function readGlobalOptions(args, env = {}) {
     noCache: boolOption(args, "no-cache"),
     quiet: boolOption(args, "quiet"),
     progress: boolOption(args, "progress"),
-    agent: isAgentCaller(env)
+    agent: isAgentCaller(env),
+    fullMessages: boolOption(args, "full-messages")
   };
 }
 function resolveHarness(testPath, explicit) {
@@ -665,58 +670,12 @@ function emit(context, text) {
 `);
 }
 
-// cli/format/json.ts
-function toJson(value) {
-  return JSON.stringify(value, jsonReplacer, 2);
-}
-function jsonReplacer(key, value) {
-  if (value instanceof Map) {
-    throw new Error(
-      `refusing to serialize a Map at "${key}" \u2014 it would become {}. Convert it with Object.fromEntries() or [...map] first.`
-    );
-  }
-  if (value instanceof Set) {
-    throw new Error(
-      `refusing to serialize a Set at "${key}" \u2014 it would become {}. Convert it with [...set] first.`
-    );
-  }
-  return value;
-}
-
-// cli/format/markdown.ts
-function table(columns, rows2) {
-  if (rows2.length === 0) {
-    return [];
-  }
-  const header = `| ${columns.map(
-    (c) => escapeCell(c.sort === void 0 ? c.header : `${c.header} ${c.sort === "desc" ? "\u25BC" : "\u25B2"}`)
-  ).join(" | ")} |`;
-  const rule = `| ${columns.map((c) => c.align === "right" ? "---:" : "---").join(" | ")} |`;
-  const body = rows2.map(
-    (row) => `| ${columns.map((_, i) => escapeCell(row[i] ?? "")).join(" | ")} |`
-  );
-  return [header, rule, ...body];
-}
-function escapeCell(value) {
-  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
-}
-function heading(text, level = 2) {
-  return `${"#".repeat(level)} ${text}`;
-}
-function code(value) {
-  return `\`${value.replace(/`/g, "\u2018")}\``;
-}
-function moreLine(total, shown) {
-  const hidden = total - shown;
-  if (hidden <= 0) {
-    return null;
-  }
-  return `_\u2026 ${hidden} more (\`--limit 0\` for all)_`;
-}
-
 // cli/format/text.ts
 var PATH_COLUMN_CAP = 128;
-function table2(columns, rows2, indent = "  ") {
+function pathColumnCap() {
+  return widthScale === null ? Number.POSITIVE_INFINITY : PATH_COLUMN_CAP;
+}
+function table(columns, rows2, indent = "  ") {
   return tableWithPaths(columns, rows2, indent).lines;
 }
 function tableWithPaths(columns, rows2, indent = "  ") {
@@ -726,7 +685,7 @@ function tableWithPaths(columns, rows2, indent = "  ") {
   const shortened = [];
   const pathWidths = columns.map(
     (column, i) => column.path === true ? Math.min(
-      PATH_COLUMN_CAP,
+      pathColumnCap(),
       Math.max(0, ...rows2.map((row) => (row[i] ?? "").length))
     ) : void 0
   );
@@ -777,6 +736,10 @@ function headerLabel(column) {
   }
   return `${column.header} ${column.sort === "desc" ? "\u25BC" : "\u25B2"}`;
 }
+function labelledLines(rows2, indent = "  ") {
+  const width = Math.max(0, ...rows2.map(([label]) => label.length));
+  return rows2.map(([label, value]) => `${indent}${label.padEnd(width)}  ${value}`.trimEnd());
+}
 function fullPathLines(shortenedPaths, indent = "  ") {
   if (shortenedPaths.length === 0) {
     return [];
@@ -790,18 +753,49 @@ function tableSection(columns, rows2, options) {
   const indent = options.indent ?? "  ";
   const rendered = tableWithPaths(columns, rows2, indent);
   const lines = [...rendered.lines];
-  const more = moreLine2(options.total, options.shown, indent);
+  const more = moreLine(options.total, options.shown, indent);
   if (more !== null) {
     lines.push(more);
   }
   lines.push(...fullPathLines(rendered.shortenedPaths, indent));
   return lines;
 }
+var BASELINE_WIDTH = 90;
+var MIN_WIDTH = 60;
+var widthScale = 1;
+function configureTruncation(options) {
+  if (options.format !== "text" || options.fullMessages) {
+    widthScale = null;
+    return;
+  }
+  widthScale = Math.max(MIN_WIDTH, terminalWidth()) / BASELINE_WIDTH;
+}
+function terminalWidth() {
+  const fromEnv = Number(process.env["COLUMNS"]);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) {
+    return fromEnv;
+  }
+  const fromTty = process.stdout.columns;
+  if (typeof fromTty === "number" && fromTty > 0) {
+    return fromTty;
+  }
+  return BASELINE_WIDTH;
+}
+function resetTruncation() {
+  widthScale = 1;
+}
+function scaled(maxWidth) {
+  if (widthScale === null || maxWidth <= 0) {
+    return 0;
+  }
+  return Math.max(1, Math.round(maxWidth * widthScale));
+}
 function truncate(value, maxWidth) {
-  if (maxWidth <= 0 || value.length <= maxWidth) {
+  const limit = scaled(maxWidth);
+  if (limit <= 0 || value.length <= limit) {
     return value;
   }
-  return `${value.slice(0, Math.max(0, maxWidth - 1))}\u2026`;
+  return `${value.slice(0, Math.max(0, limit - 1))}\u2026`;
 }
 function truncatePath(value, maxWidth) {
   if (maxWidth <= 0 || value.length <= maxWidth) {
@@ -822,7 +816,7 @@ function truncatePath(value, maxWidth) {
   }
   return `\u2026/${kept}`;
 }
-function moreLine2(total, shown, indent = "  ") {
+function moreLine(total, shown, indent = "  ") {
   const hidden = total - shown;
   if (hidden <= 0) {
     return null;
@@ -889,13 +883,62 @@ function joinLines(lines) {
 }
 function bytes(value) {
   const units = ["B", "KB", "MB", "GB"];
-  let scaled = value;
+  let scaled2 = value;
   let unit = 0;
-  while (scaled >= 1024 && unit < units.length - 1) {
-    scaled /= 1024;
+  while (scaled2 >= 1024 && unit < units.length - 1) {
+    scaled2 /= 1024;
     unit++;
   }
-  return `${unit === 0 ? scaled : scaled.toFixed(1)} ${units[unit]}`;
+  return `${unit === 0 ? scaled2 : scaled2.toFixed(1)} ${units[unit]}`;
+}
+
+// cli/format/json.ts
+function toJson(value) {
+  return JSON.stringify(value, jsonReplacer, 2);
+}
+function jsonReplacer(key, value) {
+  if (value instanceof Map) {
+    throw new Error(
+      `refusing to serialize a Map at "${key}" \u2014 it would become {}. Convert it with Object.fromEntries() or [...map] first.`
+    );
+  }
+  if (value instanceof Set) {
+    throw new Error(
+      `refusing to serialize a Set at "${key}" \u2014 it would become {}. Convert it with [...set] first.`
+    );
+  }
+  return value;
+}
+
+// cli/format/markdown.ts
+function table2(columns, rows2) {
+  if (rows2.length === 0) {
+    return [];
+  }
+  const header = `| ${columns.map(
+    (c) => escapeCell(c.sort === void 0 ? c.header : `${c.header} ${c.sort === "desc" ? "\u25BC" : "\u25B2"}`)
+  ).join(" | ")} |`;
+  const rule = `| ${columns.map((c) => c.align === "right" ? "---:" : "---").join(" | ")} |`;
+  const body = rows2.map(
+    (row) => `| ${columns.map((_, i) => escapeCell(row[i] ?? "")).join(" | ")} |`
+  );
+  return [header, rule, ...body];
+}
+function escapeCell(value) {
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+}
+function heading(text, level = 2) {
+  return `${"#".repeat(level)} ${text}`;
+}
+function code(value) {
+  return `\`${value.replace(/`/g, "\u2018")}\``;
+}
+function moreLine2(total, shown) {
+  const hidden = total - shown;
+  if (hidden <= 0) {
+    return null;
+  }
+  return `_\u2026 ${hidden} more (\`--limit 0\` for all)_`;
 }
 
 // cli/commands/cache.ts
@@ -982,7 +1025,7 @@ function renderText(result, sizeOnly) {
   }
   lines.push("");
   lines.push(
-    ...table2(
+    ...table(
       [
         // Truncated from the right, not the left, because
         // `entryLabel()` has already put the identifying part — the
@@ -1015,7 +1058,7 @@ function renderMarkdown(result) {
     ""
   ];
   lines.push(
-    ...table(
+    ...table2(
       [
         { header: "File" },
         { header: "Size", align: "right" },
@@ -1647,7 +1690,7 @@ function renderText2(result, allThreads, frameLimit) {
     lines.push(...renderThread(thread, allThreads));
     lines.push("");
   }
-  lines.push(moreLine2(result.threadRowCount, result.threads.length));
+  lines.push(moreLine(result.threadRowCount, result.threads.length));
   if (!allThreads && result.threadCount > 1) {
     const others = result.threadCount - 1;
     lines.push(
@@ -1712,7 +1755,7 @@ function renderMarkdown2(result, allThreads) {
   }
   facts.push(["Task", code(`${result.taskId}.${result.retryId}`)]);
   facts.push(["Dump", code(result.minidumpId)]);
-  lines.push(...table([{ header: "Field" }, { header: "Value" }], facts));
+  lines.push(...table2([{ header: "Field" }, { header: "Value" }], facts));
   if (result.hang.looksLikeHang) {
     lines.push("");
     lines.push(
@@ -1805,7 +1848,7 @@ function renderMarkdown3(result) {
       continue;
     }
     lines.push(
-      ...table(
+      ...table2(
         [{ header: "Date" }, { header: "Weekday" }, { header: "Note" }],
         entry.dates.map((date) => [
           date,
@@ -3024,7 +3067,7 @@ function renderText4(result) {
     return joinLines(lines);
   }
   lines.push(
-    ...table2(
+    ...table(
       [
         { header: "occurrences", align: "right" },
         { header: "tests", align: "right" },
@@ -3037,16 +3080,19 @@ function renderText4(result) {
       ])
     )
   );
-  lines.push(moreLine2(result.rowCount, result.rows.length));
+  lines.push(moreLine(result.rowCount, result.rows.length));
   const located = result.rows.filter((row) => locationOf(row) !== null);
   if (located.length > 0) {
     lines.push("");
     lines.push("Where they come from");
-    for (const row of located) {
-      lines.push(
-        `  ${truncate(oneLine(describeRow(row)), 52).padEnd(52)}  ${truncate(locationOf(row), 60)}`
-      );
-    }
+    lines.push(
+      ...labelledLines(
+        located.map((row) => [
+          truncate(oneLine(describeRow(row)), 52),
+          truncate(locationOf(row), 60)
+        ])
+      )
+    );
   }
   const summarized = result.rows.filter(
     (row) => row.componentSummary !== null && componentBlockApplies(result.grouping)
@@ -3054,11 +3100,14 @@ function renderText4(result) {
   if (summarized.length > 0) {
     lines.push("");
     lines.push("Which components");
-    for (const row of summarized) {
-      lines.push(
-        `  ${truncate(oneLine(describeRow(row)), 52).padEnd(52)}  ${truncate(row.componentSummary, 60)}`
-      );
-    }
+    lines.push(
+      ...labelledLines(
+        summarized.map((row) => [
+          truncate(oneLine(describeRow(row)), 52),
+          truncate(row.componentSummary, 60)
+        ])
+      )
+    );
   }
   if (result.rows.length <= 3) {
     for (const row of result.rows) {
@@ -3202,7 +3251,7 @@ function renderMarkdown4(result) {
   }
   const withComponents = componentBlockApplies(result.grouping);
   lines.push(
-    ...table(
+    ...table2(
       [
         { header: "occurrences", align: "right" },
         { header: "tests", align: "right" },
@@ -3219,7 +3268,7 @@ function renderMarkdown4(result) {
       ])
     )
   );
-  lines.push(moreLine(result.rowCount, result.rows.length));
+  lines.push(moreLine2(result.rowCount, result.rows.length));
   lines.push("");
   lines.push(...footerLines(result).map((line) => line.trim()));
   return joinLines(lines);
@@ -4535,8 +4584,8 @@ function renderMarkdownFrom(content) {
   if (content.table === null || content.table.rows.length === 0) {
     lines.push(content.empty);
   } else {
-    lines.push(...table(content.table.columns, content.table.rows));
-    lines.push(moreLine(content.total, content.shown));
+    lines.push(...table2(content.table.columns, content.table.rows));
+    lines.push(moreLine2(content.total, content.shown));
   }
   if (content.epilogue.length > 0) {
     lines.push("");
@@ -4921,6 +4970,10 @@ function render() {
   lines.push("");
   lines.push("  Lists are truncated by default and say so (`\u2026 47 more (--limit 0 for all)`).");
   lines.push("  If a list looks short, check for that line before believing it is complete.");
+  lines.push("");
+  lines.push("  Messages are cut to the terminal width, and the cut takes the end \u2014 which is");
+  lines.push("  often the discriminator. COLUMNS widens it; --full-messages turns it off, as");
+  lines.push("  does --markdown, which never truncates.");
   return joinLines(lines);
 }
 
@@ -6513,8 +6566,8 @@ function renderMarkdownFrom2(content) {
   if (content.table === null || content.table.rows.length === 0) {
     lines.push(content.empty);
   } else {
-    lines.push(...table(content.table.columns, content.table.rows));
-    lines.push(moreLine(content.total, content.shown));
+    lines.push(...table2(content.table.columns, content.table.rows));
+    lines.push(moreLine2(content.total, content.shown));
   }
   if (content.epilogue.length > 0) {
     lines.push("");
@@ -7038,7 +7091,7 @@ function renderMarkdown5(result) {
     lines.push("");
     const ran = row.configs.filter((config) => !config.skipped);
     lines.push(
-      ...table(
+      ...table2(
         [
           { header: "Configuration" },
           { header: "runs", align: "right" },
@@ -7063,7 +7116,7 @@ function renderMarkdown5(result) {
     }
   } else {
     lines.push(
-      ...table(
+      ...table2(
         [
           { header: "Manifest" },
           { header: "runs", align: "right" },
@@ -7080,7 +7133,7 @@ function renderMarkdown5(result) {
         ])
       )
     );
-    lines.push(moreLine(result.rowCount, result.rows.length));
+    lines.push(moreLine2(result.rowCount, result.rows.length));
   }
   lines.push("");
   lines.push(...footerLines2());
@@ -7304,7 +7357,7 @@ function renderMarkdown6(results) {
       columns.push({ header: `vs prior ${prior.dayCount}d`, align: "right" });
     }
     lines.push(
-      ...table(
+      ...table2(
         columns,
         rows(entry).map(
           (row) => prior === null ? [row.label, percent(row.value, 2)] : [row.label, percent(row.value, 2), delta(row.change)]
@@ -8222,7 +8275,7 @@ function renderText7(result, limit) {
     const header = result.recentWindow === null ? "Failing configurations" : `Failing configurations (recent = last ${result.recentWindow.days}d, sized so the sparsest config has ${result.recentWindow.minRuns}+ runs)`;
     lines.push(header);
     lines.push(
-      ...table2(
+      ...table(
         [
           { header: "Configuration" },
           { header: "fail rate", align: "right" },
@@ -8242,7 +8295,7 @@ function renderText7(result, limit) {
         ])
       )
     );
-    lines.push(moreLine2(result.configs.length, shown.length));
+    lines.push(moreLine(result.configs.length, shown.length));
   } else if (totals.failCount + totals.timeoutCount + totals.crashCount > 0) {
     lines.push("");
     lines.push(
@@ -8261,7 +8314,7 @@ function renderText7(result, limit) {
         `  ${String(entry.count).padStart(5)}x  ${entry.type.padEnd(7)} ${truncate(oneLine3(entry.message), 92)}`
       );
     }
-    lines.push(moreLine2(result.issues.length, shown.length));
+    lines.push(moreLine(result.issues.length, shown.length));
   } else if (result.configFilter !== null) {
     lines.push("");
     lines.push("Issues");
@@ -8280,7 +8333,7 @@ function renderText7(result, limit) {
     lines.push("Durations (ms, from passing runs)");
     const shown = applyLimit(result.durations, limit);
     lines.push(
-      ...table2(
+      ...table(
         [
           { header: "Configuration" },
           { header: "runs", align: "right" },
@@ -8299,7 +8352,7 @@ function renderText7(result, limit) {
         ])
       )
     );
-    lines.push(moreLine2(result.durations.length, shown.length));
+    lines.push(moreLine(result.durations.length, shown.length));
   }
   if (result.history !== void 0) {
     lines.push("");
@@ -8323,7 +8376,7 @@ function renderText7(result, limit) {
         lines.push(`    ${row.crashCommand}`);
       }
     }
-    lines.push(moreLine2(result.taskIds.length, shown.length));
+    lines.push(moreLine(result.taskIds.length, shown.length));
     const crashRows = shown.filter((row) => row.status.startsWith("CRASH"));
     if (crashRows.length > 0 && crashRows.every((row) => row.minidumpId === void 0)) {
       lines.push(
@@ -8342,7 +8395,7 @@ function renderText7(result, limit) {
         lines.push(`    test profile:   ${row.testProfile}`);
       }
     }
-    lines.push(moreLine2(result.profiles.length, shown.length));
+    lines.push(moreLine(result.profiles.length, shown.length));
     if (shown.every((row) => row.testProfile === void 0)) {
       lines.push(
         "  (these are resource-usage profiles; per-test profiles: fx-tests try <rev> --profiles)"
@@ -8362,7 +8415,7 @@ function renderCoverageText(coverage, limit) {
   lines.push("Coverage");
   const shown = applyLimit(coverage.configs, limit);
   lines.push(
-    ...table2(
+    ...table(
       [
         { header: "Configuration" },
         { header: "runs", align: "right" },
@@ -8381,7 +8434,7 @@ function renderCoverageText(coverage, limit) {
       ])
     )
   );
-  lines.push(moreLine2(coverage.configs.length, shown.length));
+  lines.push(moreLine(coverage.configs.length, shown.length));
   for (const config of shown) {
     for (const skip of config.skipMessages) {
       lines.push(`      ${config.jobName}: ${truncate(oneLine3(skip.message), 80)}`);
@@ -8463,7 +8516,7 @@ function renderExecutionsText(executions) {
   const { failures, runs, failRate } = executions.modeAxis;
   lines.push("  By execution mode");
   lines.push(
-    ...table2(
+    ...table(
       [
         { header: "mode" },
         { header: "failures", align: "right" },
@@ -8519,7 +8572,7 @@ function renderMarkdown7(result, limit) {
   }
   lines.push("");
   lines.push(
-    ...table(
+    ...table2(
       [
         { header: "runs", align: "right" },
         { header: "pass", align: "right" },
@@ -8557,7 +8610,7 @@ function renderMarkdown7(result, limit) {
     lines.push("");
     const shown = applyLimit(result.configs, limit);
     lines.push(
-      ...table(
+      ...table2(
         [
           { header: "Configuration" },
           { header: "fail rate", align: "right" },
@@ -8574,7 +8627,7 @@ function renderMarkdown7(result, limit) {
         ])
       )
     );
-    lines.push(moreLine(result.configs.length, shown.length));
+    lines.push(moreLine2(result.configs.length, shown.length));
   }
   if (result.issues.length > 0) {
     lines.push("");
@@ -8582,7 +8635,7 @@ function renderMarkdown7(result, limit) {
     lines.push("");
     const shown = applyLimit(result.issues, limit);
     lines.push(
-      ...table(
+      ...table2(
         [
           { header: "count", align: "right" },
           { header: "kind" },
@@ -8591,7 +8644,7 @@ function renderMarkdown7(result, limit) {
         shown.map((entry) => [String(entry.count), entry.type, oneLine3(entry.message)])
       )
     );
-    lines.push(moreLine(result.issues.length, shown.length));
+    lines.push(moreLine2(result.issues.length, shown.length));
   } else if (result.configFilter !== null) {
     lines.push("");
     lines.push(heading("Issues"));
@@ -8609,7 +8662,7 @@ function renderMarkdown7(result, limit) {
     } else {
       const shown = applyLimit(result.coverage.configs, limit);
       lines.push(
-        ...table(
+        ...table2(
           [
             { header: "Configuration" },
             { header: "runs", align: "right" },
@@ -8628,11 +8681,11 @@ function renderMarkdown7(result, limit) {
           ])
         )
       );
-      lines.push(moreLine(result.coverage.configs.length, shown.length));
+      lines.push(moreLine2(result.coverage.configs.length, shown.length));
       if (result.coverage.scheduledPlatforms.length > 0) {
         lines.push("");
         lines.push(
-          ...table(
+          ...table2(
             [
               { header: "Platform scheduled on" },
               { header: "ran", align: "right" },
@@ -9885,7 +9938,7 @@ function renderText8(result, limit, permaOnly, otherJobs, allMessages) {
     for (const job of shown) {
       lines.push(`  ${job.result.padEnd(10)} ${job.jobName}  ${job.taskId}`);
     }
-    lines.push(moreLine2(result.otherFailedJobs.length, shown.length));
+    lines.push(moreLine(result.otherFailedJobs.length, shown.length));
   } else if (result.otherFailedJobs.length > 0) {
     lines.push("");
     lines.push(
@@ -10006,7 +10059,7 @@ function section(title, failures, description, limit, allMessages) {
       }
     }
   }
-  const more = moreLine2(failures.length, shown.length);
+  const more = moreLine(failures.length, shown.length);
   if (more !== null) {
     lines.push(more);
   }
@@ -10060,7 +10113,7 @@ function compactSection(title, failures, description, limit) {
     }
   }
   lines.push(...fullPathLines(rendered.shortenedPaths));
-  const more = moreLine2(failures.length, shown.length);
+  const more = moreLine(failures.length, shown.length);
   if (more !== null) {
     lines.push(more);
   }
@@ -10100,7 +10153,7 @@ function renderMarkdown8(result, limit, permaOnly, otherJobs) {
     }
     const shown = applyLimit(failures, limit);
     lines.push(
-      ...table(
+      ...table2(
         [
           // The ranking column, so a table pasted into a bug shows
           // what its order means.
@@ -10134,14 +10187,14 @@ function renderMarkdown8(result, limit, permaOnly, otherJobs) {
         ])
       )
     );
-    lines.push(moreLine(failures.length, shown.length));
+    lines.push(moreLine2(failures.length, shown.length));
   }
   if (otherJobs && result.otherFailedJobs.length > 0) {
     lines.push("");
     lines.push(heading(`Other failed jobs (${result.otherFailedJobs.length})`));
     lines.push("");
     lines.push(
-      ...table(
+      ...table2(
         [{ header: "Result" }, { header: "Job" }, { header: "Task" }],
         applyLimit(result.otherFailedJobs, limit).map((job) => [
           job.result,
@@ -10317,6 +10370,8 @@ async function run(options) {
       return ExitCode.Upstream;
     }
     throw error;
+  } finally {
+    resetTruncation();
   }
 }
 async function dispatch(options) {
@@ -10366,6 +10421,7 @@ async function dispatch(options) {
       throw usageError(rejected.message, rejected.hint);
     }
   }
+  configureTruncation({ format: globals.format, fullMessages: globals.fullMessages });
   if (globals.dataSource === "local" && options.source === void 0) {
     throw usageError(
       "--data-source local is not supported by the CLI",

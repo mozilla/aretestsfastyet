@@ -56,6 +56,8 @@ export interface GlobalOptions {
     progress: boolean;
     /** True when a coding agent is the caller. See `isAgentCaller`. */
     agent: boolean;
+    /** Print messages and paths in full; the cut takes the discriminating tail. */
+    fullMessages: boolean;
 }
 
 /**
@@ -116,6 +118,10 @@ export const GLOBAL_OPTION_SPECS: OptionSpecs = {
         describe:
             'Write progress to stderr even when a coding agent is the caller ' +
             '(off by default there). --quiet wins over this.',
+    },
+    'full-messages': {
+        type: 'boolean',
+        describe: 'Do not cut messages or paths to the terminal width. Implied by --markdown.',
     },
     help: { type: 'boolean', describe: 'Show this help.' },
 };
@@ -183,6 +189,7 @@ export function readGlobalOptions(
         quiet: boolOption(args, 'quiet'),
         progress: boolOption(args, 'progress'),
         agent: isAgentCaller(env),
+        fullMessages: boolOption(args, 'full-messages'),
     };
 }
 

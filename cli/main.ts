@@ -22,6 +22,7 @@ import {
 } from './cache.ts';
 import type { CommandContext, OutputStreams } from './context.ts';
 import { wantsProgress } from './context.ts';
+import { configureTruncation, resetTruncation } from './format/text.ts';
 import { CliError, ExitCode, type ExitCodeValue, usageError } from './errors.ts';
 import { CACHE_OPTIONS, runCache } from './commands/cache.ts';
 import { CRASH_OPTIONS, runCrash } from './commands/crash.ts';
@@ -339,6 +340,10 @@ export async function run(options: RunOptions): Promise<ExitCodeValue> {
             return ExitCode.Upstream;
         }
         throw error;
+    } finally {
+        // Load-bearing: `run()` is called many times in one process, and left
+        // set, a `--markdown` run turns truncation off for every run after it.
+        resetTruncation();
     }
 }
 
@@ -405,6 +410,8 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
             throw usageError(rejected.message, rejected.hint);
         }
     }
+
+    configureTruncation({ format: globals.format, fullMessages: globals.fullMessages });
 
     if (globals.dataSource === 'local' && options.source === undefined) {
         // Deliberately refused rather than silently reading `./data/`: the

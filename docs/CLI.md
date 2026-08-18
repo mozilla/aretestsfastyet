@@ -180,6 +180,7 @@ the harness file does not hold it, and nothing matches at all.
 | `--no-cache` | off | Ignore and do not write the cache. |
 | `--quiet` | off | Suppress progress output on stderr. |
 | `--progress` | off | Write progress even when a coding agent is the caller. See below. |
+| `--full-messages` | off | Do not cut messages, signatures or paths to the terminal width. Implied by `--markdown`. |
 | `--help`, `--version` | | |
 
 ### Progress is off for agent callers
@@ -205,6 +206,20 @@ while one call site adds `--quiet` is a legitimate shape.
 permission notice and `2 of 5 jobs were killed for exceeding their maximum
 duration` are the reasons a result is a subset, so an agent needs them more than
 a human does, not less. Only progress is affected.
+
+### How wide the output may be
+
+Text truncates a message to fit the columns beside it, and the cut lands on
+exactly the discriminator — the property name, the `null`, a diagnostic marker's
+`uri=` payload. Three rules keep that from losing the answer:
+
+- **`--markdown` never truncates.** It is a file format, not a terminal view. The
+  documented use is pasting into a bug, so a truncated paste is unusable.
+- **`--full-messages` never truncates**, in text too.
+- **Otherwise the width follows the terminal**: `COLUMNS` if set, then
+  `process.stdout.columns`, then 90. `COLUMNS` is read first because
+  `process.stdout.columns` is `undefined` whenever stdout is a pipe, which is
+  every agent invocation and every `> file`.
 
 ### `--day` and the window
 

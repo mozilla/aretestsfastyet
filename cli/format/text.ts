@@ -66,6 +66,12 @@ export interface Column {
  */
 export const PATH_COLUMN_CAP = 128;
 
+// `--full-messages` opts out, so a long path widens its row and no `full paths`
+// recovery block is emitted — nothing was shortened to recover.
+function pathColumnCap(): number {
+    return widthScale === null ? Number.POSITIVE_INFINITY : PATH_COLUMN_CAP;
+}
+
 /**
  * A rendered table plus the full values of whatever its path columns shortened.
  *
@@ -122,7 +128,7 @@ export function tableWithPaths(
     const pathWidths = columns.map((column, i) =>
         column.path === true
             ? Math.min(
-                  PATH_COLUMN_CAP,
+                  pathColumnCap(),
                   Math.max(0, ...rows.map((row) => (row[i] ?? '').length))
               )
             : undefined
@@ -192,6 +198,18 @@ function headerLabel(column: Column): string {
 }
 
 /**
+ * Two columns with no header, the left padded to the widest cell — measured, not
+ * a constant, which only lines up while the truncation width is fixed.
+ */
+export function labelledLines(
+    rows: readonly (readonly [string, string])[],
+    indent = '  '
+): string[] {
+    const width = Math.max(0, ...rows.map(([label]) => label.length));
+    return rows.map(([label, value]) => `${indent}${label.padEnd(width)}  ${value}`.trimEnd());
+}
+
+/**
  * The full-path recovery block: the paths a table shortened, ready to copy.
  *
  * The table keeps the basename so rows can be told apart and grepped for, but
@@ -233,12 +251,74 @@ export function tableSection(
     return lines;
 }
 
-/** Truncates with a trailing `…`, so the cut is visible. */
+/**
+ * The width every `truncate()` budget was written for; they are scaled against
+ * the real width rather than rewritten, each encoding its line's other columns.
+ */
+const BASELINE_WIDTH = 90;
+
+/** A floor, so a very narrow window cuts messages to something still readable. */
+const MIN_WIDTH = 60;
+
+/**
+ * The factor every `truncate()` budget is multiplied by, or `null` for none.
+ *
+ * Module state, so this **assumes one `run()` at a time**: overlapping ones share
+ * it and a text command would truncate a `--markdown` run's cells. To lift that,
+ * move this and `artifactHits` in `cli/main.ts` into the context.
+ */
+let widthScale: number | null = 1;
+
+/** Configures truncation for this invocation. */
+export function configureTruncation(options: {
+    format: 'text' | 'json' | 'markdown';
+    fullMessages: boolean;
+}): void {
+    if (options.format !== 'text' || options.fullMessages) {
+        widthScale = null;
+        return;
+    }
+    widthScale = Math.max(MIN_WIDTH, terminalWidth()) / BASELINE_WIDTH;
+}
+
+/**
+ * The terminal width to scale to: `COLUMNS`, then the TTY, then the baseline.
+ *
+ * `COLUMNS` comes first because `process.stdout.columns` is `undefined` whenever
+ * stdout is a pipe, which is every agent invocation and every `> file`.
+ */
+function terminalWidth(): number {
+    const fromEnv = Number(process.env['COLUMNS']);
+    if (Number.isFinite(fromEnv) && fromEnv > 0) {
+        return fromEnv;
+    }
+    const fromTty = process.stdout.columns;
+    if (typeof fromTty === 'number' && fromTty > 0) {
+        return fromTty;
+    }
+    return BASELINE_WIDTH;
+}
+
+/** Resets truncation to the default. Called per invocation by `run()`. */
+export function resetTruncation(): void {
+    widthScale = 1;
+}
+
+/** Scales a column budget to the configured width. `0` means no limit. */
+function scaled(maxWidth: number): number {
+    if (widthScale === null || maxWidth <= 0) {
+        return 0;
+    }
+    return Math.max(1, Math.round(maxWidth * widthScale));
+}
+
+/** Truncates with a trailing `…`. `maxWidth` is a `BASELINE_WIDTH` budget. */
 export function truncate(value: string, maxWidth: number): string {
-    if (maxWidth <= 0 || value.length <= maxWidth) {
+    const limit = scaled(maxWidth);
+    if (limit <= 0 || value.length <= limit) {
         return value;
     }
-    return `${value.slice(0, Math.max(0, maxWidth - 1))}…`;
+    return `${value.slice(0, Math.max(0, limit - 1))}…`;
 }
 
 /**

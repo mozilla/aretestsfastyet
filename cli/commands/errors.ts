@@ -79,6 +79,7 @@ import {
     dateWithWeekday,
     isWeekend,
     joinLines,
+    labelledLines,
     moreLine,
     table,
     truncate,
@@ -570,12 +571,14 @@ function renderText(result: ErrorsJson): string {
     if (located.length > 0) {
         lines.push('');
         lines.push('Where they come from');
-        for (const row of located) {
-            lines.push(
-                `  ${truncate(oneLine(describeRow(row)), 52).padEnd(52)}  ` +
-                    `${truncate(locationOf(row)!, 60)}`
-            );
-        }
+        lines.push(
+            ...labelledLines(
+                located.map((row) => [
+                    truncate(oneLine(describeRow(row)), 52),
+                    truncate(locationOf(row)!, 60),
+                ])
+            )
+        );
     }
 
     // Which components the rows land in, in the same shape and for the same
@@ -592,12 +595,14 @@ function renderText(result: ErrorsJson): string {
     if (summarized.length > 0) {
         lines.push('');
         lines.push('Which components');
-        for (const row of summarized) {
-            lines.push(
-                `  ${truncate(oneLine(describeRow(row)), 52).padEnd(52)}  ` +
-                    `${truncate(row.componentSummary!, 60)}`
-            );
-        }
+        lines.push(
+            ...labelledLines(
+                summarized.map((row) => [
+                    truncate(oneLine(describeRow(row)), 52),
+                    truncate(row.componentSummary!, 60),
+                ])
+            )
+        );
     }
 
     // `CLI.md`'s "is this specific to one test, or everywhere?" view, only for

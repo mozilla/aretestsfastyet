@@ -2015,6 +2015,10 @@ test('a long failure message is truncated in the text table', async () => {
     // try path, which is where a real stack-trace-bearing message arrives.
     const streams = captureStreams();
     const longMessage = `LEADING ${'x'.repeat(400)} TRAILING`;
+    // Pinned: truncation follows `COLUMNS`, so the assertions below would
+    // otherwise depend on the terminal the suite runs in.
+    const previousColumns = process.env['COLUMNS'];
+    process.env['COLUMNS'] = '90';
     await run({
         argv: ['try', 'abcdef123456'],
         streams,
@@ -2027,11 +2031,74 @@ test('a long failure message is truncated in the text table', async () => {
             ]),
         }),
     });
+    if (previousColumns === undefined) {
+        delete process.env['COLUMNS'];
+    } else {
+        process.env['COLUMNS'] = previousColumns;
+    }
     assert.match(streams.stdout, /LEADING/, 'the start of the message survives');
     assert.doesNotMatch(streams.stdout, /TRAILING/, 'the end is cut');
     assert.match(streams.stdout, /…/, 'and the cut is marked');
     for (const line of streams.stdout.split('\n')) {
         assert.ok(line.length < 300, `no line may run away: ${line.length} chars`);
+    }
+});
+
+test('truncation follows COLUMNS in text, and never applies to markdown', async () => {
+    const longMessage = `LEADING ${'x'.repeat(400)} TRAILING`;
+    const runWith = async (argv: string[], columns: string | undefined): Promise<string> => {
+        const previous = process.env['COLUMNS'];
+        if (columns === undefined) {
+            delete process.env['COLUMNS'];
+        } else {
+            process.env['COLUMNS'] = columns;
+        }
+        const streams = captureStreams();
+        await run({
+            argv,
+            streams,
+            source: fixtureSource(),
+            cache: diskCache({ directory: join(tmpdir(), 'fx-tests-never-used'), ttlMs: 0 }),
+            treeherder: fakeTreeherder([job('test-linux/opt-xpcshell', 'TASK1', 'testfailed')]),
+            fetchUrl: profileFetcher({
+                TASK1: profileWith([
+                    {
+                        type: 'Test',
+                        test: TEST_PATH,
+                        status: 'FAIL',
+                        message: longMessage,
+                        start: 1,
+                        end: 2,
+                    },
+                ]),
+            }),
+        });
+        if (previous === undefined) {
+            delete process.env['COLUMNS'];
+        } else {
+            process.env['COLUMNS'] = previous;
+        }
+        return streams.stdout;
+    };
+
+    const narrow = await runWith(['try', 'abcdef123456'], '90');
+    const wide = await runWith(['try', 'abcdef123456'], '400');
+    // The longest run of `x`, not the first: the output contains unrelated
+    // single `x` characters and matching those measures nothing.
+    const kept = (out: string): number =>
+        Math.max(0, ...[...out.matchAll(/x+/g)].map((match) => match[0].length));
+    assert.ok(kept(narrow) > 0, 'the narrow run must still show part of the message');
+    assert.ok(
+        kept(wide) > kept(narrow),
+        `COLUMNS must widen the message: ${kept(narrow)} at 90 vs ${kept(wide)} at 400`
+    );
+
+    for (const argv of [
+        ['try', 'abcdef123456', '--full-messages'],
+        ['try', 'abcdef123456', '--markdown'],
+    ]) {
+        const out = await runWith(argv, '90');
+        assert.match(out, /TRAILING/, `${argv.join(' ')} must not cut the message`);
     }
 });
 
