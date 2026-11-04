@@ -29,6 +29,7 @@ import {
     checkStackwalk,
     checkStats,
     checkTryPush,
+    checkWorkerLifecycle,
     type FileContext,
 } from '../tools/validate/formats.ts';
 
@@ -44,6 +45,9 @@ function checkerFor(name: string): { check: Check; ctx: FileContext } | undefine
 
     if (name === 'index.json') {
         return { check: checkIndex, ctx };
+    }
+    if (name === 'worker-lifecycle.json') {
+        return { check: checkWorkerLifecycle, ctx };
     }
     // Both manifests fixtures are the same shape, and are checked by the same
     // function for that reason. `manifests-pathology.json` is the manifests
