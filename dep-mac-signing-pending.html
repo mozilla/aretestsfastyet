@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dep Mac Signing Pending</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="shared.js"></script>
+    <script src="dashboards.js"></script>
+    <script src="common-ui.js"></script>
+    <link rel="icon" href="favicon-orange.svg">
+    <link rel="stylesheet" href="shared.css">
+    <style>
+        .charts-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .charts-row.single-col { grid-template-columns: 1fr; }
+
+        .chart-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 12px;
+        }
+
+        .loading { color: #888; padding: 20px; font-style: italic; }
+
+        /* Summary table */
+        table.summary {
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+            margin-bottom: 24px;
+            width: 100%;
+            max-width: 820px;
+        }
+        table.summary th, table.summary td { padding: 8px 14px; text-align: right; }
+        table.summary th:first-child, table.summary td:first-child { text-align: left; }
+        table.summary thead th {
+            background: #f5f5f7; cursor: pointer; user-select: none; white-space: nowrap;
+        }
+        table.summary thead th.active { color: #0060df; }
+        table.summary tbody tr:nth-child(even) { background: #fafafa; }
+        table.summary td.wt { font-weight: 600; }
+        .swatch {
+            display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+            margin-right: 6px; vertical-align: middle;
+        }
+
+        #hover-tooltip {
+            position: fixed;
+            background: #2a2a2a;
+            color: white;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 13px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.7;
+            pointer-events: auto;
+            z-index: 1000;
+            display: none;
+            white-space: nowrap;
+        }
+        #hover-tooltip a, #hover-tooltip span { color: inherit; text-decoration: none; display: block; }
+        #hover-tooltip a { color: #7ecfff; }
+        #hover-tooltip a:hover { text-decoration: underline; }
+        #hover-tooltip .tt-sep { border-top: 1px solid #555; margin: 4px 0; }
+    </style>
+</head>
+<body>
+    <div id="hover-tooltip"></div>
+    <div class="container">
+        <h1>Dep Mac Signing Pending</h1>
+
+        <p>Time each <code>dep-*-signing-mac14m2</code> task run spent <b>pending</b> —
+            the gap between when Taskcluster <i>scheduled</i> the run and when a worker
+            <i>started</i> it (<code>started − scheduled</code>). A growing pending time means
+            tasks are waiting longer for a signing worker to pick them up. Data comes from
+            <code>mozdata.fxci.task_runs</code> / <code>task_definitions</code> via
+            <a href="https://sql.telemetry.mozilla.org/" target="_blank">STMO</a>
+            (queries refresh every 6&nbsp;hours).</p>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <!-- ── Summary ─────────────────────────────────────────────────── -->
+        <h2 id="summary">Summary — last 14 days</h2>
+        <div id="summary-table"><div class="loading">Loading…</div></div>
+
+        <!-- ── Percentile trends ───────────────────────────────────────── -->
+        <h2 id="trends">Pending-time percentiles — last 90 days</h2>
+        <p>Daily percentiles per worker pool. p50 is the typical wait; p90/p99 expose the tail
+            (the unlucky tasks that waited longest).</p>
+        <div class="charts-row single-col">
+            <div class="chart-container" id="p50-chart"><div class="loading">Loading…</div></div>
+            <div class="chart-container" id="p90-chart"><div class="loading">Loading…</div></div>
+            <div class="chart-container" id="p99-chart"><div class="loading">Loading…</div></div>
+            <div class="chart-container" id="count-chart"><div class="loading">Loading…</div></div>
+        </div>
+
+        <!-- ── Per-task scatter ────────────────────────────────────────── -->
+        <h2 id="per-task">Per-task pending time — last 14 days</h2>
+        <p>Every task run as a point (hover for the task, click to open it in Taskcluster).
+            Use it to spot spikes and outliers.</p>
+        <div class="charts-row single-col">
+            <div class="chart-container" id="scatter-chart"><div class="loading">Loading…</div></div>
+        </div>
+
+        <!-- ── Distribution ────────────────────────────────────────────── -->
+        <h2 id="distribution">Distribution — last 14 days</h2>
+        <p>How pending times are distributed per worker pool (most runs start almost
+            immediately, so the mass sits near zero; the tail is what matters).</p>
+        <div class="charts-row single-col">
+            <div class="chart-container" id="histogram-chart"><div class="loading">Loading…</div></div>
+        </div>
+    </div>
+
+    <script>
+        const REDASH = 'https://sql.telemetry.mozilla.org/api/queries';
+        // Per-query results API keys (query-scoped — they expose only that query's cached
+        // results, never the account). Same convention as reviewbot.html.
+        const QUERIES = {
+            daily: { id: 122955, key: 'sUcnjsRaRop4EEVPVSZSlvw3q42irzXXFrceY6BS' },   // dep mac signing pending daily
+            runs:  { id: 122956, key: 'xb7c4hKS2hoHYmfcIcaOKEoqoQjYathwkrvQzTyK'  },   // dep mac signing pending runs
+        };
+
+        const TC = 'https://firefox-ci-tc.services.mozilla.com';
+
+        // Fixed order + colors so a worker pool has the same color in every chart.
+        const WORKER_TYPES = [
+            'dep-gecko-signing-mac14m2',
+            'dep-adhoc-signing-mac14m2',
+            'dep-comm-signing-mac14m2',
+            'dep-enterprise-signing-mac14m2',
+            'dep-mozillavpn-signing-mac14m2',
+        ];
+        const WORKER_COLORS = {
+            'dep-gecko-signing-mac14m2':      '#1f77b4',
+            'dep-adhoc-signing-mac14m2':      '#ff7f0e',
+            'dep-comm-signing-mac14m2':       '#2ca02c',
+            'dep-enterprise-signing-mac14m2': '#9467bd',
+            'dep-mozillavpn-signing-mac14m2': '#17becf',
+        };
+        // Short legend/label form (the "-signing-mac14m2" suffix is common to all).
+        const shortWt = wt => wt.replace('-signing-mac14m2', '');
+
+        // ── Fetch + error plumbing (same shape as reviewbot.html) ───────
+        function resultsUrl(q) { return `${REDASH}/${q.id}/results.json?api_key=${q.key}`; }
+        async function fetchRows(q) {
+            const response = await fetch(resultsUrl(q));
+            if (!response.ok) throw new Error(`HTTP ${response.status} for query ${q.id}`);
+            return (await response.json()).query_result.data.rows;
+        }
+        function showError(msg) {
+            const el = document.getElementById('error');
+            el.textContent = `Error loading data: ${msg}`;
+            el.style.display = 'block';
+        }
+        function clearLoading(id) {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = '';
+        }
+
+        const PLOTLY_LAYOUT_BASE = {
+            margin: { t: 40, r: 20, b: 60, l: 60 },
+            paper_bgcolor: 'white',
+            plot_bgcolor: 'white',
+            font: { family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
+        };
+        const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
+
+        // ── Hover tooltip (scatter) ─────────────────────────────────────
+        const tooltipEl = document.getElementById('hover-tooltip');
+        let hideTimer = null;
+        function showTooltip(event, html) {
+            clearTimeout(hideTimer);
+            tooltipEl.innerHTML = html;
+            tooltipEl.style.display = 'block';
+            const x = event.clientX + 16, y = event.clientY - 10;
+            const w = tooltipEl.offsetWidth, h = tooltipEl.offsetHeight;
+            tooltipEl.style.left = (x + w > window.innerWidth  ? event.clientX - w - 8 : x) + 'px';
+            tooltipEl.style.top  = (y + h > window.innerHeight ? event.clientY - h - 8 : y) + 'px';
+        }
+        function scheduleHideTooltip() {
+            hideTimer = setTimeout(() => { tooltipEl.style.display = 'none'; }, 220);
+        }
+        tooltipEl.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+        tooltipEl.addEventListener('mouseleave', () => { tooltipEl.style.display = 'none'; });
+
+        // ── TC / profiler links ─────────────────────────────────────────
+        function tcTaskUrl(taskId) { return `${TC}/tasks/${taskId}`; }
+        // Synthesize a profile from the task's live log + resource-usage artifact — works
+        // for any task kind (same endpoint reviewbot.html uses). getProfilerOrigin from shared.js.
+        function taskProfilerUrl(taskId, runId, label) {
+            const base = `${TC}/api/web-server/v1/task/${taskId}/profile`;
+            const name = `${label || 'task'} (${taskId}.${runId})`;
+            return `${getProfilerOrigin()}/from-url/${encodeURIComponent(base)}/marker-chart/?globalTrackOrder=0&profileName=${encodeURIComponent(name)}&thread=0&v=17`;
+        }
+
+        // ── Percentile helpers ──────────────────────────────────────────
+        // Nearest-rank percentile over a numeric array (matches BigQuery APPROX_QUANTILES
+        // closely enough for a summary; the per-day percentiles come from BigQuery directly).
+        function percentile(sorted, q) {
+            if (!sorted.length) return 0;
+            const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1));
+            return sorted[idx];
+        }
+
+        // ── Summary table (from raw runs) ───────────────────────────────
+        let summaryStats = [];   // [{ wt, count, p50, p90, p99, max }]
+        let sortManager = null;
+
+        function renderSummaryTable(runsRows) {
+            const byWt = {};
+            for (const wt of WORKER_TYPES) byWt[wt] = [];
+            for (const r of runsRows) (byWt[r.workerType] ??= []).push(r.pending_seconds);
+
+            summaryStats = WORKER_TYPES.map(wt => {
+                const v = (byWt[wt] || []).slice().sort((a, b) => a - b);
+                return {
+                    wt,
+                    count: v.length,
+                    p50: percentile(v, 0.50),
+                    p90: percentile(v, 0.90),
+                    p99: percentile(v, 0.99),
+                    max: v.length ? v[v.length - 1] : 0,
+                };
+            });
+
+            sortManager = initSortManager({
+                defaultColumn: 'count', defaultAscending: false,
+                onSort: () => drawSummaryTable(),
+            });
+            drawSummaryTable();
+        }
+
+        function drawSummaryTable() {
+            const col = sortManager.getColumn();
+            const asc = sortManager.isAscending();
+            const rows = summaryStats.slice().sort((a, b) => {
+                const av = a[col], bv = b[col];
+                const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
+                return asc ? cmp : -cmp;
+            });
+
+            const cols = [
+                { key: 'wt',    label: 'Worker pool' },
+                { key: 'count', label: 'Runs' },
+                { key: 'p50',   label: 'p50' },
+                { key: 'p90',   label: 'p90' },
+                { key: 'p99',   label: 'p99' },
+                { key: 'max',   label: 'Max' },
+            ];
+            const head = cols.map(c =>
+                `<th data-col="${c.key}" class="${sortManager.getSortClass(c.key)}">` +
+                `${escapeHtml(c.label)} ${sortManager.getSortArrow(c.key)}</th>`).join('');
+            const body = rows.map(s => {
+                const sw = `<span class="swatch" style="background:${WORKER_COLORS[s.wt]}"></span>`;
+                return `<tr>
+                    <td class="wt">${sw}${escapeHtml(shortWt(s.wt))}</td>
+                    <td>${formatNumber(s.count)}</td>
+                    <td>${formatDurationS(s.p50)}</td>
+                    <td>${formatDurationS(s.p90)}</td>
+                    <td>${formatDurationS(s.p99)}</td>
+                    <td>${formatDurationS(s.max)}</td>
+                </tr>`;
+            }).join('');
+
+            const container = document.getElementById('summary-table');
+            container.innerHTML =
+                `<table class="summary"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+            container.querySelectorAll('th[data-col]').forEach(th =>
+                th.addEventListener('click', () => sortManager.sortBy(th.dataset.col)));
+        }
+
+        // ── Percentile trend lines ──────────────────────────────────────
+        function renderTrendChart(chartId, dailyRows, metricKey, title) {
+            clearLoading(chartId);
+            const traces = WORKER_TYPES.map(wt => {
+                const sub = dailyRows.filter(r => r.workerType === wt).sort((a, b) => a.day < b.day ? -1 : 1);
+                return {
+                    type: 'scatter', mode: 'lines+markers', name: shortWt(wt),
+                    x: sub.map(r => r.day),
+                    y: sub.map(r => r[metricKey]),
+                    line: { color: WORKER_COLORS[wt], width: 1.5 },
+                    marker: { size: 3 },
+                    hovertemplate: `%{x}<br>${shortWt(wt)}: %{y}s<extra></extra>`,
+                };
+            });
+            Plotly.newPlot(chartId, traces, {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: title, font: { size: 14 } },
+                xaxis: { type: 'date', title: { text: 'Day' } },
+                yaxis: { title: { text: 'Pending (s)' }, rangemode: 'tozero' },
+                legend: { orientation: 'h', y: -0.25, font: { size: 11 } },
+                hovermode: 'closest',
+            }, PLOTLY_CONFIG);
+        }
+
+        function renderCountChart(chartId, dailyRows) {
+            clearLoading(chartId);
+            const traces = WORKER_TYPES.map(wt => {
+                const sub = dailyRows.filter(r => r.workerType === wt).sort((a, b) => a.day < b.day ? -1 : 1);
+                return {
+                    type: 'bar', name: shortWt(wt),
+                    x: sub.map(r => r.day),
+                    y: sub.map(r => r.run_count),
+                    marker: { color: WORKER_COLORS[wt] },
+                };
+            });
+            Plotly.newPlot(chartId, traces, {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Task runs per day', font: { size: 14 } },
+                barmode: 'stack',
+                xaxis: { type: 'date', title: { text: 'Day' } },
+                yaxis: { title: { text: 'Runs' } },
+                legend: { orientation: 'h', y: -0.25, font: { size: 11 } },
+            }, PLOTLY_CONFIG);
+        }
+
+        function renderTrends(dailyRows) {
+            renderTrendChart('p50-chart', dailyRows, 'p50_s', 'p50 pending time per day');
+            renderTrendChart('p90-chart', dailyRows, 'p90_s', 'p90 pending time per day');
+            renderTrendChart('p99-chart', dailyRows, 'p99_s', 'p99 pending time per day');
+            renderCountChart('count-chart', dailyRows);
+        }
+
+        // ── Per-task scatter ────────────────────────────────────────────
+        function renderScatter(runsRows) {
+            const chartId = 'scatter-chart';
+            clearLoading(chartId);
+            if (!runsRows.length) {
+                document.getElementById(chartId).innerHTML = '<p class="loading">No data.</p>';
+                return;
+            }
+            const traces = WORKER_TYPES.map(wt => {
+                const sub = runsRows.filter(r => r.workerType === wt);
+                return {
+                    type: 'scattergl', mode: 'markers', name: shortWt(wt),
+                    x: sub.map(r => r.started),
+                    y: sub.map(r => r.pending_seconds),
+                    marker: { size: 5, opacity: 0.6, color: WORKER_COLORS[wt] },
+                    customdata: sub.map(r => ({
+                        taskId: r.task_id, runId: r.run_id ?? 0,
+                        wt, pending: r.pending_seconds, started: r.started,
+                    })),
+                    hoverinfo: 'none',
+                };
+            });
+            Plotly.newPlot(chartId, traces, {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Pending time per task run', font: { size: 14 } },
+                xaxis: { type: 'date', title: { text: 'Started' } },
+                yaxis: { title: { text: 'Pending (s)' }, rangemode: 'tozero' },
+                legend: { orientation: 'h', y: -0.2, font: { size: 11 } },
+                hovermode: 'closest',
+            }, PLOTLY_CONFIG);
+
+            const el = document.getElementById(chartId);
+            const drag = el.getElementsByClassName('nsewdrag')[0];
+            el.on('plotly_hover', function(data) {
+                if (drag) drag.style.cursor = 'pointer';
+                if (!data.points.length) return;
+                const cd = data.points[0].customdata;
+                const when = new Date(cd.started).toLocaleString();
+                showTooltip(data.event,
+                    `<span><b>${escapeHtml(shortWt(cd.wt))}</b></span>` +
+                    `<span>${when} — pending ${formatDurationS(cd.pending)}</span>` +
+                    `<div class="tt-sep"></div>` +
+                    `<a href="${taskProfilerUrl(cd.taskId, cd.runId, cd.wt)}" target="_blank">→ Profiler</a>` +
+                    `<a href="${tcTaskUrl(cd.taskId)}" target="_blank">→ TC Task ${escapeHtml(cd.taskId)}</a>`);
+            });
+            el.on('plotly_unhover', function() {
+                if (drag) drag.style.cursor = '';
+                scheduleHideTooltip();
+            });
+            el.on('plotly_click', function(data) {
+                if (!data.points.length) return;
+                window.open(tcTaskUrl(data.points[0].customdata.taskId), '_blank');
+            });
+        }
+
+        // ── Distribution histogram ──────────────────────────────────────
+        function renderHistogram(runsRows) {
+            const chartId = 'histogram-chart';
+            clearLoading(chartId);
+            if (!runsRows.length) {
+                document.getElementById(chartId).innerHTML = '<p class="loading">No data.</p>';
+                return;
+            }
+            const traces = WORKER_TYPES.map(wt => ({
+                type: 'histogram', name: shortWt(wt),
+                x: runsRows.filter(r => r.workerType === wt).map(r => r.pending_seconds),
+                marker: { color: WORKER_COLORS[wt] },
+                opacity: 0.6,
+                hovertemplate: `${shortWt(wt)}<br>%{x}s: %{y} runs<extra></extra>`,
+            }));
+            Plotly.newPlot(chartId, traces, {
+                ...PLOTLY_LAYOUT_BASE,
+                title: { text: 'Pending-time distribution', font: { size: 14 } },
+                barmode: 'overlay',
+                xaxis: { title: { text: 'Pending (s)' } },
+                yaxis: { title: { text: 'Runs' } },
+                legend: { orientation: 'h', y: -0.25, font: { size: 11 } },
+            }, PLOTLY_CONFIG);
+        }
+
+        // ── Bootstrap ───────────────────────────────────────────────────
+        async function loadData() {
+            const errs = [];
+            const [dailyRes, runsRes] = await Promise.allSettled([
+                fetchRows(QUERIES.daily),
+                fetchRows(QUERIES.runs),
+            ]);
+
+            if (dailyRes.status === 'fulfilled') {
+                try { renderTrends(dailyRes.value); } catch (e) { errs.push(e); }
+            } else { errs.push(dailyRes.reason); }
+
+            if (runsRes.status === 'fulfilled') {
+                for (const fn of [renderSummaryTable, renderScatter, renderHistogram]) {
+                    try { fn(runsRes.value); } catch (e) { errs.push(e); }
+                }
+            } else { errs.push(runsRes.reason); }
+
+            if (errs.length) showError(errs.map(e => e?.message || e).join('; '));
+        }
+
+        loadData();
+    </script>
+</body>
+</html>
