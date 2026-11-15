@@ -33,12 +33,22 @@ try {
     process.exit(1);
 }
 
+// The build stamps its own time into `--version`; rebuilding with the
+// committed stamp is what lets the comparison stay byte for byte.
+const committedVersion = execFileSync(process.execPath, [committed, '--version'], {
+    encoding: 'utf8',
+}).trim();
+
 const scratch = mkdtempSync(join(tmpdir(), 'fx-tests-bundle-'));
 try {
     execFileSync(
         process.execPath,
         ['--experimental-strip-types', join(root, 'tools', 'build-cli.ts')],
-        { cwd: root, env: { ...process.env, FX_TESTS_BUILD_OUT: scratch }, stdio: 'pipe' }
+        {
+            cwd: root,
+            env: { ...process.env, FX_TESTS_BUILD_OUT: scratch, FX_TESTS_BUILD_VERSION: committedVersion },
+            stdio: 'pipe',
+        }
     );
     const rebuilt = readFileSync(join(scratch, 'fx-tests.js'));
     if (!rebuilt.equals(current)) {

@@ -39,6 +39,20 @@ const outFile = join(outDir, 'fx-tests.js');
 
 await mkdir(outDir, { recursive: true });
 
+/**
+ * `--version`: when the bundle was built, to the minute, in UTC.
+ *
+ * Not the date of the latest commit, which would be the natural choice: the
+ * bundle is committed, so it is built before its own commit exists and would
+ * name the one before. `tools/check-bundle-fresh.ts` passes the committed
+ * bundle's stamp back in `FX_TESTS_BUILD_VERSION`, so its rebuild stays
+ * byte-identical.
+ */
+const builtAt = new Date().toISOString();
+const buildVersion =
+    process.env['FX_TESTS_BUILD_VERSION'] ??
+    `${builtAt.slice(0, 10).replaceAll('-', '.')} ${builtAt.slice(11, 16)} UTC`;
+
 const result = await build({
     entryPoints: [join(root, 'cli', 'bin', 'fx-tests.ts')],
     outfile: outFile,
@@ -51,6 +65,7 @@ const result = await build({
     // external. If one ever appears, this is where it would be listed, and
     // leaving it out would silently inline someone else's package.
     external: [],
+    define: { __FX_TESTS_VERSION__: JSON.stringify(buildVersion) },
     // No shebang banner: `cli/bin/fx-tests.ts` already starts with one and
     // esbuild preserves it, so adding a banner produced a file with two —
     // which Node rejects, because only the first line may be a shebang. The

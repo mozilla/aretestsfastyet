@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+// cli/main.ts
+import { execFileSync } from "node:child_process";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
 // lib/sources/treeherder.ts
 var TREEHERDER_ROOT = "https://treeherder.mozilla.org";
 var FAILED_JOB_RESULTS = /* @__PURE__ */ new Set([
@@ -13177,7 +13182,25 @@ var REJECTED_GLOBALS = Object.fromEntries(
   ])
 );
 var PLANNED_COMMANDS = {};
-var VERSION = "0.0.0";
+function version() {
+  if (true) {
+    return "2026.11.15 23:10 UTC";
+  }
+  try {
+    const root = dirname(dirname(fileURLToPath(import.meta.url)));
+    const git = (...args) => execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      // UTC, like the bundle's stamp.
+      env: { ...process.env, TZ: "UTC" }
+    }).trim();
+    const [date, hash] = git("log", "-1", "--format=%cd %h", "--date=format-local:%Y.%m.%d").split(" ");
+    const modified = git("status", "--porcelain", "--untracked-files=no", "--", "cli", "lib") !== "";
+    return `${date} (sources at ${hash}${modified ? ", modified" : ""})`;
+  } catch {
+    return "unknown (sources outside a git checkout)";
+  }
+}
 async function run(options) {
   const { streams } = options;
   try {
@@ -13242,7 +13265,7 @@ async function dispatch(options) {
     return ExitCode.Success;
   }
   if (argv[0] === "--version" || argv[0] === "-v") {
-    streams.out(`${options.version ?? VERSION}
+    streams.out(`${options.version ?? version()}
 `);
     return ExitCode.Success;
   }

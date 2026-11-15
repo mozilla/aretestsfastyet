@@ -9,6 +9,9 @@
  * codes tested rather than merely present.
  */
 
+import { execFileSync } from 'node:child_process';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { GLOBAL_OPTION_SPECS, readGlobalOptions } from './options.ts';
 import { type OptionSpecs, parseArgs, boolOption } from './args.ts';
 import {
@@ -375,8 +378,39 @@ export interface RunOptions {
     version?: string | undefined;
 }
 
-/** The package version, as `--version` reports it. */
-export const VERSION = '0.0.0';
+/**
+ * Stamped into the bundle by `tools/build-cli.ts`: the UTC time it was built.
+ * Undefined when the sources run directly (`bin/fx-tests`).
+ */
+declare const __FX_TESTS_VERSION__: string | undefined;
+
+/**
+ * What `--version` reports: the bundle's build time, or for the sources the
+ * date and hash of the checkout's latest commit.
+ *
+ * Not the commit date in the bundle: the bundle is committed, so it is built
+ * before the commit that carries it exists.
+ */
+function version(): string {
+    if (typeof __FX_TESTS_VERSION__ === 'string') {
+        return __FX_TESTS_VERSION__;
+    }
+    try {
+        const root = dirname(dirname(fileURLToPath(import.meta.url)));
+        const git = (...args: string[]): string =>
+            execFileSync('git', ['-C', root, ...args], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'ignore'],
+                // UTC, like the bundle's stamp.
+                env: { ...process.env, TZ: 'UTC' },
+            }).trim();
+        const [date, hash] = git('log', '-1', '--format=%cd %h', '--date=format-local:%Y.%m.%d').split(' ');
+        const modified = git('status', '--porcelain', '--untracked-files=no', '--', 'cli', 'lib') !== '';
+        return `${date} (sources at ${hash}${modified ? ', modified' : ''})`;
+    } catch {
+        return 'unknown (sources outside a git checkout)';
+    }
+}
 
 /**
  * Runs one invocation and returns its exit code.
@@ -456,7 +490,7 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         return ExitCode.Success;
     }
     if (argv[0] === '--version' || argv[0] === '-v') {
-        streams.out(`${options.version ?? VERSION}\n`);
+        streams.out(`${options.version ?? version()}\n`);
         return ExitCode.Success;
     }
 
