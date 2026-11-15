@@ -4,11 +4,11 @@
  *
  * Moved out of `site/try.ts`. The caller supplies the requests, the order the
  * answers are wanted in, and what to do with each; the bucket files, the
- * worker, the harness retry and the cell's rendering are here.
+ * worker and the cell's rendering are here.
  */
 
 import { bucketFileSuffix, bucketIndexForPath } from '../lib/formats/buckets.ts';
-import { detectHarness, otherHarness } from '../lib/model/harness.ts';
+import { detectHarness } from '../lib/model/harness.ts';
 import type { FlakinessData } from '../lib/query/flakiness-rate.ts';
 import { el } from './drilldown-render.ts';
 import { testPageUrl } from './test-link.ts';
@@ -91,10 +91,9 @@ const MAX_WORKERS = 3;
  * fetched one file at a time, overlapping only the next download with the
  * current parse.
  *
- * Tests not found under their detected harness are retried under the other one,
- * because `detectHarness` cannot tell a mochitest-plain `test_foo.js` from an
- * xpcshell one (`lib/model/harness.ts` documents the hole). `onResult` gets
- * `null` for anything still not found.
+ * Each test is read from its detected harness's file only: `detectHarness` is
+ * right for every test in the aggregates (`lib/model/harness.ts`). `onResult`
+ * gets `null` for anything its file does not hold.
  */
 export async function fetchFlakiness(
     requests: readonly FlakinessRequest[],
@@ -176,11 +175,8 @@ export async function fetchFlakiness(
 
     try {
         const notFound = await pass(requests, (path) => detectHarness(path));
-        if (notFound.length > 0) {
-            const stillNotFound = await pass(notFound, (path) => otherHarness(detectHarness(path)));
-            for (const entry of stillNotFound) {
-                onResult(entry.path, null);
-            }
+        for (const entry of notFound) {
+            onResult(entry.path, null);
         }
     } finally {
         for (const worker of workers) {

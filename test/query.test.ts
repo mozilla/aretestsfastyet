@@ -1893,27 +1893,28 @@ test('marker totals come from the file, and the kinds differ by harness', () => 
 
 // --- the resolution ladder -----------------------------------------------
 //
-// `resolveTest` is what `fx-tests test` and `test.html` both walk, and the two
-// steps under test here are the ones the CLI used to lack: the other harness at
-// the same bucket index, and a unique substring match. The loaders are synthetic
-// rather than the fixtures because the fixtures cannot supply the case the hole
-// is about — a mochitest whose filename `detectHarness` calls xpcshell — and
-// because what the fetching does on a miss is half of what is being asserted.
+// `resolveTest` is what `fx-tests test` and `test.html` both walk. The loaders
+// are synthetic rather than the fixtures because what the fetching does on a
+// miss is half of what is being asserted.
 
 /**
  * Loaders over a hand-built two-harness world.
  *
  * `served` records every (harness, path) the ladder asked for, in order, which
- * is how "step 2 was not taken" is distinguished from "step 2 found nothing".
+ * is how "no other file was read" is asserted rather than assumed.
  */
 function fakeLoaders(world: Record<'xpcshell' | 'mochitest', string[]>): TestLookupLoaders<null> & {
     served: string[];
     listReads: number;
 } {
     const served: string[] = [];
-    const state = { served, listReads: 0 };
+    const state = { listReads: 0 };
     return {
-        ...state,
+        served,
+        // A getter: a spread would copy the 0 and never see a read.
+        get listReads() {
+            return state.listReads;
+        },
         async loadBucket(harness, testPath) {
             served.push(`${harness}:${testPath}`);
             const paths = world[harness];
@@ -1945,48 +1946,43 @@ function fakeLoaders(world: Record<'xpcshell' | 'mochitest', string[]>): TestLoo
     };
 }
 
-/** A mochitest whose name `detectHarness` classifies as xpcshell. */
-const MISCLASSIFIED = 'dom/base/test/test_bug1013412.js';
 /** An unremarkable xpcshell path, for the steps that are about the ladder. */
 const LADDER_PATH = 'dom/indexedDB/test/unit/test_rename_objectStore_errors.js';
 
-test('a path found in the first harness reads no other file', async () => {
+test('a path found in its harness reads no other file', async () => {
     const loaders = fakeLoaders({ xpcshell: [LADDER_PATH], mochitest: [] });
     const resolution = await resolveTest(LADDER_PATH, undefined, loaders);
     assert.equal(resolution.kind, 'found');
     assert.equal(loaders.served.length, 1, 'no second harness, no test list');
     assert.equal(loaders.listReads, 0);
     if (resolution.kind === 'found') {
-        assert.equal(resolution.viaOtherHarness, false);
         assert.equal(resolution.resolvedFrom, null);
     }
 });
 
-test('the other harness at the same index covers detectHarness\'s hole', async () => {
-    const loaders = fakeLoaders({ xpcshell: [], mochitest: [MISCLASSIFIED] });
-    const resolution = await resolveTest(MISCLASSIFIED, undefined, loaders);
-    assert.equal(resolution.kind, 'found');
-    if (resolution.kind === 'found') {
-        // The filename says xpcshell; the data says mochitest, and the flag is
-        // what lets a front-end say the badge is not what was asked for.
-        assert.equal(resolution.harness, 'mochitest');
-        assert.equal(resolution.viaOtherHarness, true);
+test('a miss does not read the other harness\'s bucket', async () => {
+    // `detectHarness` is right for every test in the aggregates, so the other
+    // file cannot hold it; the miss goes straight to the substring search.
+    const loaders = fakeLoaders({ xpcshell: [], mochitest: [LADDER_PATH] });
+    const resolution = await resolveTest(LADDER_PATH, undefined, loaders);
+    assert.deepEqual(loaders.served, [`xpcshell:${LADDER_PATH}`, `xpcshell:${LADDER_PATH}`]);
+    assert.equal(loaders.listReads, 1);
+    // The list holds it, so the answer is that its bucket does not.
+    assert.equal(resolution.kind, 'not-in-file');
+    if (resolution.kind === 'not-in-file') {
+        assert.deepEqual(resolution.searched, ['xpcshell']);
     }
-    assert.deepEqual(loaders.served, [
-        `xpcshell:${MISCLASSIFIED}`,
-        `mochitest:${MISCLASSIFIED}`,
-    ]);
-    // Found in a bucket, so the multi-megabyte test list was never read.
-    assert.equal(loaders.listReads, 0);
 });
 
-test('an explicit harness stops at that harness', async () => {
-    const loaders = fakeLoaders({ xpcshell: [], mochitest: [MISCLASSIFIED] });
-    const resolution = await resolveTest(MISCLASSIFIED, 'xpcshell', loaders);
-    // A caller who named a harness asked about that harness: answering about
-    // the other one would be the same class of wrong the ladder exists to fix.
-    assert.notEqual(resolution.kind, 'found');
-    assert.ok(!loaders.served.includes(`mochitest:${MISCLASSIFIED}`));
+test('an explicit harness is the one read', async () => {
+    const loaders = fakeLoaders({ xpcshell: [], mochitest: [LADDER_PATH] });
+    const resolution = await resolveTest(LADDER_PATH, 'mochitest', loaders);
+    assert.equal(resolution.kind, 'found');
+    if (resolution.kind === 'found') {
+        assert.equal(resolution.harness, 'mochitest');
+        assert.equal(resolution.inferredHarness, false);
+    }
+    assert.deepEqual(loaders.served, [`mochitest:${LADDER_PATH}`]);
 });
 
 test('a basename with one match resolves, and says what it resolved from', async () => {
@@ -2030,7 +2026,7 @@ test('the candidate list is capped but the count is not', async () => {
 });
 
 test('a unique match equal to what was typed does not claim to be a resolution', async () => {
-    // Steps 1–2 miss and step 3's re-lookup hits: the stale-then-fresh shape a
+    // Step 1 misses and step 2's re-lookup hits: the stale-then-fresh shape a
     // CDN produces for real. `resolvedFrom` must stay null, or a front-end that
     // redirects on it redirects to the page it is already on.
     let firstPass = true;
@@ -2056,7 +2052,7 @@ test('an unmatched query is unknown, and names what was searched', async () => {
     const resolution = await resolveTest('test_no_such_thing.js', undefined, loaders);
     assert.equal(resolution.kind, 'unknown');
     if (resolution.kind === 'unknown') {
-        assert.deepEqual(resolution.searched, ['xpcshell', 'mochitest']);
+        assert.deepEqual(resolution.searched, ['xpcshell']);
         // Non-null: the list was read, so "nothing matches" is a checked claim.
         assert.notEqual(resolution.allTests, null);
     }

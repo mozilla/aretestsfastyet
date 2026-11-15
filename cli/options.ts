@@ -7,9 +7,9 @@
  *
  * - **`--json` with `--markdown` is a usage error**, not one silently winning.
  *   A script that passes both has a bug, and picking a winner hides it.
- * - **Harness detection is a heuristic that fails quietly**, so the inference
- *   is recorded (`inferred: true`) and a lookup only searches the other harness
- *   when it was a guess.
+ * - **The harness is inferred from the filename** unless `--harness` names it,
+ *   and the inference is recorded (`inferred: true`) so a not-found message can
+ *   say which file it read and why.
  * - **`--day` and `--since` are filters on the file the command already
  *   reads**, not a reason to fetch a different one, and they are mutually
  *   exclusive.

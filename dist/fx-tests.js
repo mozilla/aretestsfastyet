@@ -541,16 +541,13 @@ function describeTestPathDrop(id) {
 // lib/model/harness.ts
 function detectHarness(testPath) {
   const fileName = testPath.split("/").pop() ?? testPath;
+  if (fileName.endsWith(".html") || fileName.endsWith(".xhtml")) {
+    return "mochitest";
+  }
   if (fileName.startsWith("browser_") && fileName.endsWith(".js")) {
     return "mochitest";
   }
-  if (fileName.startsWith("test_") && fileName.endsWith(".html")) {
-    return "mochitest";
-  }
   return "xpcshell";
-}
-function otherHarness(harness) {
-  return harness === "xpcshell" ? "mochitest" : "xpcshell";
 }
 function isDirectoryPath(path) {
   return !isTestFilePath(path);
@@ -3233,33 +3230,22 @@ function collectTestPaths(files) {
   }
   return [...paths].sort();
 }
-async function findInEitherHarness(testPath, explicitHarness, loaders) {
-  const first = explicitHarness ?? detectHarness(testPath);
-  const attempts = explicitHarness === void 0 ? [first, otherHarness(first)] : [first];
-  for (const harness of attempts) {
-    if (harness !== first) {
-      loaders.onStep?.(`Not found in ${first}, trying ${harness}\u2026`);
-    }
-    const file = await loaders.loadBucket(harness, testPath);
-    const identity = file === null ? null : file.decoded.findTest(testPath);
-    if (file !== null && identity !== null) {
-      return { file, identity, harness, viaOtherHarness: harness !== first };
-    }
-  }
-  return null;
+async function findInHarness(testPath, harness, loaders) {
+  const file = await loaders.loadBucket(harness, testPath);
+  const identity = file === null ? null : file.decoded.findTest(testPath);
+  return file === null || identity === null ? null : { file, identity };
 }
 async function resolveTest(query, explicitHarness, loaders) {
   const inferredHarness = explicitHarness === void 0;
-  const first = explicitHarness ?? detectHarness(query);
-  const searched = inferredHarness ? [first, otherHarness(first)] : [first];
-  const direct = await findInEitherHarness(query, explicitHarness, loaders);
+  const harness = explicitHarness ?? detectHarness(query);
+  const searched = [harness];
+  const direct = await findInHarness(query, harness, loaders);
   if (direct !== null) {
     return {
       kind: "found",
       testPath: query,
-      harness: direct.harness,
+      harness,
       inferredHarness,
-      viaOtherHarness: direct.viaOtherHarness,
       resolvedFrom: null,
       file: direct.file,
       identity: direct.identity
@@ -3278,15 +3264,15 @@ async function resolveTest(query, explicitHarness, loaders) {
   }
   if (total === 1) {
     const match = matches[0];
-    const resolved = await findInEitherHarness(match, explicitHarness, loaders);
+    const matchHarness = explicitHarness ?? detectHarness(match);
+    const resolved = await findInHarness(match, matchHarness, loaders);
     if (resolved !== null) {
       return {
         kind: "found",
         testPath: match,
-        harness: resolved.harness,
+        harness: matchHarness,
         inferredHarness,
-        viaOtherHarness: resolved.viaOtherHarness,
-        // Null when the match is what was typed, which steps 1-2 can
+        // Null when the match is what was typed, which step 1 can
         // still miss on a stale bucket the re-lookup then finds. Without
         // this, the page redirects to the URL it is already on.
         resolvedFrom: match === query ? null : query,
@@ -3294,7 +3280,7 @@ async function resolveTest(query, explicitHarness, loaders) {
         identity: resolved.identity
       };
     }
-    return { kind: "not-in-file", query, testPath: match, searched, allTests };
+    return { kind: "not-in-file", query, testPath: match, searched: [matchHarness], allTests };
   }
   return { kind: "ambiguous", query, candidates: matches, total, truncated, allTests };
 }
@@ -9487,12 +9473,6 @@ async function lookUpTest(context, testPath) {
         `Resolved "${resolution.resolvedFrom}" to the one test matching it: ${resolution.testPath}`
       );
     }
-    if (resolution.viaOtherHarness) {
-      notice(
-        context,
-        `Found in ${resolution.harness} data, not the ${otherHarness(resolution.harness)} the filename suggests.`
-      );
-    }
     return {
       harness: resolution.harness,
       decoded: resolution.file.decoded,
@@ -9524,7 +9504,8 @@ async function lookUpTest(context, testPath) {
     );
   }
   throw notFoundError(
-    `No test path in the ${searched} 21-day data contains "${resolution.query}", so this reports nothing about the test itself.`,
+    // The list step reads both harnesses, whichever bucket was read.
+    `No test path in the xpcshell and mochitest 21-day data contains "${resolution.query}", so this reports nothing about the test itself.`,
     "It may have been renamed, added after the window started, or never run in CI. Check the spelling, or pass a longer fragment of the path."
   );
 }

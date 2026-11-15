@@ -37,7 +37,7 @@ import assert from 'node:assert/strict';
 
 import { type BucketFile, decodeBucket } from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
-import { detectHarness, otherHarness } from '../lib/model/harness.ts';
+import { detectHarness } from '../lib/model/harness.ts';
 import { coverageOf } from '../lib/query/coverage.ts';
 import { computeTestStats } from '../lib/query/test-stats.ts';
 import {
@@ -131,21 +131,19 @@ function rawTotals(file: BucketFile, testId: number): Map<string, number> {
 
 // --- the harness rule ----------------------------------------------------
 
-test('detectHarness follows every branch of the shared rule, hole included', () => {
-    // Literals, from `common-test-data.js:9`. The last two are the hole: a
-    // mochitest-plain `test_*.js` is called xpcshell, and anything unrecognized
-    // is too — which is why the page retries the other harness.
+test('detectHarness follows every branch of the shared rule', () => {
+    // Literals.
     assert.equal(detectHarness('browser/base/content/test/browser_foo.js'), 'mochitest');
     assert.equal(detectHarness('dom/media/test/test_playback.html'), 'mochitest');
     assert.equal(detectHarness('netwerk/test/unit/test_cookies.js'), 'xpcshell');
     assert.equal(detectHarness('dom/plain/test_thing.js'), 'xpcshell');
-    assert.equal(detectHarness('some/dir/browser_foo.html'), 'xpcshell');
+    // xpcshell runs only `.js`: markup is mochitest whatever the prefix.
+    assert.equal(detectHarness('some/dir/browser_foo.html'), 'mochitest');
+    assert.equal(detectHarness('toolkit/content/tests/chrome/test_menupopup_scroll_amount.xhtml'), 'mochitest');
     assert.equal(detectHarness('no_prefix_at_all.js'), 'xpcshell');
     // No slash at all: `split('/').pop()` gives the whole string.
     assert.equal(detectHarness('browser_x.js'), 'mochitest');
 
-    assert.equal(otherHarness('xpcshell'), 'mochitest');
-    assert.equal(otherHarness('mochitest'), 'xpcshell');
 });
 
 // --- variant and platform naming -----------------------------------------

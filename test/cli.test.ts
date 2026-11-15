@@ -429,7 +429,7 @@ test('past the ladder\'s own cap, the message stops promising --limit 0', async 
                 if (fileName.filename === 'xpcshell-issues.json') {
                     return bytes;
                 }
-                // No buckets and no mochitest list: steps 1–2 miss, step 3 runs.
+                // No buckets and no mochitest list: step 1 misses, step 2 runs.
                 throw new DataFileNotFoundError(fileName);
             },
         } as DataSource & { requested: string[] },
@@ -462,12 +462,6 @@ test('--limit 0 lists every candidate the ladder collected', async () => {
         assert.ok(stderr.includes(name), `${name} is missing from --limit 0`);
     }
 });
-
-// Step 2 — the other harness at the same bucket index — needs a test whose
-// filename `detectHarness` misclassifies, and neither bucket fixture holds one:
-// every mochitest in `mochitest-00.json` is `browser_*.js` or `test_*.html`,
-// both of which it gets right. `test/query.test.ts` covers that step over
-// synthetic loaders, where the misclassified path can be constructed.
 
 test('a genuinely unknown test says so about the lookup, not about the test', async () => {
     const { code, stdout, stderr } = await invoke([
@@ -2615,20 +2609,17 @@ test('markdown escaping is exercised directly, since no fixture message has a pi
     );
 });
 
-test('harness inference follows detectHarness for every rule, including the hole', async () => {
+test('harness inference follows detectHarness for every rule', async () => {
     // Table-driven because the end-to-end tests only reach two of the four
     // branches, and a mutation deleting the `test_*.html` rule survived them.
     const { detectHarness } = await import('../cli/options.ts');
     const cases: [string, string][] = [
         ['browser/base/content/test/browser_foo.js', 'mochitest'],
         ['dom/base/test/test_selection.html', 'mochitest'],
-        // The documented hole: a mochitest-plain `test_foo.js` is
-        // misclassified as xpcshell. Asserted deliberately — the CLI must
-        // agree with common-test-data.js:9 rather than improve on it, and
-        // step 2 of the resolution ladder is what covers it.
         ['dom/base/test/test_foo.js', 'xpcshell'],
         ['netwerk/test/unit/test_bug1195415.js', 'xpcshell'],
-        ['some/dir/browser_foo.html', 'xpcshell'],
+        ['some/dir/browser_foo.html', 'mochitest'],
+        ['toolkit/content/tests/chrome/test_menupopup_scroll_amount.xhtml', 'mochitest'],
         ['no_prefix.js', 'xpcshell'],
         ['test_at_root.html', 'mochitest'],
     ];

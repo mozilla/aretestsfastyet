@@ -122,18 +122,15 @@ records one task per run and those tasks routinely span configurations, so a
 filter that keeps or drops a whole group on its first task's job both loses runs
 on the requested config and keeps runs on every other one.
 
-### Harness detection is a heuristic, and it fails quietly
+### Harness detection is by filename
 
-`--harness` is inferred with the existing `detectHarness()` (`common-test-data.js:9`),
-which the CLI should reuse rather than reimplement. Its rules: `browser_*.js` and
-`test_*.html` are mochitest, everything else — including `test_*.js` — is xpcshell.
+`--harness` is inferred with `detectHarness()` (`lib/model/harness.ts`), shared
+with the dashboards. Its rules: `.html`, `.xhtml` and `browser_*.js` are mochitest,
+everything else is xpcshell. Measured over every bucket file on 2026-11-15, that is
+right for every test in the aggregates, so a test file is looked up in one
+harness's data only.
 
-That misclassifies a mochitest-plain `test_foo.js`, and the symptom is
-indistinguishable from a typo: the CLI reads xpcshell data and does not find the
-test. Telling the caller to retry with the other harness is not enough — the tool
-knows which harness holds it and should just look.
-
-A **directory** has no filename at all, so the same fallthrough sent
+A **directory** has no filename at all, so the xpcshell fallthrough sent
 `failures --path <dir>` and `flaky <dir>` to xpcshell with the same misleading
 "check your path for typos". Nothing in the aggregates says which harness runs a
 folder — that is in its manifests, and the CLI has no mozilla-central checkout —

@@ -7,19 +7,20 @@
  * the page answer differently about one name, which neither front-end's tests
  * can see.
  *
- * 1. The bucket file for the inferred or given harness.
- * 2. The other harness at the same bucket index — this covers `detectHarness`'s
- *    `test_*.js` hole. Skipped when the caller named a harness.
- * 3. A unique substring match over both harnesses' 21-day aggregates.
- * 4. Several matches → the candidates, which the page shows as a dropdown.
- * 5. Nothing matched → `unknown`.
+ * 1. The bucket file for the inferred or given harness. There is no retry
+ *    under the other harness: `detectHarness` is right for every test in the
+ *    aggregates (measured over all 128 bucket files on 2026-11-15), so a miss
+ *    there is a test the data does not hold, and the other file cannot.
+ * 2. A unique substring match over both harnesses' 21-day aggregates.
+ * 3. Several matches → the candidates, which the page shows as a dropdown.
+ * 4. Nothing matched → `unknown`.
  *
- * `not-in-file` is not a step: it is step 3 finding one path that its own bucket
+ * `not-in-file` is not a step: it is step 2 finding one path that its own bucket
  * does not hold, where "no such test" would be false.
  */
 import type { DecodedTimingFile } from '../formats/decode.ts';
 import { type TestIdentity, joinTestPath } from '../formats/tables.ts';
-import { type Harness, detectHarness, otherHarness } from '../model/harness.ts';
+import { type Harness, detectHarness } from '../model/harness.ts';
 
 /**
  * The search terms a typed query decomposes into.
@@ -111,9 +112,9 @@ export interface LoadedTestFile<Raw> {
 }
 
 export interface TestLookupLoaders<Raw> {
-    /** `null` when unpublished: step 2 reads a bucket that often is. */
+    /** `null` when unpublished. */
     loadBucket(harness: Harness, testPath: string): Promise<LoadedTestFile<Raw> | null>;
-    /** Both harnesses' 21-day paths. Two large files, so steps 3-4 only. */
+    /** Both harnesses' 21-day paths. Two large files, so steps 2-3 only. */
     loadAllTestPaths(): Promise<string[]>;
     /** Called before each step that costs a fetch, for a progress line. */
     onStep?: ((message: string) => void) | undefined;
@@ -126,9 +127,7 @@ export interface ResolvedTest<Raw> {
     testPath: string;
     harness: Harness;
     inferredHarness: boolean;
-    /** Found under the other harness, so `detectHarness` guessed wrong. */
-    viaOtherHarness: boolean;
-    /** What was typed, when step 3 resolved a fragment. `null` otherwise. */
+    /** What was typed, when step 2 resolved a fragment. `null` otherwise. */
     resolvedFrom: string | null;
     file: LoadedTestFile<Raw>;
     identity: TestIdentity;
@@ -138,7 +137,7 @@ export interface ResolvedTest<Raw> {
 export type TestResolution<Raw> =
     | ResolvedTest<Raw>
     | {
-          /** Step 4: a fragment several tests match. */
+          /** Step 3: a fragment several tests match. */
           kind: 'ambiguous';
           query: string;
           /** At most `CANDIDATE_LIMIT` of them; `total` is the true count. */
@@ -160,7 +159,7 @@ export type TestResolution<Raw> =
           allTests: string[];
       }
     | {
-          /** Step 5: nothing in either harness, and no path contains it. */
+          /** Step 4: not in its bucket, and no path contains it. */
           kind: 'unknown';
           query: string;
           searched: Harness[];
@@ -171,56 +170,34 @@ export type TestResolution<Raw> =
           allTests: string[] | null;
       };
 
-/**
- * Steps 1-2 for one path: the inferred harness, then the other one.
- *
- * Step 3's re-lookup needs both too — a fragment can resolve to a misclassified
- * `test_*.js` just as a typed path can.
- */
-async function findInEitherHarness<Raw>(
+/** Step 1 for one path, and step 2's re-lookup of its match. */
+async function findInHarness<Raw>(
     testPath: string,
-    explicitHarness: Harness | undefined,
+    harness: Harness,
     loaders: TestLookupLoaders<Raw>
-): Promise<{ file: LoadedTestFile<Raw>; identity: TestIdentity; harness: Harness; viaOtherHarness: boolean } | null> {
-    const first = explicitHarness ?? detectHarness(testPath);
-    const attempts: Harness[] =
-        explicitHarness === undefined ? [first, otherHarness(first)] : [first];
-    for (const harness of attempts) {
-        if (harness !== first) {
-            loaders.onStep?.(`Not found in ${first}, trying ${harness}…`);
-        }
-        const file = await loaders.loadBucket(harness, testPath);
-        const identity = file === null ? null : file.decoded.findTest(testPath);
-        if (file !== null && identity !== null) {
-            return { file, identity, harness, viaOtherHarness: harness !== first };
-        }
-    }
-    return null;
+): Promise<{ file: LoadedTestFile<Raw>; identity: TestIdentity } | null> {
+    const file = await loaders.loadBucket(harness, testPath);
+    const identity = file === null ? null : file.decoded.findTest(testPath);
+    return file === null || identity === null ? null : { file, identity };
 }
 
-/**
- * Walks the ladder.
- *
- * `explicitHarness` skips step 2 rather than being a hint: a caller who named a
- * harness asked about that harness.
- */
+/** Walks the ladder. */
 export async function resolveTest<Raw>(
     query: string,
     explicitHarness: Harness | undefined,
     loaders: TestLookupLoaders<Raw>
 ): Promise<TestResolution<Raw>> {
     const inferredHarness = explicitHarness === undefined;
-    const first = explicitHarness ?? detectHarness(query);
-    const searched: Harness[] = inferredHarness ? [first, otherHarness(first)] : [first];
+    const harness = explicitHarness ?? detectHarness(query);
+    const searched: Harness[] = [harness];
 
-    const direct = await findInEitherHarness(query, explicitHarness, loaders);
+    const direct = await findInHarness(query, harness, loaders);
     if (direct !== null) {
         return {
             kind: 'found',
             testPath: query,
-            harness: direct.harness,
+            harness,
             inferredHarness,
-            viaOtherHarness: direct.viaOtherHarness,
             resolvedFrom: null,
             file: direct.file,
             identity: direct.identity,
@@ -241,15 +218,15 @@ export async function resolveTest<Raw>(
     }
     if (total === 1) {
         const match = matches[0]!;
-        const resolved = await findInEitherHarness(match, explicitHarness, loaders);
+        const matchHarness = explicitHarness ?? detectHarness(match);
+        const resolved = await findInHarness(match, matchHarness, loaders);
         if (resolved !== null) {
             return {
                 kind: 'found',
                 testPath: match,
-                harness: resolved.harness,
+                harness: matchHarness,
                 inferredHarness,
-                viaOtherHarness: resolved.viaOtherHarness,
-                // Null when the match is what was typed, which steps 1-2 can
+                // Null when the match is what was typed, which step 1 can
                 // still miss on a stale bucket the re-lookup then finds. Without
                 // this, the page redirects to the URL it is already on.
                 resolvedFrom: match === query ? null : query,
@@ -257,7 +234,7 @@ export async function resolveTest<Raw>(
                 identity: resolved.identity,
             };
         }
-        return { kind: 'not-in-file', query, testPath: match, searched, allTests };
+        return { kind: 'not-in-file', query, testPath: match, searched: [matchHarness], allTests };
     }
     return { kind: 'ambiguous', query, candidates: matches, total, truncated, allTests };
 }

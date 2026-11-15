@@ -29,7 +29,6 @@
 import { chunkOfTask } from '../../lib/formats/buckets.ts';
 import type { DecodedTimingFile, RunEntry } from '../../lib/formats/decode.ts';
 import { type TestIdentity, normalizeTaskId, parseTaskId } from '../../lib/formats/tables.ts';
-import { otherHarness } from '../../lib/model/harness.ts';
 import { withChunkSuffix } from '../../lib/model/job-name.ts';
 import { dateOfDay } from '../../lib/query/flakiness.ts';
 import { CANDIDATE_LIMIT, resolveTest } from '../../lib/query/test-lookup.ts';
@@ -470,13 +469,6 @@ async function lookUpTest(context: CommandContext, testPath: string): Promise<Lo
                     `${resolution.testPath}`
             );
         }
-        if (resolution.viaOtherHarness) {
-            notice(
-                context,
-                `Found in ${resolution.harness} data, not the ${otherHarness(resolution.harness)} ` +
-                    'the filename suggests.'
-            );
-        }
         return {
             harness: resolution.harness,
             decoded: resolution.file.decoded,
@@ -532,7 +524,8 @@ async function lookUpTest(context: CommandContext, testPath: string): Promise<Lo
         );
     }
     throw notFoundError(
-        `No test path in the ${searched} 21-day data contains "${resolution.query}", ` +
+        // The list step reads both harnesses, whichever bucket was read.
+        `No test path in the xpcshell and mochitest 21-day data contains "${resolution.query}", ` +
             `so this reports nothing about the test itself.`,
         'It may have been renamed, added after the window started, or never run in CI. ' +
             'Check the spelling, or pass a longer fragment of the path.'

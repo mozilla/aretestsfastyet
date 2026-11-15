@@ -2470,15 +2470,11 @@ function showSearchForm(options: { initialValue?: string; preloadedTests?: strin
  *    the URL alone, so they are drawn before the ~3 MB fetch starts. Upstream
  *    does this and it matters: the fetch is the slow part.
  * 3. **The bucket file**, chosen by hashing the path into 64 buckets.
- * 4. **The other harness, same bucket index**, if the test was not in the
- *    first. This is what covers `detectHarness`'s `test_*.js` hole, and it is
- *    why the harness badge can end up saying something the caller did not ask
- *    for.
- * 5. **A unique substring match** → redirect to it. A path typed into the URL
+ * 4. **A unique substring match** → redirect to it. A path typed into the URL
  *    bar is often a fragment, and one match is not ambiguous.
- * 6. **Otherwise the search form**, seeded with what was typed.
+ * 5. **Otherwise the search form**, seeded with what was typed.
  *
- * Steps 3-5 are `resolveTest` in `lib/query/test-lookup.ts`.
+ * Steps 3-4 are `resolveTest` in `lib/query/test-lookup.ts`.
  */
 async function loadTestData(): Promise<void> {
     const testPath = new URLSearchParams(window.location.search).get('test');
