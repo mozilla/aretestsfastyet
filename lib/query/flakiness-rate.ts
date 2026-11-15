@@ -13,8 +13,10 @@
  * measured against the other.
  */
 
-import type { ConfigStats } from './config-stats.ts';
-import type { TestStats } from './test-stats.ts';
+import type { DecodedTimingFile } from '../formats/decode.ts';
+import { parseJobName } from '../model/job-name.ts';
+import { computeConfigStats, type ConfigStats } from './config-stats.ts';
+import { computeTestStats, type TestStats } from './test-stats.ts';
 
 /**
  * How many runs a configuration needs inside the recent window before the page
@@ -40,13 +42,121 @@ export const HISTORY_DAYS = 21;
 /** Past a handful the tooltip stops being readable. `old/try.html:2579`. */
 export const MAX_TOOLTIP_CONFIGS = 4;
 
+/**
+ * Which configurations `FlakinessData.configs` holds.
+ *
+ * - `job`: the jobs the test failed on in the push.
+ * - `platform`: at least one of those jobs never ran on trunk, so the other
+ *   jobs of its platform and build type (`macosx1500-aarch64/debug`) stand in
+ *   for it — a new job variant added on existing machines.
+ * - `all`: no job of the push, nor any of their platforms, ran on trunk — a
+ *   new platform — so every configuration is used.
+ */
+export type ConfigScope = 'job' | 'platform' | 'all';
+
 /** One test's 21-day history, as the flakiness worker returns it. */
 export interface FlakinessData {
     stats: TestStats;
-    /** Whether any config shows this same failure in history. */
+    /** Whether any of `configs` shows this same failure in history. */
     hasMatchingMessage: boolean;
     configs: ConfigStats[];
+    /** Absent on data computed before the scope existed; read as `job`. */
+    configScope?: ConfigScope | undefined;
+    /**
+     * Configurations outside `configs` that show this same failure, highest
+     * same-message rate first. What keeps the tooltip from calling a
+     * failure new when trunk has it, just elsewhere.
+     */
+    elsewhere?: ConfigStats[] | undefined;
+    /**
+     * Configurations in `configs` that stand in for a push job trunk never
+     * ran. On a push mixing existing and new jobs, `configScope` is
+     * `platform` while some of `configs` are the push's own.
+     */
+    standIns?: string[] | undefined;
     totalDays: number;
+}
+
+/** How the push failed a test, for `historyOfTest`. */
+export interface PushFailureQuery {
+    /** Chunk-stripped job names the test failed on in the push. */
+    jobNames: readonly string[];
+    tryMessages: Iterable<string>;
+    matchAnyTimeout: boolean;
+    matchAnyCrash: boolean;
+}
+
+/** `macosx1500-aarch64/debug`, or `null` for a name without that shape. */
+function platformKey(jobName: string): string | null {
+    const { platform, buildType } = parseJobName(jobName);
+    return platform === null || buildType === null ? null : `${platform}/${buildType}`;
+}
+
+/**
+ * One test's history as `try.html` and `fx-tests try` judge a push failure.
+ *
+ * The configurations are the push's jobs where trunk ran them, the same
+ * platform and build type for the ones it never ran, and every configuration
+ * when that still finds nothing (`ConfigScope`). The resolution is per job, so
+ * a push mixing existing and new jobs keeps the exact match for the existing
+ * ones.
+ *
+ * Two `computeConfigStats` calls rather than one filtered afterwards: the
+ * recent window is sized from the sparsest config in the set, so it has to be
+ * computed over the set the rates are quoted for.
+ */
+export function historyOfTest(
+    file: DecodedTimingFile,
+    testId: number,
+    query: PushFailureQuery
+): FlakinessData {
+    const messageOptions = {
+        tryMessages: query.tryMessages,
+        matchAnyTimeout: query.matchAnyTimeout,
+        matchAnyCrash: query.matchAnyCrash,
+    };
+    const everywhere = computeConfigStats(file, testId, messageOptions);
+    const onTrunk = new Set(everywhere.map((config) => config.jobName));
+
+    const wanted = new Set<string>();
+    let substituted = false;
+    for (const jobName of query.jobNames) {
+        if (onTrunk.has(jobName)) {
+            wanted.add(jobName);
+            continue;
+        }
+        substituted = true;
+        const key = platformKey(jobName);
+        for (const candidate of onTrunk) {
+            if (key !== null && platformKey(candidate) === key) {
+                wanted.add(candidate);
+            }
+        }
+    }
+    const configScope: ConfigScope =
+        wanted.size === 0 ? 'all' : substituted ? 'platform' : 'job';
+    const configs = computeConfigStats(file, testId, {
+        ...messageOptions,
+        jobNames: configScope === 'all' ? undefined : [...wanted],
+        minRecentRuns: MIN_RECENT_RUNS,
+    });
+    const used = new Set(configs.map((config) => config.jobName));
+    const pushJobs = new Set(query.jobNames);
+    return {
+        stats: computeTestStats(file, testId),
+        hasMatchingMessage: configs.some((config) => config.sameMsgFailCount > 0),
+        configs,
+        configScope,
+        standIns: [...used].filter((jobName) => !pushJobs.has(jobName)),
+        elsewhere: everywhere
+            .filter((config) => !used.has(config.jobName) && config.sameMsgFailCount > 0)
+            .sort((a, b) => b.sameMsgFailRate - a.sameMsgFailRate),
+        // `file.days` is the aggregate's window. Upstream reads
+        // `data.metadata.days` and falls back to 0 (`old/try.html:2601`); a
+        // daily file would give `null` here, which the display code treats
+        // the same way its `|| HISTORY_DAYS` fallback does.
+        totalDays: file.days ?? 0,
+    };
 }
 
 /** The rate the flakiness column shows, and where it came from. */
@@ -62,6 +172,11 @@ export interface HeadlineRate {
     scope: 'config' | 'overall';
     /** The rate rests on fewer runs than a percentage really warrants. */
     lowConfidence?: boolean | undefined;
+    /**
+     * An `overall` rate counting only same-message failures: trunk has this
+     * failure, but only on configurations outside the push's.
+     */
+    sameMessage?: boolean | undefined;
 }
 
 /**
@@ -100,7 +215,8 @@ export interface HeadlineRate {
  */
 export function pickHeadlineRate(
     stats: TestStats,
-    configs: readonly ConfigStats[] | undefined
+    configs: readonly ConfigStats[] | undefined,
+    elsewhere: readonly ConfigStats[] = []
 ): HeadlineRate {
     const overall = overallRate(stats);
     const rateOf = (config: ConfigStats): HeadlineRate =>
@@ -131,6 +247,20 @@ export function pickHeadlineRate(
             best = { ...rate, jobName: config.jobName };
             bestScore = current;
         }
+    }
+    if ((best === null || best.rate === 0) && elsewhere.length > 0 && stats.runCount > 0) {
+        // The fallback's rate, restricted to this failure: next to a verdict
+        // saying trunk has it, the any-failure rate would be the wrong number.
+        const sameMsg = [...(configs ?? []), ...elsewhere].reduce(
+            (sum, config) => sum + config.sameMsgFailCount,
+            0
+        );
+        return {
+            rate: (sameMsg / stats.runCount) * 100,
+            runs: stats.runCount,
+            scope: 'overall',
+            sameMessage: true,
+        };
     }
     if (best === null || best.rate === 0) {
         return { rate: overall, runs: stats.runCount, scope: 'overall' };
@@ -169,7 +299,9 @@ export function dayCount(days: number | undefined): string {
  * Four sections, and the order is the argument it makes:
  *
  * 1. **The verdict.** Whether history shows this same failure at all is what
- *    decides if the push is to blame, so it leads.
+ *    decides if the push is to blame, so it leads. A failure trunk has
+ *    only on other configurations (`elsewhere`) is not called new, and those
+ *    configurations fill section 3 instead. A `configScope` other than `job` is noted after the job name.
  * 2. **The headline rate**, with the configuration on its own line — the only
  *    part long enough to need the room.
  * 3. **Per configuration**, most-failing first, capped at
@@ -189,8 +321,11 @@ export function flakinessTooltip(
     configs: readonly ConfigStats[] | undefined,
     headline: HeadlineRate,
     hasMatchingMessage: boolean,
-    totalDays: number | undefined
+    totalDays: number | undefined,
+    scope: Pick<FlakinessData, 'configScope' | 'elsewhere' | 'standIns'> = {}
 ): string {
+    const elsewhere = scope.elsewhere ?? [];
+    const standIns = new Set(scope.standIns ?? []);
     const overall = overallRate(stats);
     const all = totalDays || HISTORY_DAYS;
     const lines: string[] = [];
@@ -198,7 +333,9 @@ export function flakinessTooltip(
     lines.push(
         hasMatchingMessage
             ? 'This failure already happens without your changes.'
-            : 'This exact failure was never seen in history — it looks new.',
+            : elsewhere.length > 0
+              ? 'This failure already happens on trunk, but not on the jobs it failed on here.'
+              : 'This exact failure was never seen in history — it looks new.',
         ''
     );
     if (headline.scope === 'config') {
@@ -208,10 +345,23 @@ export function flakinessTooltip(
                 (headline.lowConfidence === true
                     ? ` (only ${headline.runs} runs, so approximate)`
                     : ''),
-            `${headline.jobName}`
+            `${headline.jobName}` +
+                (headline.jobName === undefined || !standIns.has(headline.jobName)
+                    ? ''
+                    : scope.configScope === 'all'
+                      ? " (this platform isn't on trunk)"
+                      : ' (closest job on trunk)')
+        );
+    } else if (headline.sameMessage === true) {
+        lines.push(
+            `It fails this way ${formatFailRate(headline.rate)} of the time over ${all} days on`,
+            'all platforms combined'
         );
     }
 
+    // The configurations behind the verdict: the push's own when they show
+    // this failure, the others otherwise. `elsewhere` comes without the
+    // recent window, so its rates are over the whole history.
     const rateFor = (config: ConfigStats): { rate: number; runs: number } =>
         config.recentSameMsgFailRate !== null
             ? { rate: config.recentSameMsgFailRate, runs: config.recentRunCount }
@@ -224,15 +374,26 @@ export function flakinessTooltip(
         }))
         .filter((config) => config.rate > 0)
         .sort((a, b) => b.rate - a.rate);
-    if (shown.length > 0) {
-        lines.push('', `Same failure over ${dayCount(shown[0]!.recentDays)}, by configuration:`);
-        for (const config of shown.slice(0, MAX_TOOLTIP_CONFIGS)) {
+    const listed =
+        shown.length > 0
+            ? { span: dayCount(shown[0]!.recentDays), rows: shown }
+            : {
+                  span: `${all} days`,
+                  rows: elsewhere.map((config) => ({
+                      rate: config.sameMsgFailRate,
+                      runs: config.runCount,
+                      jobName: config.jobName,
+                  })),
+              };
+    if (listed.rows.length > 0) {
+        lines.push('', `Same failure over ${listed.span}, by configuration:`);
+        for (const config of listed.rows.slice(0, MAX_TOOLTIP_CONFIGS)) {
             // Tooltips render in a proportional font, so columns cannot be
             // aligned with padding. Leading with the rate reads down the list
             // without needing to line up.
             lines.push(`  ${formatFailRate(config.rate)} of ${config.runs} runs — ${config.jobName}`);
         }
-        const hidden = shown.length - MAX_TOOLTIP_CONFIGS;
+        const hidden = listed.rows.length - MAX_TOOLTIP_CONFIGS;
         if (hidden > 0) {
             lines.push(`  and ${hidden} more configuration${hidden === 1 ? '' : 's'}`);
         }

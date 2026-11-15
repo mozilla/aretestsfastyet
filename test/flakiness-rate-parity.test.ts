@@ -75,6 +75,7 @@ import { stripChunkSuffix } from '../lib/model/job-name.ts';
 import {
     type HeadlineRate,
     flakinessTooltip,
+    historyOfTest,
     pickHeadlineRate,
 } from '../lib/query/flakiness-rate.ts';
 import { flakinessOfTest } from '../site/try-flakiness-worker.ts';
@@ -361,17 +362,11 @@ test('the config branch and the overall fallback are both exercised', async () =
 });
 
 /**
- * `configsInHistory` is the CLI's own line, and it is a fact rather than a
- * rewording.
- *
- * The tooltip's verdict sentence is asked of the configurations the push ran, so
- * when central never ran the test on any of them the sentence is about an empty
- * population — and printed under a section headed "also fail on central" it
- * reads as a contradiction. `browser_ext_windows_update.js` on push
- * `46c757b692be` is that case: five `test-linux2404-64/*` configurations here,
- * 26 configurations on central, all windows and mac. Both subjects of this file
- * do have their configuration in history, so this asserts the counter is real
- * rather than always zero.
+ * `configsInHistory` is in the JSON: how many of the push's configurations
+ * central ran, which `configScope` alone does not say on a push mixing
+ * existing and new jobs. Both subjects of this file do have their
+ * configuration in history, so this asserts the counter is real rather than
+ * always zero.
  */
 test('the CLI reports how many of the push configurations central has history for', async () => {
     const rows = await cli();
@@ -381,4 +376,117 @@ test('the CLI reports how many of the push configurations central has history fo
     // would pass on an empty set as readily as on the right one.
     assert.equal(rows.get(simulcast!.path)!.central!.configsInHistory, 3);
     assert.equal(rows.get(bug551434!.path)!.central!.configsInHistory, 1);
+});
+
+// =========================================================================
+// Jobs trunk never ran
+// =========================================================================
+
+const SIMULCAST = 'dom/media/webrtc/tests/mochitests/test_peerConnection_simulcastOffer.html';
+const BUG551434 = 'layout/base/tests/chrome/test_bug551434.html';
+
+function historyFor(path: string, jobNames: string[], matchAnyTimeout: boolean) {
+    const history = historyOfTest(BUCKET, BUCKET.findTest(path)!.testId, {
+        jobNames,
+        tryMessages: [],
+        matchAnyTimeout,
+        matchAnyCrash: false,
+    });
+    const headline = pickHeadlineRate(history.stats, history.configs, history.elsewhere);
+    const tooltip = flakinessTooltip(
+        history.stats,
+        history.configs,
+        headline,
+        history.hasMatchingMessage,
+        history.totalDays,
+        history
+    );
+    return { history, headline, tooltip };
+}
+
+/**
+ * Try push f26b22875bfff1a8 added `mochitest-chrome-repeat` jobs, so none of
+ * its jobs had history, and every failure read "never seen in history" — even
+ * the ones trunk has with the same message on the same machines.
+ */
+test('a job trunk never ran is compared with its platform and build type', () => {
+    const { history, headline, tooltip } = historyFor(
+        SIMULCAST,
+        ['test-android-em-14-x86_64-lite/opt-geckoview-mochitest-media-repeat'],
+        true
+    );
+    assert.equal(history.configScope, 'platform');
+    assert.ok(history.configs.length > 0);
+    for (const config of history.configs) {
+        assert.match(config.jobName, /^test-android-em-14-x86_64-lite\/opt-/);
+    }
+    assert.equal(history.hasMatchingMessage, true);
+    assert.equal(headline.scope, 'config');
+    assert.match(tooltip, /^This failure already happens without your changes\.$/m);
+    assert.match(tooltip, /\(closest job on trunk\)$/m);
+});
+
+test('a failure trunk has only on other configurations is not called new', () => {
+    const { history, headline, tooltip } = historyFor(
+        SIMULCAST,
+        ['test-linux2404-64/opt-mochitest-media-spi'],
+        true
+    );
+    assert.equal(history.configScope, 'job');
+    assert.equal(history.hasMatchingMessage, false);
+    assert.deepEqual(
+        history.elsewhere!.map((config) => config.jobName).sort(),
+        [
+            'test-android-em-14-x86_64-lite/opt-geckoview-mochitest-media',
+            'test-android-em-14-x86_64-lite/opt-geckoview-mochitest-media-nofis',
+            'test-android-em-14-x86_64-lite/opt-geckoview-mochitest-media-nogpu',
+        ]
+    );
+    assert.doesNotMatch(tooltip, /never seen/);
+    assert.match(tooltip, /^This failure already happens on trunk, but not on the jobs it failed on here\.$/m);
+    assert.match(tooltip, /^Same failure over 21 days, by configuration:$/m);
+    assert.match(tooltip, /^  0\.4% of 227 runs — test-android-em-14-x86_64-lite\/opt-geckoview-mochitest-media-nofis$/m);
+    // The headline counts this failure only, so the cell agrees with the verdict.
+    assert.equal(headline.scope, 'overall');
+    assert.equal(headline.sameMessage, true);
+    assert.equal(headline.rate, (3 / history.stats.runCount) * 100);
+    assert.match(tooltip, /^all platforms combined$/m);
+});
+
+test('a platform trunk never ran falls back to every configuration', () => {
+    const { history, tooltip } = historyFor(
+        BUG551434,
+        ['test-macosx2600-aarch64/opt-mochitest-chrome-1proc'],
+        false
+    );
+    assert.equal(history.configScope, 'all');
+    assert.equal(history.configs.length, 45);
+    assert.deepEqual(history.elsewhere, []);
+    // Its failures record no message, so nothing matches anywhere.
+    assert.match(tooltip, /never seen in history/);
+    assert.doesNotMatch(tooltip, /by configuration/);
+});
+
+test('on a push mixing existing and new jobs, only the stand-ins are labelled', () => {
+    const existing = 'test-android-em-14-x86_64-lite/opt-geckoview-mochitest-media';
+    const { history, headline, tooltip } = historyFor(
+        SIMULCAST,
+        [existing, 'test-android-em-14-x86_64-lite/opt-geckoview-mochitest-media-repeat'],
+        true
+    );
+    assert.equal(history.configScope, 'platform');
+    assert.ok(!history.standIns!.includes(existing));
+    assert.ok(history.standIns!.length > 0);
+    // Whichever config wins, its label follows from whether it stood in.
+    const label = /\(closest job on trunk\)$/m.test(tooltip);
+    assert.equal(label, history.standIns!.includes(headline.jobName!));
+});
+
+test('a push job trunk ran is never labelled a stand-in', () => {
+    const { tooltip } = historyFor(
+        SIMULCAST,
+        ['test-android-em-14-x86_64-lite/opt-geckoview-mochitest-media'],
+        true
+    );
+    assert.doesNotMatch(tooltip, /closest job on trunk/);
 });

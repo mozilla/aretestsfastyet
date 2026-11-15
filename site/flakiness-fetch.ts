@@ -180,6 +180,9 @@ function dataOf(answer: FlakinessResult): FlakinessData {
         stats: answer.stats!,
         hasMatchingMessage: answer.hasMatchingMessage === true,
         configs: answer.configs ?? [],
+        configScope: answer.configScope,
+        elsewhere: answer.elsewhere,
+        standIns: answer.standIns,
         totalDays: answer.totalDays ?? 0,
     };
 }

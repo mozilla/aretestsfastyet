@@ -11743,7 +11743,56 @@ function readLandingJob(body, commitId, url) {
 var MIN_RECENT_RUNS = 100;
 var HISTORY_DAYS = 21;
 var MAX_TOOLTIP_CONFIGS = 4;
-function pickHeadlineRate(stats, configs) {
+function platformKey(jobName) {
+  const { platform, buildType } = parseJobName(jobName);
+  return platform === null || buildType === null ? null : `${platform}/${buildType}`;
+}
+function historyOfTest(file, testId, query) {
+  const messageOptions = {
+    tryMessages: query.tryMessages,
+    matchAnyTimeout: query.matchAnyTimeout,
+    matchAnyCrash: query.matchAnyCrash
+  };
+  const everywhere = computeConfigStats(file, testId, messageOptions);
+  const onTrunk = new Set(everywhere.map((config) => config.jobName));
+  const wanted = /* @__PURE__ */ new Set();
+  let substituted = false;
+  for (const jobName of query.jobNames) {
+    if (onTrunk.has(jobName)) {
+      wanted.add(jobName);
+      continue;
+    }
+    substituted = true;
+    const key = platformKey(jobName);
+    for (const candidate of onTrunk) {
+      if (key !== null && platformKey(candidate) === key) {
+        wanted.add(candidate);
+      }
+    }
+  }
+  const configScope = wanted.size === 0 ? "all" : substituted ? "platform" : "job";
+  const configs = computeConfigStats(file, testId, {
+    ...messageOptions,
+    jobNames: configScope === "all" ? void 0 : [...wanted],
+    minRecentRuns: MIN_RECENT_RUNS
+  });
+  const used = new Set(configs.map((config) => config.jobName));
+  const pushJobs = new Set(query.jobNames);
+  return {
+    stats: computeTestStats(file, testId),
+    hasMatchingMessage: configs.some((config) => config.sameMsgFailCount > 0),
+    configs,
+    configScope,
+    standIns: [...used].filter((jobName) => !pushJobs.has(jobName)),
+    elsewhere: everywhere.filter((config) => !used.has(config.jobName) && config.sameMsgFailCount > 0).sort((a, b) => b.sameMsgFailRate - a.sameMsgFailRate),
+    // `file.days` is the aggregate's window. Upstream reads
+    // `data.metadata.days` and falls back to 0 (`old/try.html:2601`); a
+    // daily file would give `null` here, which the display code treats
+    // the same way its `|| HISTORY_DAYS` fallback does.
+    totalDays: file.days ?? 0
+  };
+}
+function pickHeadlineRate(stats, configs, elsewhere = []) {
   const overall = overallRate(stats);
   const rateOf = (config) => config.recentSameMsgFailRate !== null ? {
     rate: config.recentSameMsgFailRate,
@@ -11768,6 +11817,18 @@ function pickHeadlineRate(stats, configs) {
       bestScore = current;
     }
   }
+  if ((best === null || best.rate === 0) && elsewhere.length > 0 && stats.runCount > 0) {
+    const sameMsg = [...configs ?? [], ...elsewhere].reduce(
+      (sum, config) => sum + config.sameMsgFailCount,
+      0
+    );
+    return {
+      rate: sameMsg / stats.runCount * 100,
+      runs: stats.runCount,
+      scope: "overall",
+      sameMessage: true
+    };
+  }
   if (best === null || best.rate === 0) {
     return { rate: overall, runs: stats.runCount, scope: "overall" };
   }
@@ -11782,19 +11843,26 @@ function formatFailRate(rate2) {
 function dayCount(days) {
   return days === 1 ? "the last day" : `the last ${days} days`;
 }
-function flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDays) {
+function flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDays, scope = {}) {
+  const elsewhere = scope.elsewhere ?? [];
+  const standIns = new Set(scope.standIns ?? []);
   const overall = overallRate(stats);
   const all = totalDays || HISTORY_DAYS;
   const lines = [];
   lines.push(
-    hasMatchingMessage ? "This failure already happens without your changes." : "This exact failure was never seen in history \u2014 it looks new.",
+    hasMatchingMessage ? "This failure already happens without your changes." : elsewhere.length > 0 ? "This failure already happens on trunk, but not on the jobs it failed on here." : "This exact failure was never seen in history \u2014 it looks new.",
     ""
   );
   if (headline.scope === "config") {
     const span = headline.recent === true ? dayCount(headline.days) : `${all} days`;
     lines.push(
       `It fails this way ${formatFailRate(headline.rate)} of the time over ${span} on` + (headline.lowConfidence === true ? ` (only ${headline.runs} runs, so approximate)` : ""),
-      `${headline.jobName}`
+      `${headline.jobName}` + (headline.jobName === void 0 || !standIns.has(headline.jobName) ? "" : scope.configScope === "all" ? " (this platform isn't on trunk)" : " (closest job on trunk)")
+    );
+  } else if (headline.sameMessage === true) {
+    lines.push(
+      `It fails this way ${formatFailRate(headline.rate)} of the time over ${all} days on`,
+      "all platforms combined"
     );
   }
   const rateFor = (config) => config.recentSameMsgFailRate !== null ? { rate: config.recentSameMsgFailRate, runs: config.recentRunCount } : { rate: config.sameMsgFailRate, runs: config.runCount };
@@ -11803,12 +11871,20 @@ function flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDay
     jobName: config.jobName,
     recentDays: config.recentDays
   })).filter((config) => config.rate > 0).sort((a, b) => b.rate - a.rate);
-  if (shown.length > 0) {
-    lines.push("", `Same failure over ${dayCount(shown[0].recentDays)}, by configuration:`);
-    for (const config of shown.slice(0, MAX_TOOLTIP_CONFIGS)) {
+  const listed = shown.length > 0 ? { span: dayCount(shown[0].recentDays), rows: shown } : {
+    span: `${all} days`,
+    rows: elsewhere.map((config) => ({
+      rate: config.sameMsgFailRate,
+      runs: config.runCount,
+      jobName: config.jobName
+    }))
+  };
+  if (listed.rows.length > 0) {
+    lines.push("", `Same failure over ${listed.span}, by configuration:`);
+    for (const config of listed.rows.slice(0, MAX_TOOLTIP_CONFIGS)) {
       lines.push(`  ${formatFailRate(config.rate)} of ${config.runs} runs \u2014 ${config.jobName}`);
     }
-    const hidden = shown.length - MAX_TOOLTIP_CONFIGS;
+    const hidden = listed.rows.length - MAX_TOOLTIP_CONFIGS;
     if (hidden > 0) {
       lines.push(`  and ${hidden} more configuration${hidden === 1 ? "" : "s"}`);
     }
@@ -12076,7 +12152,10 @@ function isPermaFail(failure) {
   return failure.everyRunFailed;
 }
 function isKnownOnCentral(failure) {
-  return failure.central !== null && failure.central.failCount > 0;
+  if (failure.central === null) {
+    return false;
+  }
+  return failure.messageComparable ? failure.central.sameMessageFailCount > 0 : failure.central.failCount > 0;
 }
 async function collectTimings(context, jobs, fetchUrl, concurrency) {
   const timings = [];
@@ -12306,7 +12385,6 @@ async function attachFromFile(context, group) {
       missing.push(failure);
       continue;
     }
-    const stats = computeTestStats(decoded, identity.testId);
     const messageOptions = {
       tryMessages: failure.messages,
       // A timeout or a crash records no message at all
@@ -12317,12 +12395,13 @@ async function attachFromFile(context, group) {
       matchAnyCrash: failure.statuses.includes("CRASH")
     };
     const configs = computeConfigStats(decoded, identity.testId, messageOptions);
-    const hereConfigs = computeConfigStats(decoded, identity.testId, {
+    const pushJobNames = failure.jobNames.map(stripChunkSuffix);
+    const history = historyOfTest(decoded, identity.testId, {
       ...messageOptions,
-      jobNames: failure.jobNames.map(stripChunkSuffix),
-      minRecentRuns: MIN_RECENT_RUNS
+      jobNames: pushJobNames
     });
-    const headline = pickHeadlineRate(stats, hereConfigs);
+    const { stats } = history;
+    const headline = pickHeadlineRate(stats, history.configs, history.elsewhere);
     const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
     const sameMessageFailCount = configs.reduce(
       (sum, config) => sum + config.sameMsgFailCount,
@@ -12344,15 +12423,18 @@ async function attachFromFile(context, group) {
       sameMessageFailRate: stats.runCount > 0 ? sameMessageFailCount / stats.runCount * 100 : null,
       sameMessageFailCountOnPermaConfigs,
       headline,
-      // Over `hereConfigs`, to agree with the rates it quotes.
       explanation: flakinessTooltip(
         stats,
-        hereConfigs,
+        history.configs,
         headline,
-        hereConfigs.some((config) => config.sameMsgFailCount > 0),
-        decoded.days ?? void 0
+        history.hasMatchingMessage,
+        decoded.days ?? void 0,
+        history
       ),
-      configsInHistory: hereConfigs.length,
+      configScope: history.configScope ?? "job",
+      configsInHistory: configs.filter(
+        (config) => pushJobNames.includes(config.jobName)
+      ).length,
       worstConfig: worst === null ? null : {
         jobName: worst.jobName,
         failRate: worst.failRate,
@@ -12432,19 +12514,7 @@ function centralHeadlineLines(failure, indent) {
   if (central === null) {
     return [];
   }
-  const where = central.headline.scope === "config" ? `on ${centralScopeCell(failure)}` : "across every configuration";
-  const lines = [
-    `${indent}central ${percent(central.headline.rate)} ${where} (${central.headline.runs} runs)`
-  ];
-  if (central.configsInHistory === 0) {
-    lines.push(
-      `${indent}  central never ran this test on ${failure.jobNames.length === 1 ? "the configuration" : `any of the ${failure.jobNames.length} configurations`} this push used, so the rate above is the whole-test one`
-    );
-  }
-  for (const line of central.explanation.split("\n")) {
-    lines.push(line === "" ? "" : `${indent}  ${line}`);
-  }
-  return lines;
+  return central.explanation.replace(/ on\n/g, " on ").split("\n").filter((line) => line !== "").map((line) => `${indent}${line}`);
 }
 function centralScopeCell(failure) {
   if (failure.central === null) {
@@ -12676,7 +12746,7 @@ function renderText9(result, limit, permaOnly, otherJobs, allMessages) {
       ...compactSection(
         "KNOWN INTERMITTENTS",
         result.knownIntermittents,
-        "also fail on central; likely not yours.",
+        "also fail this way on central; likely not yours.",
         limit
       )
     );
@@ -12685,7 +12755,7 @@ function renderText9(result, limit, permaOnly, otherJobs, allMessages) {
       ...compactSection(
         "NEW INTERMITTENTS",
         result.newIntermittents,
-        "failed here, never on central. Worth a look.",
+        "failed here, never this way on central. Worth a look.",
         limit
       )
     );
@@ -12865,8 +12935,8 @@ function renderMarkdown9(result, limit, permaOnly, otherJobs) {
   lines.push(`[View on Treeherder](${result.treeherderUrl})`);
   const sections = permaOnly ? [["Perma-fails", result.permaFails, PERMA_FAIL_DESCRIPTION]] : [
     ["Perma-fails", result.permaFails, PERMA_FAIL_DESCRIPTION],
-    ["Known intermittents", result.knownIntermittents, "Also fail on central; likely not yours."],
-    ["New intermittents", result.newIntermittents, "Failed here, never on central."]
+    ["Known intermittents", result.knownIntermittents, "Also fail this way on central; likely not yours."],
+    ["New intermittents", result.newIntermittents, "Failed here, never this way on central."]
   ];
   for (const [title, failures, description] of sections) {
     lines.push("");

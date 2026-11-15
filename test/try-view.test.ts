@@ -2130,4 +2130,15 @@ test('flakinessFact covers no history, a new test and a new message', () => {
         flakinessFact({ stats: stats({ runs: 200, fails: 10 }), hasMatchingMessage: false, configs: [], totalDays: 21 }),
         'This failure looks new (any failure: 5.0% over 21 days)'
     );
+    const elsewhere = [config('test-linux2404-64/opt-mochitest-chrome-1proc', { runs: 100, fails: 4, sameMsg: 4 })];
+    const seenElsewhere = { stats: stats({ runs: 200, fails: 10 }), hasMatchingMessage: false, configs: [], elsewhere, totalDays: 21 };
+    assert.equal(
+        flakinessFact(seenElsewhere),
+        'Already fails this way 2.0% of the time, on other configurations, over the last 21 days'
+    );
+    // The cell agrees with that sentence: same-message rate, and the mitten.
+    const cell = flakinessCell(seenElsewhere)!;
+    assert.equal(cell.text, '2.0%');
+    assert.equal(cell.hasMitten, true);
+    assert.match(cell.className, /\bflaky-msg\b/);
 });

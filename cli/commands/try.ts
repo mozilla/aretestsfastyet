@@ -27,9 +27,9 @@
  *   about that same config, which is context for reading the row rather than
  *   grounds for hiding it. See `isPermaFail()`.
  * - **KNOWN INTERMITTENTS** — did not fail every run anywhere, and also fail
- *   on central. Likely not yours.
- * - **NEW INTERMITTENTS** — failed here, not seen failing on central, but not
- *   in every run. Worth a look.
+ *   with the same message on central. Likely not yours. See `isKnownOnCentral()`.
+ * - **NEW INTERMITTENTS** — failed here, not seen failing this way on central,
+ *   but not in every run. Worth a look.
  *
  * Two distinctions carry the weight, and both are easy to lose:
  *
@@ -54,12 +54,12 @@ import {
     parseTreeherderUrl,
 } from '../../lib/sources/lando.ts';
 import {
-    MIN_RECENT_RUNS,
+    type ConfigScope,
     type HeadlineRate,
     flakinessTooltip,
+    historyOfTest,
     pickHeadlineRate,
 } from '../../lib/query/flakiness-rate.ts';
-import { computeTestStats } from '../../lib/query/test-stats.ts';
 import { stripChunkSuffix } from '../../lib/model/job-name.ts';
 import { normalizeMessage } from '../../lib/model/failure-message.ts';
 import {
@@ -350,6 +350,8 @@ export interface CentralHistory {
      */
     headline: HeadlineRate;
     explanation: string;
+    /** Which configurations `headline` and `explanation` were measured on. */
+    configScope: ConfigScope;
     /**
      * How many of this push's configurations central has history for. 0 means
      * the explanation's "never seen in history" is about an empty population.
@@ -708,9 +710,21 @@ function isPermaFail(failure: TryFailure): boolean {
     return failure.everyRunFailed;
 }
 
-/** Whether central has seen this test fail the same way. */
+/**
+ * Whether central has seen this test fail the same way.
+ *
+ * Same message, not any failure: a test failing on central for an unrelated
+ * reason says nothing about this one, and `try.html` calls such a failure new.
+ * A push that recorded no message has nothing to match, so any failure on
+ * central is all there is to go on; its row says it cannot be compared.
+ */
 function isKnownOnCentral(failure: TryFailure): boolean {
-    return failure.central !== null && failure.central.failCount > 0;
+    if (failure.central === null) {
+        return false;
+    }
+    return failure.messageComparable
+        ? failure.central.sameMessageFailCount > 0
+        : failure.central.failCount > 0;
 }
 
 // --- the push's own results ----------------------------------------------
@@ -1119,7 +1133,6 @@ async function attachFromFile(
             missing.push(failure);
             continue;
         }
-        const stats = computeTestStats(decoded, identity.testId);
         const messageOptions = {
             tryMessages: failure.messages,
             // A timeout or a crash records no message at all
@@ -1130,16 +1143,16 @@ async function attachFromFile(
             matchAnyCrash: failure.statuses.includes('CRASH'),
         };
         const configs = computeConfigStats(decoded, identity.testId, messageOptions);
-        // The call `site/try-flakiness-worker.ts` makes, option for option.
-        // Chunk-stripped because the aggregates store names that way: leave
-        // it out and every configuration misses, silently sending every row
-        // to the overall fallback.
-        const hereConfigs = computeConfigStats(decoded, identity.testId, {
+        // The call `site/try-flakiness-worker.ts` makes. Chunk-stripped
+        // because the aggregates store names that way: leave it out and
+        // every configuration misses.
+        const pushJobNames = failure.jobNames.map(stripChunkSuffix);
+        const history = historyOfTest(decoded, identity.testId, {
             ...messageOptions,
-            jobNames: failure.jobNames.map(stripChunkSuffix),
-            minRecentRuns: MIN_RECENT_RUNS,
+            jobNames: pushJobNames,
         });
-        const headline = pickHeadlineRate(stats, hereConfigs);
+        const { stats } = history;
+        const headline = pickHeadlineRate(stats, history.configs, history.elsewhere);
         const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
         const sameMessageFailCount = configs.reduce(
             (sum, config) => sum + config.sameMsgFailCount,
@@ -1172,15 +1185,18 @@ async function attachFromFile(
                 stats.runCount > 0 ? (sameMessageFailCount / stats.runCount) * 100 : null,
             sameMessageFailCountOnPermaConfigs,
             headline,
-            // Over `hereConfigs`, to agree with the rates it quotes.
             explanation: flakinessTooltip(
                 stats,
-                hereConfigs,
+                history.configs,
                 headline,
-                hereConfigs.some((config) => config.sameMsgFailCount > 0),
-                decoded.days ?? undefined
+                history.hasMatchingMessage,
+                decoded.days ?? undefined,
+                history
             ),
-            configsInHistory: hereConfigs.length,
+            configScope: history.configScope ?? 'job',
+            configsInHistory: configs.filter((config) =>
+                pushJobNames.includes(config.jobName)
+            ).length,
             worstConfig:
                 worst === null
                     ? null
@@ -1288,32 +1304,23 @@ function centralLine(failure: TryFailure): string {
     );
 }
 
-/** `[]` when there is no central history — `centralLine()` says so already. */
+/**
+ * `try.html`'s tooltip, which names the measurement behind the rate. `[]`
+ * when there is no central history — `centralLine()` says so already.
+ */
 function centralHeadlineLines(failure: TryFailure, indent: string): string[] {
     const central = failure.central;
     if (central === null) {
         return [];
     }
-    const where =
-        central.headline.scope === 'config'
-            ? `on ${centralScopeCell(failure)}`
-            : 'across every configuration';
-    const lines = [
-        `${indent}central ${percent(central.headline.rate)} ${where} ` +
-            `(${central.headline.runs} runs)`,
-    ];
-    if (central.configsInHistory === 0) {
-        // Before the explanation: its verdict is conditional on this.
-        lines.push(
-            `${indent}  central never ran this test on ` +
-                `${failure.jobNames.length === 1 ? 'the configuration' : `any of the ${failure.jobNames.length} configurations`}` +
-                ' this push used, so the rate above is the whole-test one'
-        );
-    }
-    for (const line of central.explanation.split('\n')) {
-        lines.push(line === '' ? '' : `${indent}  ${line}`);
-    }
-    return lines;
+    // The tooltip breaks after "… on" to give the job name its own line; a
+    // terminal has the width, and blank lines between sections would only
+    // spread one row over a screen.
+    return central.explanation
+        .replace(/ on\n/g, ' on ')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => `${indent}${line}`);
 }
 
 /**
@@ -1791,7 +1798,7 @@ function renderText(
             ...compactSection(
                 'KNOWN INTERMITTENTS',
                 result.knownIntermittents,
-                'also fail on central; likely not yours.',
+                'also fail this way on central; likely not yours.',
                 limit
             )
         );
@@ -1800,7 +1807,7 @@ function renderText(
             ...compactSection(
                 'NEW INTERMITTENTS',
                 result.newIntermittents,
-                'failed here, never on central. Worth a look.',
+                'failed here, never this way on central. Worth a look.',
                 limit
             )
         );
@@ -2059,8 +2066,8 @@ function renderMarkdown(
         ? [['Perma-fails', result.permaFails, PERMA_FAIL_DESCRIPTION]]
         : [
               ['Perma-fails', result.permaFails, PERMA_FAIL_DESCRIPTION],
-              ['Known intermittents', result.knownIntermittents, 'Also fail on central; likely not yours.'],
-              ['New intermittents', result.newIntermittents, 'Failed here, never on central.'],
+              ['Known intermittents', result.knownIntermittents, 'Also fail this way on central; likely not yours.'],
+              ['New intermittents', result.newIntermittents, 'Failed here, never this way on central.'],
           ];
 
     for (const [title, failures, description] of sections) {

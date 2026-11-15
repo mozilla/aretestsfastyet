@@ -640,13 +640,13 @@ PERMA-FAILS (3) — failed in every run of at least one configuration here.
     Never failed on central in 21 days (0/412 runs)
     Assertion failed: selection.rangeCount == 1
 
-KNOWN INTERMITTENTS (14) — also fail on central; likely not yours.
+KNOWN INTERMITTENTS (14) — also fail this way on central; likely not yours.
    #  test                        here  central  same msg
   12  test_frecency.js            6/12     8.1%      8.1%
    4  browser_download_panel.js    4/9     3.2%      3.2%
   … 12 more (--limit 0 for all)
 
-NEW INTERMITTENTS (1) — failed once here, never on central. Worth a look.
+NEW INTERMITTENTS (1) — failed once here, never this way on central. Worth a look.
    #  test                        here  central  same msg
    1  toolkit/xre/test/…start.js   1/3      n/a       n/a
 ```
@@ -821,11 +821,12 @@ used. On push `46c757b692be` a row read `20/41 · central 5.8%` where central's
 rate on the configuration that ran was 42.0% — two populations, one comparison,
 and an apparent 8x elevation that was arithmetic.
 
-When central has no history for **any** configuration the push used — a test that
-runs on windows and mac on central and was pushed to linux — the rate is the
-whole-test one and the output says so, because the per-configuration comparison
-had nothing to compare and the verdict sentence above it is then about an empty
-population.
+When central has no history for a configuration the push used — a new job
+variant, or a new platform — the jobs of the same platform and build type stand
+in for it, and the row names the job used as "the closest job on trunk". When
+the platform itself is new, every configuration is used. Whatever the scope, a
+failure central has with the same message on *any* configuration is not called
+new: the verdict says it happens on other configurations and lists them.
 
 The same-message distinction matters and is what the `Pre-existing:` line rests
 on: a test that already fails on central 8% of the time, but with a *different*
@@ -869,7 +870,10 @@ to those, which is `null` when central attributed no runs to them.
 days?, lowConfidence?}`, the value `try.html`'s flakiness column shows —
 `explanation`, the text lines that say which measurement produced it, and
 `configsInHistory`, how many of the push's configurations central has any history
-for. `central.failRate` is retained beside them as the whole-test, all-platform
+for, and `configScope` — `job`, `platform` or `all` — which configurations the
+headline was measured on: the push's own jobs, the same platform and build type
+standing in for jobs central never ran, or every configuration when even the
+platform is new. `central.failRate` is retained beside them as the whole-test, all-platform
 rate; read `headline.rate` for the comparison against this push.
 
 ### `fx-tests task <taskId>` — what happened in one job

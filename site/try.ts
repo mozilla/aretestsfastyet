@@ -1576,7 +1576,7 @@ function renderTable(): void {
             const data = state.flakiness.get(path);
             return data === undefined
                 ? null
-                : pickHeadlineRate(data.stats, data.configs).rate;
+                : pickHeadlineRate(data.stats, data.configs, data.elsewhere).rate;
         }
     );
     const { permanent, intermittent } = splitTables(tests);

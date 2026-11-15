@@ -1024,16 +1024,26 @@ export function flakinessCell(data: FlakinessData | null): FlakinessCell | null 
                 '— this failure is new',
         };
     }
-    const headline = pickHeadlineRate(stats, configs);
+    const elsewhere = data.elsewhere ?? [];
+    const headline = pickHeadlineRate(stats, configs, elsewhere);
+    // Trunk has this failure, on these configurations or others.
+    const seen = hasMatchingMessage || elsewhere.length > 0;
     return {
         className:
             'flakiness-cell ' +
-            (hasMatchingMessage ? 'flaky-msg' : 'flaky') +
+            (seen ? 'flaky-msg' : 'flaky') +
             (headline.lowConfidence === true ? ' flaky-few-runs' : ''),
         text: formatFailRate(headline.rate),
         isNewWarning: false,
-        hasMitten: hasMatchingMessage,
-        tooltip: flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDays),
+        hasMitten: seen,
+        tooltip: flakinessTooltip(
+            stats,
+            configs,
+            headline,
+            hasMatchingMessage,
+            totalDays,
+            data
+        ),
     };
 }
 
@@ -1099,11 +1109,15 @@ export function flakinessFact(data: FlakinessData | null | undefined): string | 
     if (failCount === 0) {
         return `New: passed all ${stats.runCount} runs over the last ${days}`;
     }
+    const elsewhere = data.elsewhere ?? [];
+    const headline = pickHeadlineRate(stats, configs, elsewhere);
+    if (!hasMatchingMessage && elsewhere.length > 0) {
+        return `Already fails this way ${formatFailRate(headline.rate)} of the time, on other configurations, over the last ${days}`;
+    }
     if (!hasMatchingMessage) {
         const overall = formatFailRate((failCount / stats.runCount) * 100);
         return `This failure looks new (any failure: ${overall} over ${days})`;
     }
-    const headline = pickHeadlineRate(stats, configs);
     if (headline.scope === 'config') {
         const span = headline.recent === true ? dayCount(headline.days) : `the last ${days}`;
         const job = (headline.jobName ?? '').replace(/^test-/, '');

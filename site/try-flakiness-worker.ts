@@ -47,21 +47,19 @@
  *
  * ## What it computes
  *
- * Per test in the file: `computeTestStats` for the headline denominators, and
- * `computeConfigStats` restricted to the configurations the test failed on **in
- * this push** — that restriction is what makes the answer "was this already
- * failing where I saw it fail" rather than "is this test flaky somewhere".
- *
- * `hasMatchingMessage` is `configs.some(c => c.sameMsgFailCount > 0)`
- * (`old/try.html:2606`) and not a whole-file question: it must agree with the rates
- * the tooltip shows, which are these configs' and no others'.
+ * Per test in the file: `historyOfTest` (`lib/query/flakiness-rate.ts`), the
+ * same call `fx-tests try` makes. Its configurations are the ones the test
+ * failed on **in this push** — that restriction is what makes the answer "was
+ * this already failing where I saw it fail" rather than "is this test flaky
+ * somewhere" — with stand-ins for jobs trunk never ran.
  */
 
 import { type BucketFile, decodeBucket } from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
-import { computeConfigStats, type ConfigStats } from '../lib/query/config-stats.ts';
-import { computeTestStats, type TestStats } from '../lib/query/test-stats.ts';
-import { MIN_RECENT_RUNS, type FlakinessRequest } from './try-view.ts';
+import type { ConfigStats } from '../lib/query/config-stats.ts';
+import { type ConfigScope, historyOfTest } from '../lib/query/flakiness-rate.ts';
+import type { TestStats } from '../lib/query/test-stats.ts';
+import type { FlakinessRequest } from './try-view.ts';
 
 /** What the main thread posts in. */
 interface WorkerRequest {
@@ -77,6 +75,9 @@ export interface FlakinessResult {
     stats?: TestStats;
     hasMatchingMessage?: boolean;
     configs?: ConfigStats[];
+    configScope?: ConfigScope | undefined;
+    elsewhere?: ConfigStats[] | undefined;
+    standIns?: string[] | undefined;
     totalDays?: number;
 }
 
@@ -99,27 +100,15 @@ export function flakinessOfTest(
     if (found === null) {
         return { path, found: false };
     }
-    const stats = computeTestStats(file, found.testId);
-    const configs = computeConfigStats(file, found.testId, {
-        jobNames,
-        minRecentRuns: MIN_RECENT_RUNS,
-        tryMessages,
-        matchAnyTimeout: hasTimeout,
-        matchAnyCrash: hasCrash,
-    });
     return {
         path,
         found: true,
-        stats,
-        // Agrees with the rates the tooltip shows, because it is asked
-        // of the same configs.
-        hasMatchingMessage: configs.some((config) => config.sameMsgFailCount > 0),
-        configs,
-        // `file.days` is the aggregate's window. Upstream reads
-        // `data.metadata.days` and falls back to 0 (`old/try.html:2601`); a
-        // daily file would give `null` here, which the display code treats
-        // the same way its `|| HISTORY_DAYS` fallback does.
-        totalDays: file.days ?? 0,
+        ...historyOfTest(file, found.testId, {
+            jobNames,
+            tryMessages,
+            matchAnyTimeout: hasTimeout,
+            matchAnyCrash: hasCrash,
+        }),
     };
 }
 
