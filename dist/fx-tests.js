@@ -11820,6 +11820,35 @@ function flakinessTooltip(stats, configs, headline, hasMatchingMessage, totalDay
   return lines.filter((line, index) => line !== "" || lines[index - 1] !== "").join("\n");
 }
 
+// lib/query/bucket-lookup.ts
+function groupByBucketFile(items, pathOf, harnessOf, priority = () => 0) {
+  const files = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    const path = pathOf(item);
+    const harness = harnessOf(path);
+    const filename = `${harness}-${bucketFileSuffix(bucketIndexForPath(path))}.json`;
+    let file = files.get(filename);
+    if (file === void 0) {
+      file = { harness, filename, items: [] };
+      files.set(filename, file);
+    }
+    file.items.push(item);
+  }
+  const best = (file) => Math.min(...file.items.map(priority));
+  return [...files.values()].sort((a, b) => best(a) - best(b));
+}
+async function lookupInBuckets(items, options) {
+  const queue = groupByBucketFile(items, options.pathOf, detectHarness, options.priority);
+  const missed = [];
+  const lane = async () => {
+    for (let next = queue.shift(); next !== void 0; next = queue.shift()) {
+      missed.push(...await options.read(next));
+    }
+  };
+  await Promise.all(Array.from({ length: options.concurrency ?? 1 }, lane));
+  return missed;
+}
+
 // cli/commands/try.ts
 var TRY_OPTIONS = {
   project: {
@@ -12253,94 +12282,86 @@ function aggregateFailures(timings, runsPerJobName) {
   );
 }
 async function attachCentralHistory(context, failures) {
-  const wanted = /* @__PURE__ */ new Map();
-  for (const failure of failures) {
-    const harness = detectHarness(failure.path);
-    const suffix = bucketFileSuffix(bucketIndexForPath(failure.path));
-    const key = `${harness}-${suffix}`;
-    let group = wanted.get(key);
-    if (group === void 0) {
-      group = { harness, suffix, failures: [] };
-      wanted.set(key, group);
-    }
-    group.failures.push(failure);
+  await lookupInBuckets(failures, {
+    pathOf: (failure) => failure.path,
+    read: (file) => attachFromFile(context, file)
+  });
+}
+async function attachFromFile(context, group) {
+  let file;
+  try {
+    file = await fetchJson(context.source, {
+      index: timingsIndex(group.harness),
+      filename: group.filename
+    });
+  } catch (error) {
+    warn(context, `could not read central history for ${group.filename}: ${error.message}`);
+    return group.items;
   }
-  for (const group of wanted.values()) {
-    let file;
-    try {
-      file = await fetchJson(context.source, {
-        index: timingsIndex(group.harness),
-        filename: `${group.harness}-${group.suffix}.json`
-      });
-    } catch (error) {
-      warn(
-        context,
-        `could not read central history for ${group.harness}-${group.suffix}.json: ${error.message}`
-      );
+  const decoded = decodeBucket(file);
+  const missing = [];
+  for (const failure of group.items) {
+    const identity = decoded.findTest(failure.path);
+    if (identity === null) {
+      missing.push(failure);
       continue;
     }
-    const decoded = decodeBucket(file);
-    for (const failure of group.failures) {
-      const identity = decoded.findTest(failure.path);
-      if (identity === null) {
-        continue;
-      }
-      const stats = computeTestStats(decoded, identity.testId);
-      const messageOptions = {
-        tryMessages: failure.messages,
-        // A timeout or a crash records no message at all
-        // (`FORMATS.md`), so for those the status kind stands in for
-        // one — otherwise every timeout would count as a different
-        // failure from the timeout on central.
-        matchAnyTimeout: failure.statuses.includes("TIMEOUT"),
-        matchAnyCrash: failure.statuses.includes("CRASH")
-      };
-      const configs = computeConfigStats(decoded, identity.testId, messageOptions);
-      const hereConfigs = computeConfigStats(decoded, identity.testId, {
-        ...messageOptions,
-        jobNames: failure.jobNames.map(stripChunkSuffix),
-        minRecentRuns: MIN_RECENT_RUNS
-      });
-      const headline = pickHeadlineRate(stats, hereConfigs);
-      const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
-      const sameMessageFailCount = configs.reduce(
-        (sum, config) => sum + config.sameMsgFailCount,
-        0
-      );
-      const worst = configs.find((config) => config.failCount > 0) ?? null;
-      const permaConfigNames = new Set(
-        failure.permaFailingConfigs.map(stripChunkSuffix)
-      );
-      const permaConfigs = configs.filter(
-        (config) => permaConfigNames.has(config.jobName)
-      );
-      const sameMessageFailCountOnPermaConfigs = permaConfigs.length === 0 ? null : permaConfigs.reduce((sum, config) => sum + config.sameMsgFailCount, 0);
-      failure.central = {
-        runCount: stats.runCount,
-        failCount,
-        failRate: stats.runCount > 0 ? failCount / stats.runCount * 100 : null,
-        sameMessageFailCount,
-        sameMessageFailRate: stats.runCount > 0 ? sameMessageFailCount / stats.runCount * 100 : null,
-        sameMessageFailCountOnPermaConfigs,
+    const stats = computeTestStats(decoded, identity.testId);
+    const messageOptions = {
+      tryMessages: failure.messages,
+      // A timeout or a crash records no message at all
+      // (`FORMATS.md`), so for those the status kind stands in for
+      // one — otherwise every timeout would count as a different
+      // failure from the timeout on central.
+      matchAnyTimeout: failure.statuses.includes("TIMEOUT"),
+      matchAnyCrash: failure.statuses.includes("CRASH")
+    };
+    const configs = computeConfigStats(decoded, identity.testId, messageOptions);
+    const hereConfigs = computeConfigStats(decoded, identity.testId, {
+      ...messageOptions,
+      jobNames: failure.jobNames.map(stripChunkSuffix),
+      minRecentRuns: MIN_RECENT_RUNS
+    });
+    const headline = pickHeadlineRate(stats, hereConfigs);
+    const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
+    const sameMessageFailCount = configs.reduce(
+      (sum, config) => sum + config.sameMsgFailCount,
+      0
+    );
+    const worst = configs.find((config) => config.failCount > 0) ?? null;
+    const permaConfigNames = new Set(
+      failure.permaFailingConfigs.map(stripChunkSuffix)
+    );
+    const permaConfigs = configs.filter(
+      (config) => permaConfigNames.has(config.jobName)
+    );
+    const sameMessageFailCountOnPermaConfigs = permaConfigs.length === 0 ? null : permaConfigs.reduce((sum, config) => sum + config.sameMsgFailCount, 0);
+    failure.central = {
+      runCount: stats.runCount,
+      failCount,
+      failRate: stats.runCount > 0 ? failCount / stats.runCount * 100 : null,
+      sameMessageFailCount,
+      sameMessageFailRate: stats.runCount > 0 ? sameMessageFailCount / stats.runCount * 100 : null,
+      sameMessageFailCountOnPermaConfigs,
+      headline,
+      // Over `hereConfigs`, to agree with the rates it quotes.
+      explanation: flakinessTooltip(
+        stats,
+        hereConfigs,
         headline,
-        // Over `hereConfigs`, to agree with the rates it quotes.
-        explanation: flakinessTooltip(
-          stats,
-          hereConfigs,
-          headline,
-          hereConfigs.some((config) => config.sameMsgFailCount > 0),
-          decoded.days ?? void 0
-        ),
-        configsInHistory: hereConfigs.length,
-        worstConfig: worst === null ? null : {
-          jobName: worst.jobName,
-          failRate: worst.failRate,
-          sameMsgFailRate: worst.sameMsgFailRate
-        },
-        known: true
-      };
-    }
+        hereConfigs.some((config) => config.sameMsgFailCount > 0),
+        decoded.days ?? void 0
+      ),
+      configsInHistory: hereConfigs.length,
+      worstConfig: worst === null ? null : {
+        jobName: worst.jobName,
+        failRate: worst.failRate,
+        sameMsgFailRate: worst.sameMsgFailRate
+      },
+      known: true
+    };
   }
+  return missing;
 }
 function attachProvenance2(failures, timings, withTaskIds, withProfiles) {
   const byPath = /* @__PURE__ */ new Map();

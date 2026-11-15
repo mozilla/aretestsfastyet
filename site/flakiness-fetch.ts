@@ -4,16 +4,15 @@
  *
  * Moved out of `site/try.ts`. The caller supplies the requests, the order the
  * answers are wanted in, and what to do with each; the bucket files, the
- * worker and the cell's rendering are here.
+ * worker and the cell's rendering are here; the file choice is `lib/`'s.
  */
 
-import { bucketFileSuffix, bucketIndexForPath } from '../lib/formats/buckets.ts';
-import { detectHarness } from '../lib/model/harness.ts';
+import { type BucketFileRead, lookupInBuckets } from '../lib/query/bucket-lookup.ts';
 import type { FlakinessData } from '../lib/query/flakiness-rate.ts';
 import { el } from './drilldown-render.ts';
 import { testPageUrl } from './test-link.ts';
 import type { FlakinessResult, WorkerResponse } from './try-flakiness-worker.ts';
-import { type FlakinessRequest, flakinessCell, groupRequestsByChunk } from './try-view.ts';
+import { type FlakinessRequest, flakinessCell } from './try-view.ts';
 
 declare global {
     /** `fetch-utils.js` — fetches a data file, honouring `?data-source=`. */
@@ -91,9 +90,9 @@ const MAX_WORKERS = 3;
  * fetched one file at a time, overlapping only the next download with the
  * current parse.
  *
- * Each test is read from its detected harness's file only: `detectHarness` is
- * right for every test in the aggregates (`lib/model/harness.ts`). `onResult`
- * gets `null` for anything its file does not hold.
+ * Which files and in what order are `lookupInBuckets`
+ * (`lib/query/bucket-lookup.ts`), shared with `fx-tests try`. `onResult` gets
+ * `null` for anything its bucket file does not hold.
  */
 export async function fetchFlakiness(
     requests: readonly FlakinessRequest[],
@@ -125,56 +124,46 @@ export async function fetchFlakiness(
         }
     };
 
-    /** One pass over the files for one harness guess; returns what it did not find. */
-    const pass = async (
-        entries: readonly FlakinessRequest[],
-        harnessOf: (path: string) => string
-    ): Promise<FlakinessRequest[]> => {
-        const notFound: FlakinessRequest[] = [];
-        const queue = groupRequestsByChunk(
-            entries,
-            testOrder,
-            (path) => `${harnessOf(path)}-${bucketFileSuffix(bucketIndexForPath(path))}`
-        );
-        const readOne = async ([file, tests]: [string, FlakinessRequest[]]): Promise<void> => {
-            const buffer = await fetchData(`${file}.json`)
-                .then((response) => (response.ok ? response.arrayBuffer() : null))
-                .catch(() => null);
-            if (buffer === null) {
-                notFound.push(...tests);
-                return;
+    /** Reads one bucket file; resolves with the requests it did not answer. */
+    const read = async ({
+        filename,
+        items: tests,
+    }: BucketFileRead<FlakinessRequest>): Promise<FlakinessRequest[]> => {
+        const buffer = await fetchData(filename)
+            .then((response) => (response.ok ? response.arrayBuffer() : null))
+            .catch(() => null);
+        if (buffer === null) {
+            return [...tests];
+        }
+        const worker = await acquire();
+        try {
+            const result = await processInWorker(worker, buffer, tests);
+            if (result.error !== undefined) {
+                return [...tests];
             }
-            const worker = await acquire();
-            try {
-                const result = await processInWorker(worker, buffer, tests);
-                if (result.error !== undefined) {
-                    notFound.push(...tests);
-                    return;
+            const notFound: FlakinessRequest[] = [];
+            for (const answer of result.results ?? []) {
+                if (answer.found) {
+                    onResult(answer.path, dataOf(answer));
+                } else {
+                    notFound.push(...tests.filter((test) => test.path === answer.path));
                 }
-                for (const answer of result.results ?? []) {
-                    if (answer.found) {
-                        onResult(answer.path, dataOf(answer));
-                    } else {
-                        notFound.push(...tests.filter((test) => test.path === answer.path));
-                    }
-                }
-            } catch {
-                notFound.push(...tests);
-            } finally {
-                release(worker);
             }
-        };
-        const lane = async (): Promise<void> => {
-            for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-                await readOne(next);
-            }
-        };
-        await Promise.all(Array.from({ length: MAX_DOWNLOADS }, lane));
-        return notFound;
+            return notFound;
+        } catch {
+            return [...tests];
+        } finally {
+            release(worker);
+        }
     };
 
     try {
-        const notFound = await pass(requests, (path) => detectHarness(path));
+        const notFound = await lookupInBuckets(requests, {
+            pathOf: (request) => request.path,
+            read,
+            priority: (request) => testOrder.get(request.path) ?? Infinity,
+            concurrency: MAX_DOWNLOADS,
+        });
         for (const entry of notFound) {
             onResult(entry.path, null);
         }

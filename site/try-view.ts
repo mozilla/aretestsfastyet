@@ -441,7 +441,7 @@ export interface Failures {
  *
  * **What it does decide is the flakiness fetch order**, and that is observable.
  * `site/try.ts` passes this array straight to `fetchFlakinessData`, which
- * numbers it into `testOrder` and hands that to `groupRequestsByChunk` — so the
+ * numbers it into `testOrder` and hands that to `groupByBucketFile` — so the
  * pre-sort's direction is the priority the bucket files are fetched in. Same
  * fixture: descending fetches `mochitest-04` first, ascending fetches
  * `mochitest-1e` first, and the full 27-file sequence is exactly reversed.
@@ -1780,38 +1780,3 @@ export function flakinessRequests(
     });
 }
 
-/**
- * Groups the requests by the bucket file that answers them, in table order.
- * `old/try.html:2654-2675`.
- *
- * The ordering is the useful part: chunks are sorted by the **position of their
- * highest-priority test in the table**, so the visible top of the table fills in
- * first. A push failing on 70 tests spread across 12 bucket files takes twelve
- * sequential fetches, and reading them in hash order would fill the table in a
- * random-looking sequence.
- */
-export function groupRequestsByChunk(
-    requests: readonly FlakinessRequest[],
-    testOrder: ReadonlyMap<string, number>,
-    fileOf: (path: string) => string
-): [string, FlakinessRequest[]][] {
-    const chunkMap = new Map<string, FlakinessRequest[]>();
-    for (const request of requests) {
-        const key = fileOf(request.path);
-        let list = chunkMap.get(key);
-        if (list === undefined) {
-            list = [];
-            chunkMap.set(key, list);
-        }
-        list.push(request);
-    }
-    return [...chunkMap.entries()].sort((a, b) => {
-        const minA = Math.min(
-            ...a[1].map((request) => testOrder.get(request.path) ?? Infinity)
-        );
-        const minB = Math.min(
-            ...b[1].map((request) => testOrder.get(request.path) ?? Infinity)
-        );
-        return minA - minB;
-    });
-}

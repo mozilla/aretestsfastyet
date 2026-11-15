@@ -45,7 +45,7 @@
  * section reports the same-message rate alongside the overall one.
  */
 
-import { bucketFileSuffix, bucketIndexForPath, type BucketFile, decodeBucket } from '../../lib/formats/buckets.ts';
+import { type BucketFile, decodeBucket } from '../../lib/formats/buckets.ts';
 import { computeConfigStats } from '../../lib/query/config-stats.ts';
 import {
     CURRENT_LANDO_INSTANCE,
@@ -96,7 +96,7 @@ import {
     tableWithPaths,
     truncate,
 } from '../format/text.ts';
-import { detectHarness } from '../options.ts';
+import { type BucketFileRead, lookupInBuckets } from '../../lib/query/bucket-lookup.ts';
 
 /** Options `try` adds. */
 export const TRY_OPTIONS: OptionSpecs = {
@@ -1081,123 +1081,118 @@ async function attachCentralHistory(
     context: CommandContext,
     failures: readonly TryFailure[]
 ): Promise<void> {
-    // Group by (harness, bucket) so each file is fetched once.
-    const wanted = new Map<string, { harness: string; suffix: string; failures: TryFailure[] }>();
-    for (const failure of failures) {
-        const harness = detectHarness(failure.path);
-        const suffix = bucketFileSuffix(bucketIndexForPath(failure.path));
-        const key = `${harness}-${suffix}`;
-        let group = wanted.get(key);
-        if (group === undefined) {
-            group = { harness, suffix, failures: [] };
-            wanted.set(key, group);
-        }
-        group.failures.push(failure);
-    }
+    // The file choice is `try.html`'s too (`lib/query/bucket-lookup.ts`).
+    await lookupInBuckets(failures, {
+        pathOf: (failure) => failure.path,
+        read: (file) => attachFromFile(context, file),
+    });
+}
 
-    for (const group of wanted.values()) {
-        let file: BucketFile;
-        try {
-            file = await fetchJson<BucketFile>(context.source, {
-                index: timingsIndex(group.harness),
-                filename: `${group.harness}-${group.suffix}.json`,
-            });
-        } catch (error) {
-            // Central history is an enrichment, not the answer. Losing it
-            // downgrades every failure in this bucket to "unknown on central"
-            // rather than failing the command — and the warning says so, so
-            // the missing comparison is visible rather than read as "never
-            // failed on central".
-            warn(
-                context,
-                `could not read central history for ${group.harness}-${group.suffix}.json: ` +
-                    `${(error as Error).message}`
-            );
+/** Fills in central history from one bucket file; returns what it lacked. */
+async function attachFromFile(
+    context: CommandContext,
+    group: BucketFileRead<TryFailure>
+): Promise<TryFailure[]> {
+    let file: BucketFile;
+    try {
+        file = await fetchJson<BucketFile>(context.source, {
+            index: timingsIndex(group.harness),
+            filename: group.filename,
+        });
+    } catch (error) {
+        // Central history is an enrichment, not the answer. Losing it
+        // downgrades every failure in this bucket to "unknown on central"
+        // rather than failing the command — and the warning says so, so
+        // the missing comparison is visible rather than read as "never
+        // failed on central".
+        warn(context, `could not read central history for ${group.filename}: ${(error as Error).message}`);
+        return group.items;
+    }
+    const decoded = decodeBucket(file);
+    const missing: TryFailure[] = [];
+    for (const failure of group.items) {
+        const identity = decoded.findTest(failure.path);
+        if (identity === null) {
+            // Not in central data at all. Left as `null`, which the
+            // renderer prints as "no central data", distinct from
+            // "0 failures on central".
+            missing.push(failure);
             continue;
         }
-        const decoded = decodeBucket(file);
-        for (const failure of group.failures) {
-            const identity = decoded.findTest(failure.path);
-            if (identity === null) {
-                // Not in central data at all. Left as `null`, which the
-                // renderer prints as "no central data", distinct from
-                // "0 failures on central".
-                continue;
-            }
-            const stats = computeTestStats(decoded, identity.testId);
-            const messageOptions = {
-                tryMessages: failure.messages,
-                // A timeout or a crash records no message at all
-                // (`FORMATS.md`), so for those the status kind stands in for
-                // one — otherwise every timeout would count as a different
-                // failure from the timeout on central.
-                matchAnyTimeout: failure.statuses.includes('TIMEOUT'),
-                matchAnyCrash: failure.statuses.includes('CRASH'),
-            };
-            const configs = computeConfigStats(decoded, identity.testId, messageOptions);
-            // The call `site/try-flakiness-worker.ts` makes, option for option.
-            // Chunk-stripped because the aggregates store names that way: leave
-            // it out and every configuration misses, silently sending every row
-            // to the overall fallback.
-            const hereConfigs = computeConfigStats(decoded, identity.testId, {
-                ...messageOptions,
-                jobNames: failure.jobNames.map(stripChunkSuffix),
-                minRecentRuns: MIN_RECENT_RUNS,
-            });
-            const headline = pickHeadlineRate(stats, hereConfigs);
-            const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
-            const sameMessageFailCount = configs.reduce(
-                (sum, config) => sum + config.sameMsgFailCount,
-                0
-            );
-            const worst = configs.find((config) => config.failCount > 0) ?? null;
+        const stats = computeTestStats(decoded, identity.testId);
+        const messageOptions = {
+            tryMessages: failure.messages,
+            // A timeout or a crash records no message at all
+            // (`FORMATS.md`), so for those the status kind stands in for
+            // one — otherwise every timeout would count as a different
+            // failure from the timeout on central.
+            matchAnyTimeout: failure.statuses.includes('TIMEOUT'),
+            matchAnyCrash: failure.statuses.includes('CRASH'),
+        };
+        const configs = computeConfigStats(decoded, identity.testId, messageOptions);
+        // The call `site/try-flakiness-worker.ts` makes, option for option.
+        // Chunk-stripped because the aggregates store names that way: leave
+        // it out and every configuration misses, silently sending every row
+        // to the overall fallback.
+        const hereConfigs = computeConfigStats(decoded, identity.testId, {
+            ...messageOptions,
+            jobNames: failure.jobNames.map(stripChunkSuffix),
+            minRecentRuns: MIN_RECENT_RUNS,
+        });
+        const headline = pickHeadlineRate(stats, hereConfigs);
+        const failCount = stats.failCount + stats.timeoutCount + stats.crashCount;
+        const sameMessageFailCount = configs.reduce(
+            (sum, config) => sum + config.sameMsgFailCount,
+            0
+        );
+        const worst = configs.find((config) => config.failCount > 0) ?? null;
 
-            // The same question, asked only of the configs where this push's
-            // failure was permanent. `computeConfigStats` reports
-            // chunk-stripped names, so the push's names have to be stripped
-            // too — otherwise `…-msix-18` never matches `…-msix` and every
-            // config looks absent from history.
-            const permaConfigNames = new Set(
-                failure.permaFailingConfigs.map(stripChunkSuffix)
-            );
-            const permaConfigs = configs.filter((config) =>
-                permaConfigNames.has(config.jobName)
-            );
-            const sameMessageFailCountOnPermaConfigs =
-                permaConfigs.length === 0
-                    ? null
-                    : permaConfigs.reduce((sum, config) => sum + config.sameMsgFailCount, 0);
+        // The same question, asked only of the configs where this push's
+        // failure was permanent. `computeConfigStats` reports
+        // chunk-stripped names, so the push's names have to be stripped
+        // too — otherwise `…-msix-18` never matches `…-msix` and every
+        // config looks absent from history.
+        const permaConfigNames = new Set(
+            failure.permaFailingConfigs.map(stripChunkSuffix)
+        );
+        const permaConfigs = configs.filter((config) =>
+            permaConfigNames.has(config.jobName)
+        );
+        const sameMessageFailCountOnPermaConfigs =
+            permaConfigs.length === 0
+                ? null
+                : permaConfigs.reduce((sum, config) => sum + config.sameMsgFailCount, 0);
 
-            failure.central = {
-                runCount: stats.runCount,
-                failCount,
-                failRate: stats.runCount > 0 ? (failCount / stats.runCount) * 100 : null,
-                sameMessageFailCount,
-                sameMessageFailRate:
-                    stats.runCount > 0 ? (sameMessageFailCount / stats.runCount) * 100 : null,
-                sameMessageFailCountOnPermaConfigs,
+        failure.central = {
+            runCount: stats.runCount,
+            failCount,
+            failRate: stats.runCount > 0 ? (failCount / stats.runCount) * 100 : null,
+            sameMessageFailCount,
+            sameMessageFailRate:
+                stats.runCount > 0 ? (sameMessageFailCount / stats.runCount) * 100 : null,
+            sameMessageFailCountOnPermaConfigs,
+            headline,
+            // Over `hereConfigs`, to agree with the rates it quotes.
+            explanation: flakinessTooltip(
+                stats,
+                hereConfigs,
                 headline,
-                // Over `hereConfigs`, to agree with the rates it quotes.
-                explanation: flakinessTooltip(
-                    stats,
-                    hereConfigs,
-                    headline,
-                    hereConfigs.some((config) => config.sameMsgFailCount > 0),
-                    decoded.days ?? undefined
-                ),
-                configsInHistory: hereConfigs.length,
-                worstConfig:
-                    worst === null
-                        ? null
-                        : {
-                              jobName: worst.jobName,
-                              failRate: worst.failRate,
-                              sameMsgFailRate: worst.sameMsgFailRate,
-                          },
-                known: true,
-            };
-        }
+                hereConfigs.some((config) => config.sameMsgFailCount > 0),
+                decoded.days ?? undefined
+            ),
+            configsInHistory: hereConfigs.length,
+            worstConfig:
+                worst === null
+                    ? null
+                    : {
+                          jobName: worst.jobName,
+                          failRate: worst.failRate,
+                          sameMsgFailRate: worst.sameMsgFailRate,
+                      },
+            known: true,
+        };
     }
+    return missing;
 }
 
 /** Attaches task IDs and profile URLs to each failure. */

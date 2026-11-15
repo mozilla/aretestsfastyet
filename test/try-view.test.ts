@@ -43,8 +43,10 @@ import assert from 'node:assert/strict';
 
 import type { ConfigStats } from '../lib/query/config-stats.ts';
 import type { TestStats } from '../lib/query/test-stats.ts';
-import { bucketIndexForPath } from '../lib/formats/buckets.ts';
+import { bucketFileSuffix, bucketIndexForPath } from '../lib/formats/buckets.ts';
 import { stripChunkSuffix } from '../lib/model/job-name.ts';
+import { detectHarness } from '../lib/model/harness.ts';
+import { groupByBucketFile } from '../lib/query/bucket-lookup.ts';
 import {
     type FailingTest,
     type Job,
@@ -71,7 +73,6 @@ import {
     flakinessTooltip,
     formatFailRate,
     formatForPrompt,
-    groupRequestsByChunk,
     groupUnblamedJobs,
     hgRepoPath,
     initialSort,
@@ -393,7 +394,7 @@ test("aggregateFailures pre-sorts DESCENDING, which sets the flakiness fetch pri
     assert.deepEqual(fromMutant, table, 'the stable re-sort should erase the pre-sort direction');
 
     // What the direction DOES decide: the order `site/try.ts` numbers the tests
-    // into `testOrder` and hands to `groupRequestsByChunk`, which is the order
+    // into `testOrder` and hands to `groupByBucketFile`, which is the order
     // the 3.5 MB bucket files are fetched in. Descending puts the most-failing
     // test's bucket first, so the visible top of the table fills in first.
     assert.deepEqual(
@@ -403,11 +404,16 @@ test("aggregateFailures pre-sorts DESCENDING, which sets the flakiness fetch pri
     );
 
     const fetchOrder = (tests: readonly FailingTest[]): string[] =>
-        groupRequestsByChunk(
+        groupByBucketFile(
             flakinessRequests(tests, stripChunkSuffix),
-            new Map(tests.map((test, index) => [test.path, index])),
-            (path) => `bucket-${bucketIndexForPath(path)}`
-        ).map(([file]) => file);
+            (request) => request.path,
+            () => 'mochitest',
+            (request) => order(tests).get(request.path)!
+        ).map((file) => file.filename);
+    const order = (tests: readonly FailingTest[]): Map<string, number> =>
+        new Map(tests.map((test, index) => [test.path, index]));
+    const bucketFile = (path: string): string =>
+        `mochitest-${bucketFileSuffix(bucketIndexForPath(path))}.json`;
 
     const descending = fetchOrder(FAILURES.tests);
     const ascending = fetchOrder(mutantOrder);
@@ -422,8 +428,8 @@ test("aggregateFailures pre-sorts DESCENDING, which sets the flakiness fetch pri
     // test, and the mutant would fetch it last instead.
     const topTest = FAILURES.tests[0]!;
     assert.equal(topTest.instances.length, Math.max(...counts));
-    assert.equal(descending[0], `bucket-${bucketIndexForPath(topTest.path)}`);
-    assert.equal(ascending[ascending.length - 1], `bucket-${bucketIndexForPath(topTest.path)}`);
+    assert.equal(descending[0], bucketFile(topTest.path));
+    assert.equal(ascending[ascending.length - 1], bucketFile(topTest.path));
 });
 
 test('clicking a header toggles direction, and only "test" starts ascending', () => {
@@ -1541,22 +1547,25 @@ test('the request carries the push messages, and the timeout/crash kind flags', 
 test('bucket files are read in the order their best test appears in the table', () => {
     // `old/try.html:2667`. The visible top of the table fills in first; reading in
     // hash order would fill it in a random-looking sequence.
-    const requests = [
-        { path: 'z', tryMessages: [], hasTimeout: false, hasCrash: false, jobNames: [] },
-        { path: 'a', tryMessages: [], hasTimeout: false, hasCrash: false, jobNames: [] },
-        { path: 'm', tryMessages: [], hasTimeout: false, hasCrash: false, jobNames: [] },
+    const paths = [
+        'dom/base/test/test_a.html',
+        'dom/base/test/test_b.html',
+        'layout/base/tests/test_c.html',
+        'toolkit/content/tests/test_d.html',
+        'browser/base/content/test/browser_e.js',
     ];
-    // 'a' is last in the table, 'z' first.
-    const order = new Map([
-        ['z', 0],
-        ['m', 1],
-        ['a', 2],
-    ]);
-    // 'a' and 'z' share a file; 'm' has its own.
-    const fileOf = (path: string): string => (path === 'm' ? 'file-b' : 'file-a');
-    const grouped = groupRequestsByChunk(requests, order, fileOf);
-    // file-a's best test is 'z' at position 0, so it comes first.
-    assert.deepEqual(grouped.map(([file]) => file), ['file-a', 'file-b']);
+    // Table position: the reverse of the array.
+    const position = (path: string): number => paths.length - 1 - paths.indexOf(path);
+    const files = groupByBucketFile(paths, (path) => path, detectHarness, position);
+    const expected = [
+        ...new Set(
+            [...paths]
+                .sort((a, b) => position(a) - position(b))
+                .map((path) => `mochitest-${bucketFileSuffix(bucketIndexForPath(path))}.json`)
+        ),
+    ];
+    assert.ok(expected.length > 1, 'one bucket file cannot show an order');
+    assert.deepEqual(files.map((file) => file.filename), expected);
 });
 
 // --- unblamed jobs --------------------------------------------------------
