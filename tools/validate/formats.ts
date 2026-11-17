@@ -1926,3 +1926,122 @@ export function checkIntermittents(c: Checker, data: unknown, _ctx: FileContext)
         }
     }
 }
+
+const LIFECYCLE_OFFSET_COLUMNS = ['requestedMs', 'runningMs', 'stoppedMs', 'removedMs'] as const;
+
+/**
+ * `workers-<date>-lifecycle.json`: one row per worker with a lifecycle event on
+ * the day, and one per pool error. The layout is in `test/worker-lifecycle-encode.ts`,
+ * which decodes against `worker-lifecycle.js`.
+ *
+ * Each worker row's first event is the base its other times are offsets from, so
+ * one of its offsets is always 0. That is the invariant a decoder relies on, and
+ * the one a truncated or re-encoded file would break first.
+ */
+export function checkWorkerLifecycle(c: Checker, data: unknown, _ctx: FileContext): void {
+    if (!c.object(data)) {
+        return;
+    }
+    c.noExtraKeys(data, ['metadata', 'tables', 'workers', 'errors']);
+
+    let workerCount = 0;
+    let errorCount = 0;
+    if (c.object(data['metadata'], '.metadata')) {
+        const metadata = data['metadata'] as Record<string, unknown>;
+        c.noExtraKeys(metadata, ['date', 'generatedAt', 'workerCount', 'errorCount'], '.metadata');
+        c.date(metadata['date'], '.metadata.date');
+        c.timestamp(metadata['generatedAt'], '.metadata.generatedAt');
+        if (c.integer(metadata['workerCount'], '.metadata.workerCount')) {
+            workerCount = metadata['workerCount'];
+        }
+        if (c.integer(metadata['errorCount'], '.metadata.errorCount')) {
+            errorCount = metadata['errorCount'];
+        }
+    }
+
+    const tableNames = [
+        'pools',
+        'zones',
+        'launchConfigs',
+        'workerIds',
+        'reasons',
+        'errorKinds',
+        'errorCodes',
+        'errorTitles',
+    ] as const;
+    const tableLength: Record<string, number> = {};
+    if (c.object(data['tables'], '.tables')) {
+        const tables = data['tables'] as Record<string, unknown>;
+        c.noExtraKeys(tables, [...tableNames], '.tables');
+        for (const name of tableNames) {
+            tableLength[name] = c.stringTable(tables[name], `.tables.${name}`).length;
+        }
+    }
+    const length = (name: string): number => tableLength[name] ?? 0;
+
+    if (c.object(data['workers'], '.workers')) {
+        const workers = data['workers'] as Record<string, unknown>;
+        c.noExtraKeys(workers, [
+            'firstMs',
+            ...LIFECYCLE_OFFSET_COLUMNS,
+            'capacities',
+            'poolIds',
+            'zoneIds',
+            'launchConfigIds',
+            'workerIdIds',
+            'stoppedReasonIds',
+            'removedReasonIds',
+        ], '.workers');
+        const rows = c.parallel(workers, '.workers');
+        if (rows !== undefined && rows !== workerCount) {
+            c.error(`metadata says ${workerCount} workers, the columns hold ${rows}`, '.workers');
+        }
+        c.numberArray(workers['firstMs'], '.workers.firstMs', { nonNegative: true });
+        for (const name of LIFECYCLE_OFFSET_COLUMNS) {
+            c.numberArray(workers[name], `.workers.${name}`, { nonNegative: true, elements: 'nullable' });
+        }
+        c.numberArray(workers['capacities'], '.workers.capacities', { elements: 'nullable' });
+        c.indexArray(workers['poolIds'], length('pools'), 'pools', '.workers.poolIds');
+        c.indexArray(workers['zoneIds'], length('zones'), 'zones', '.workers.zoneIds', 'nullable');
+        c.indexArray(workers['launchConfigIds'], length('launchConfigs'), 'launchConfigs', '.workers.launchConfigIds', 'nullable');
+        c.indexArray(workers['workerIdIds'], length('workerIds'), 'workerIds', '.workers.workerIdIds', 'nullable');
+        c.indexArray(workers['stoppedReasonIds'], length('reasons'), 'reasons', '.workers.stoppedReasonIds', 'nullable');
+        c.indexArray(workers['removedReasonIds'], length('reasons'), 'reasons', '.workers.removedReasonIds', 'nullable');
+
+        const offsets = LIFECYCLE_OFFSET_COLUMNS.map(name => workers[name]);
+        if (offsets.every(Array.isArray) && Array.isArray(workers['firstMs'])) {
+            for (let i = 0; i < (workers['firstMs'] as unknown[]).length; i++) {
+                const hasFirstEvent = (offsets as unknown[][]).some(column => column[i] === 0);
+                if (!hasFirstEvent) {
+                    c.error(`worker row ${i} has no event at its first time`, '.workers.firstMs[]');
+                }
+            }
+        }
+    }
+
+    if (c.object(data['errors'], '.errors')) {
+        const errors = data['errors'] as Record<string, unknown>;
+        c.noExtraKeys(errors, [
+            'timeMs',
+            'poolIds',
+            'zoneIds',
+            'workerIdIds',
+            'launchConfigIds',
+            'kindIds',
+            'codeIds',
+            'titleIds',
+        ], '.errors');
+        const rows = c.parallel(errors, '.errors');
+        if (rows !== undefined && rows !== errorCount) {
+            c.error(`metadata says ${errorCount} pool errors, the columns hold ${rows}`, '.errors');
+        }
+        c.numberArray(errors['timeMs'], '.errors.timeMs', { nonNegative: true });
+        c.indexArray(errors['poolIds'], length('pools'), 'pools', '.errors.poolIds');
+        c.indexArray(errors['zoneIds'], length('zones'), 'zones', '.errors.zoneIds', 'nullable');
+        c.indexArray(errors['workerIdIds'], length('workerIds'), 'workerIds', '.errors.workerIdIds', 'nullable');
+        c.indexArray(errors['launchConfigIds'], length('launchConfigs'), 'launchConfigs', '.errors.launchConfigIds', 'nullable');
+        c.indexArray(errors['kindIds'], length('errorKinds'), 'errorKinds', '.errors.kindIds', 'nullable');
+        c.indexArray(errors['codeIds'], length('errorCodes'), 'errorCodes', '.errors.codeIds', 'nullable');
+        c.indexArray(errors['titleIds'], length('errorTitles'), 'errorTitles', '.errors.titleIds', 'nullable');
+    }
+}

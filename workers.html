@@ -276,6 +276,7 @@ th.sortable.sort-desc::after {
 <script src="fetch-utils.js"></script>
 <script src="shared.js"></script>
 <script src="dashboards.js"></script>
+<script src="worker-lifecycle.js"></script>
 <script>
 
 // ==================== Formatting ====================
@@ -1069,7 +1070,29 @@ function createStacks(taskList, getStringIndex, earliestTime, latestTime) {
   return { samples, stackTable, frameTable, funcTable };
 }
 
-function generateProfile(tasks, threadName, timeSeries) {
+function taskMarkerColor(t) {
+  if (t.state === 'completed') return 'green';
+  if (t.state === 'failed') return 'red';
+  if (t.state === 'exception' && (t.reason_resolved === 'canceled' || t.reason_resolved === 'deadline-exceeded')) return 'purple';
+  return undefined;
+}
+
+// The tasks that ran on a worker, which is what tells a worker that is running a
+// task from one that is waiting for the next.
+function workerTaskRuns(tasks) {
+  return tasks
+    .filter(t => t._startedMs && t.worker_id)
+    .map(t => ({
+      workerId: t.worker_id,
+      startMs: t._startedMs,
+      endMs: t._resolvedMs,
+      taskId: t.task_id,
+      state: t.state,
+      color: taskMarkerColor(t),
+    }));
+}
+
+function generateProfile(tasks, threadName, timeSeries, lifecycle = null) {
   const stringArray = ['(root)'];
   const stringIndexMap = new Map([['(root)', 0]]);
   function getStringIndex(str) {
@@ -1339,9 +1362,8 @@ function generateProfile(tasks, threadName, timeSeries) {
       if (t.worker_id) d.wid = getStringIndex(t.worker_id);
       if (t.run_cost) d.cost = parseFloat(t.run_cost);
 
-      if (t.state === 'completed') d.color = 'green';
-      else if (t.state === 'failed') d.color = 'red';
-      else if (t.state === 'exception' && (t.reason_resolved === 'canceled' || t.reason_resolved === 'deadline-exceeded')) d.color = 'purple';
+      const color = taskMarkerColor(t);
+      if (color) d.color = color;
 
       if (t._startedMs) {
         d.qtime = t._startedMs - t._scheduledMs;
@@ -1400,6 +1422,52 @@ function generateProfile(tasks, threadName, timeSeries) {
 
   const threads = [makeThread(threadName || 'All Tasks', '0', 0, tasks)];
 
+  // One category per call tree level, so "Focus category" in the call tree
+  // context menu collapses the tree down to a single level. The structural
+  // levels are all grey and only the outcomes are colored, so that the
+  // colors in the flame graph match the ones in the activity graph, which
+  // colors each sample by the category of its leaf frame — always an
+  // outcome here. Keep these in sync with CATEGORY_* above.
+  const categories = [
+    { name: 'Other', color: 'grey', subcategories: ['Other'] },
+    { name: 'Worker pool', color: 'grey', subcategories: ['Other'] },
+    { name: 'Repository', color: 'grey', subcategories: ['Other'] },
+    { name: 'Build type', color: 'grey', subcategories: ['Other'] },
+    { name: 'Test suite', color: 'grey', subcategories: ['Other'] },
+    { name: 'Variant', color: 'grey', subcategories: ['Other'] },
+    { name: 'Test', color: 'grey', subcategories: ['Other'] },
+    { name: 'Passed', color: 'green', subcategories: ['Other'] },
+    { name: 'Failed', color: 'orange', subcategories: ['Other'] },
+    { name: 'Retried', color: 'blue', subcategories: ['Other'] },
+    { name: 'Canceled', color: 'purple', subcategories: ['Other'] },
+    { name: 'Idle', color: 'transparent', subcategories: ['Other'] },
+  ];
+
+  // How the pool's workers started, ran and stopped, one process per location
+  // below the task thread. Only for a pool, and only when that day has a
+  // lifecycle file; the task thread stays first and selected.
+  const isPool = threadName && threadName !== 'All Tasks';
+  if (lifecycle && isPool) {
+    const workerThreads = WorkerLifecycle.locationThreads(lifecycle, threadName, {
+      window: { startMs: earliestTime, endMs: latestTime },
+      tasks: workerTaskRuns(tasks),
+      getStringIndex,
+      categoryBase: categories.length,
+      structuralCategory: 0,
+      idleCategory: CATEGORY_IDLE,
+      tidBase: 100,
+    });
+    // The track order is a list of main threads, so the task thread has to be one.
+    // It then is its own row instead of sitting below an empty process header.
+    if (workerThreads.threads.length > 0) {
+      threads[0].isMainThread = true;
+    }
+    threads.push(...workerThreads.threads);
+    categories.push(...workerThreads.categories);
+    markerSchema.push(...workerThreads.schemas);
+  }
+  const hasWorkerThreads = threads.length > 1;
+
   return {
     meta: {
       processType: 0,
@@ -1412,26 +1480,7 @@ function generateProfile(tasks, threadName, timeSeries) {
       startTime: earliestTime,
       profilingStartTime: 0,
       profilingEndTime: latestTime - earliestTime,
-      // One category per call tree level, so "Focus category" in the call tree
-      // context menu collapses the tree down to a single level. The structural
-      // levels are all grey and only the outcomes are colored, so that the
-      // colors in the flame graph match the ones in the activity graph, which
-      // colors each sample by the category of its leaf frame — always an
-      // outcome here. Keep these in sync with CATEGORY_* above.
-      categories: [
-        { name: 'Other', color: 'grey', subcategories: ['Other'] },
-        { name: 'Worker pool', color: 'grey', subcategories: ['Other'] },
-        { name: 'Repository', color: 'grey', subcategories: ['Other'] },
-        { name: 'Build type', color: 'grey', subcategories: ['Other'] },
-        { name: 'Test suite', color: 'grey', subcategories: ['Other'] },
-        { name: 'Variant', color: 'grey', subcategories: ['Other'] },
-        { name: 'Test', color: 'grey', subcategories: ['Other'] },
-        { name: 'Passed', color: 'green', subcategories: ['Other'] },
-        { name: 'Failed', color: 'orange', subcategories: ['Other'] },
-        { name: 'Retried', color: 'blue', subcategories: ['Other'] },
-        { name: 'Canceled', color: 'purple', subcategories: ['Other'] },
-        { name: 'Idle', color: 'transparent', subcategories: ['Other'] },
-      ],
+      categories,
       // threadCPUDelta is not a real CPU measurement here: it carries the
       // average number of jobs running over each sample's span, scaled so that
       // the pool's busiest moment reads as 100%. Microseconds are used because
@@ -1445,6 +1494,13 @@ function generateProfile(tasks, threadName, timeSeries) {
       },
       markerSchema,
       usesOnlyOneStackType: true,
+      // With the worker threads present the profiler would hide any thread that
+      // looks idle by its scores, and open on the busiest one. Show them all and
+      // start on the task thread.
+      ...(hasWorkerThreads ? {
+        initialVisibleThreads: threads.map((_, index) => index),
+        initialSelectedThreads: [0],
+      } : {}),
     },
     libs: [],
     threads,
@@ -1456,10 +1512,14 @@ function generateProfile(tasks, threadName, timeSeries) {
 // ==================== Profiler Integration ====================
 
 async function openInProfiler(tasks, name, timeSeries) {
-  const profile = generateProfile(tasks, name, timeSeries);
+  const lifecycle = name === 'All Tasks' ? null : await ensureLifecycleData();
+  const profile = generateProfile(tasks, name, timeSeries, lifecycle);
 
+  // The profiler orders the tracks by how busy they look. Ask for the order they
+  // were built in instead: the tasks, then all workers down to each zone.
+  const trackOrder = WorkerLifecycle.profilerQuery(profile.threads.length);
   const origin = getProfilerOrigin();
-  const profilerWindow = window.open(origin + '/from-post-message/', '_blank');
+  const profilerWindow = window.open(origin + '/from-post-message/' + trackOrder, '_blank');
 
   if (!profilerWindow) {
     alert('Popup blocked \u2014 please allow popups for this site.');
@@ -1496,6 +1556,7 @@ let renderContext = null; // { allPool, pools, globalStart, globalEnd }
 let availableDates = [];
 let currentDate = '';
 let fullTaskDataPromise = null;
+let lifecyclePromise = null;
 let controlsInitialized = false;
 
 function ensureFullTaskData() {
@@ -1520,6 +1581,24 @@ function ensureFullTaskData() {
     })();
   }
   return fullTaskDataPromise;
+}
+
+// How the day's workers started, ran and stopped. Older dates have no file, and
+// the page works without it, so a failed load is no lifecycle rather than an error.
+function ensureLifecycleData() {
+  if (!lifecyclePromise) {
+    lifecyclePromise = (async () => {
+      try {
+        const r = await fetchFromCI('worker-data', 'workers-' + currentDate + '-lifecycle.json');
+        if (!r.ok) return null;
+        return WorkerLifecycle.decodeWorkerLifecycle(await r.json());
+      } catch (err) {
+        console.warn('No worker lifecycle for ' + currentDate + ':', err);
+        return null;
+      }
+    })();
+  }
+  return lifecyclePromise;
 }
 
 async function getProfilerTasks(pool) {
@@ -1555,6 +1634,7 @@ async function switchDate(date) {
     const rows = decodeSummaryData(data);
     currentDate = date;
     fullTaskDataPromise = null;
+    lifecyclePromise = null;
     const url = new URL(location);
     url.searchParams.set('date', date);
     history.replaceState(null, '', url);
@@ -2155,11 +2235,13 @@ function processData(rows, dayStartMs) {
   setupControls();
   rebuildForProject(currentProject);
 
-  // Prefetch full task data on first hover of any Profiler button
+  // Prefetch full task data, and the worker lifecycle, on first hover of any
+  // Profiler button
   document.querySelector('.pool-table-wrapper').addEventListener('mouseover', function prefetch(e) {
     if (!e.target.closest('.profiler-btn')) return;
     this.removeEventListener('mouseover', prefetch);
     ensureFullTaskData();
+    ensureLifecycleData();
   });
 }
 
