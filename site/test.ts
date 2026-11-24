@@ -2257,6 +2257,7 @@ function applyChartHighlight(
             : s.matrix.map((dayData) => {
                   const totals: Outcomes = {
                       passes: 0,
+                      expectedFails: 0,
                       failures: 0,
                       timeouts: 0,
                       crashes: 0,

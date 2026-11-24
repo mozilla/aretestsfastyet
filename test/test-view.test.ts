@@ -291,19 +291,22 @@ test('outcomeSignature separates absent from skip-only from ran', () => {
     assert.equal(outcomeSignature(emptyOutcomes()), 'absent');
     assert.equal(outcomeSignature({ ...emptyOutcomes(), skips: 9 }), 'skip');
     assert.equal(outcomeSignature({ ...emptyOutcomes(), passes: 1 }), 'p');
-    assert.equal(outcomeSignature({ passes: 1, failures: 1, timeouts: 0, crashes: 0, skips: 0 }), 'pf');
-    assert.equal(outcomeSignature({ passes: 3, failures: 2, timeouts: 1, crashes: 4, skips: 7 }), 'pftc');
+    // Failing as annotated is not passing: the two do not collapse into one row.
+    assert.equal(outcomeSignature({ ...emptyOutcomes(), passes: 2, expectedFails: 2 }), 'x');
+    assert.equal(outcomeSignature({ ...emptyOutcomes(), passes: 3, expectedFails: 2 }), 'px');
+    assert.equal(outcomeSignature({ passes: 1, expectedFails: 0, failures: 1, timeouts: 0, crashes: 0, skips: 0 }), 'pf');
+    assert.equal(outcomeSignature({ passes: 3, expectedFails: 0, failures: 2, timeouts: 1, crashes: 4, skips: 7 }), 'pftc');
     // Deliberately rate-blind: 1 failure in 10 and 9 in 10 are the same
     // signature, because the question is "does merging hide a difference a
     // reader needs", not "are the rates equal".
     assert.equal(
-        outcomeSignature({ passes: 9, failures: 1, timeouts: 0, crashes: 0, skips: 0 }),
-        outcomeSignature({ passes: 1, failures: 9, timeouts: 0, crashes: 0, skips: 0 })
+        outcomeSignature({ passes: 9, expectedFails: 0, failures: 1, timeouts: 0, crashes: 0, skips: 0 }),
+        outcomeSignature({ passes: 1, expectedFails: 0, failures: 9, timeouts: 0, crashes: 0, skips: 0 })
     );
 });
 
 test('a variant collapses only when its outcomes match the base everywhere', () => {
-    const base: Outcomes = { passes: 100, failures: 0, timeouts: 0, crashes: 0, skips: 0 };
+    const base: Outcomes = { passes: 100, expectedFails: 0, failures: 0, timeouts: 0, crashes: 0, skips: 0 };
     const config = (jobName: string, o: Outcomes) => ({
         jobName,
         state: 'ok' as const,
@@ -332,6 +335,7 @@ test('a variant collapses only when its outcomes match the base everywhere', () 
         config('test-windows11-64-25h2/opt-mochitest', base),
         config('test-windows11-64-25h2/opt-mochitest-msix', {
             passes: 0,
+            expectedFails: 0,
             failures: 40,
             timeouts: 0,
             crashes: 0,
@@ -967,10 +971,8 @@ test('several skip reasons are listed by count descending', () => {
     );
 });
 
-test('EXPECTED-FAIL is counted as a pass in a cell, matching the old page', () => {
-    // `lib/model/status.ts` splits `expected-fail` out on purpose; the page
-    // folds it into passes (`old/test.html:2625` lists it among the non-failures).
-    // Keeping the page's meaning is what makes every badge percentage match.
+test('EXPECTED-FAIL counts as a pass in a cell, and has a badge of its own', () => {
+    // In `passes`, as on the old page (`old/test.html:2625`), so the percentages match.
     const configs = [
         {
             jobName: 'test-linux2404-64/opt-xpcshell',
@@ -988,7 +990,65 @@ test('EXPECTED-FAIL is counted as a pass in a cell, matching the old page', () =
     ];
     const cell = buildJobTable(configs, computeDisplayMappings(configs)).rows[0]!.cells[0]!;
     assert.equal(cell.outcomes!.passes, 10, 'the 4 expected failures are in the pass bucket');
-    assert.equal(cell.badges[0]!.tooltip, '10 runs');
+    assert.deepEqual(
+        cell.badges.map(({ kind, label, tooltip }) => ({ kind, label, tooltip })),
+        [
+            { kind: 'pass', label: 'PASS', tooltip: '6 runs' },
+            { kind: 'expected-fail', label: 'EXPECTED FAIL', tooltip: '4 expected failures' },
+        ]
+    );
+    assert.equal(cell.noHover, true);
+
+    // A test that only ever fails as annotated shows no PASS at all.
+    const onlyExpected = [{ ...configs[0]!, passCount: 0, expectedFailCount: 10 }];
+    const expectedCell = buildJobTable(onlyExpected, computeDisplayMappings(onlyExpected)).rows[0]!.cells[0]!;
+    assert.deepEqual(
+        expectedCell.badges.map(({ kind, tooltip }) => ({ kind, tooltip })),
+        [{ kind: 'expected-fail', tooltip: '10 expected failures' }]
+    );
+
+    // With a real failure, the fail badge keeps its percentage of every run.
+    const failing = [{ ...configs[0]!, runCount: 12, failCount: 2 }];
+    const failingCell = buildJobTable(failing, computeDisplayMappings(failing)).rows[0]!.cells[0]!;
+    assert.deepEqual(
+        failingCell.badges.map(({ kind, percentText, tooltip }) => ({ kind, percentText, tooltip })),
+        [
+            {
+                kind: 'fail',
+                percentText: '16.7%',
+                tooltip: '2 failures\n6 passes\n4 expected failures\n12 total runs',
+            },
+        ]
+    );
+});
+
+test('a day filter shows the expected-failure badge on the days it applies', () => {
+    const cell = {
+        variant: 'v',
+        platform: 'p',
+        key: 'v|p',
+        outcomes: { passes: 6, expectedFails: 2, failures: 0, timeouts: 0, crashes: 0, skips: 0 },
+        badges: [
+            { kind: 'pass' as const, label: 'PASS', percentText: null, tooltip: '4 runs' },
+            { kind: 'expected-fail' as const, label: 'EXPECTED FAIL', percentText: null, tooltip: '2 expected failures' },
+        ],
+        hasPassPrefixLayer: false,
+        noHover: true,
+    };
+    const matrix = [
+        new Map([['v|p', { passes: 4, expectedFails: 0, failures: 0, timeouts: 0, crashes: 0, skips: 0 }]]),
+        new Map([['v|p', { passes: 2, expectedFails: 2, failures: 0, timeouts: 0, crashes: 0, skips: 0 }]]),
+    ];
+    const passDay = filteredCell(cell, matrix, new Set([0]));
+    assert.equal(passDay.badges.get('pass')!.visible, true);
+    assert.equal(passDay.badges.get('expected-fail')!.visible, false);
+    const expectedDay = filteredCell(cell, matrix, new Set([1]));
+    assert.equal(expectedDay.badges.get('pass')!.visible, false);
+    assert.deepEqual(expectedDay.badges.get('expected-fail'), {
+        visible: true,
+        percentText: null,
+        tooltip: '2 expected failures',
+    });
 });
 
 // --- daily rates and the chart -------------------------------------------
@@ -1344,7 +1404,7 @@ test('a day filter leaving only passes shows the PASS overlay, if the cell has o
         variant: 'v',
         platform: 'p',
         key: 'v|p',
-        outcomes: { passes: 10, failures: 2, timeouts: 0, crashes: 0, skips: 0 },
+        outcomes: { passes: 10, expectedFails: 0, failures: 2, timeouts: 0, crashes: 0, skips: 0 },
         badges: [
             { kind: 'fail' as const, label: 'FAIL', percentText: '16.7%', tooltip: 't' },
         ],
@@ -1353,8 +1413,8 @@ test('a day filter leaving only passes shows the PASS overlay, if the cell has o
     };
     // Day 0 has passes only; day 1 has the failures.
     const matrix = [
-        new Map([['v|p', { passes: 10, failures: 0, timeouts: 0, crashes: 0, skips: 0 }]]),
-        new Map([['v|p', { passes: 0, failures: 2, timeouts: 0, crashes: 0, skips: 0 }]]),
+        new Map([['v|p', { passes: 10, expectedFails: 0, failures: 0, timeouts: 0, crashes: 0, skips: 0 }]]),
+        new Map([['v|p', { passes: 0, expectedFails: 0, failures: 2, timeouts: 0, crashes: 0, skips: 0 }]]),
     ];
 
     const passOnly = filteredCell(withIssues, matrix, new Set([0]));
@@ -1961,7 +2021,7 @@ test('a day filter distinguishes "nothing ran" from "only skipped"', () => {
         variant: 'v',
         platform: 'p',
         key: 'v|p',
-        outcomes: { passes: 4, failures: 0, timeouts: 0, crashes: 0, skips: 3 },
+        outcomes: { passes: 4, expectedFails: 0, failures: 0, timeouts: 0, crashes: 0, skips: 3 },
         badges: [
             { kind: 'pass' as const, label: 'PASS', percentText: null, tooltip: '4 runs' },
             { kind: 'skip' as const, label: 'SKIP', percentText: null, tooltip: '3 skips' },
@@ -1971,9 +2031,9 @@ test('a day filter distinguishes "nothing ran" from "only skipped"', () => {
     };
     const matrix = [
         // Day 0: ran.
-        new Map([['v|p', { passes: 4, failures: 0, timeouts: 0, crashes: 0, skips: 0 }]]),
+        new Map([['v|p', { passes: 4, expectedFails: 0, failures: 0, timeouts: 0, crashes: 0, skips: 0 }]]),
         // Day 1: scheduled and skipped — NOT the same as absent.
-        new Map([['v|p', { passes: 0, failures: 0, timeouts: 0, crashes: 0, skips: 3 }]]),
+        new Map([['v|p', { passes: 0, expectedFails: 0, failures: 0, timeouts: 0, crashes: 0, skips: 3 }]]),
         // Day 2: nothing at all.
         new Map<string, Outcomes>(),
     ];

@@ -336,7 +336,10 @@ export function platformDisplayName(platform: string): string {
 
 /** Per-cell outcome counts, the unit everything downstream aggregates. */
 export interface Outcomes {
+    /** Runs that did what is expected: the passes and the expected failures. */
     passes: number;
+    /** The part of `passes` that failed as annotated. */
+    expectedFails: number;
     failures: number;
     timeouts: number;
     crashes: number;
@@ -345,12 +348,13 @@ export interface Outcomes {
 
 /** A fresh zeroed cell. */
 export function emptyOutcomes(): Outcomes {
-    return { passes: 0, failures: 0, timeouts: 0, crashes: 0, skips: 0 };
+    return { passes: 0, expectedFails: 0, failures: 0, timeouts: 0, crashes: 0, skips: 0 };
 }
 
 /** Adds `from` into `into`, in place. */
 function addOutcomes(into: Outcomes, from: Outcomes): void {
     into.passes += from.passes;
+    into.expectedFails += from.expectedFails;
     into.failures += from.failures;
     into.timeouts += from.timeouts;
     into.crashes += from.crashes;
@@ -374,7 +378,8 @@ export function outcomeSignature(d: Outcomes): string {
         return d.skips > 0 ? 'skip' : 'absent';
     }
     return (
-        (d.passes > 0 ? 'p' : '') +
+        (d.passes > d.expectedFails ? 'p' : '') +
+        (d.expectedFails > 0 ? 'x' : '') +
         (d.failures > 0 ? 'f' : '') +
         (d.timeouts > 0 ? 't' : '') +
         (d.crashes > 0 ? 'c' : '')
@@ -573,18 +578,13 @@ export function computeDisplayMappings(configs: readonly ConfigCoverage[]): Disp
 /**
  * A coverage row as the page's outcome counters.
  *
- * The one mapping that is not a rename: `expectedFailCount` folds into
- * `passes`. `lib/model/status.ts` splits `EXPECTED-FAIL` out on purpose — a
- * `fail-if` annotation that fires is neither a pass nor a failure — while
- * `calculateJobNameBreakdown` puts it in the pass bucket by listing it among
- * the non-failures (`old/test.html:2625`). Folding it back here is what keeps every
- * cell's badge percentage identical to the old page's; splitting it out would
- * be a behaviour change this migration is not making, and one with no UI to
- * show it in.
+ * `expectedFailCount` stays in `passes`, as on the old page (`old/test.html:2625`),
+ * so every badge percentage is unchanged; `expectedFails` only picks the badge.
  */
 function outcomesOfConfig(config: ConfigCoverage): Outcomes {
     return {
         passes: config.passCount + config.expectedFailCount,
+        expectedFails: config.expectedFailCount,
         failures: config.failCount,
         timeouts: config.timeoutCount,
         crashes: config.crashCount,
@@ -652,7 +652,7 @@ export function splitCellKey(key: string): { variant: string; platform: string }
 
 /** One badge in a cell. The kind is the CSS class suffix, `badge-${kind}`. */
 export interface CellBadge {
-    kind: 'fail' | 'crash' | 'timeout' | 'pass' | 'skip';
+    kind: 'fail' | 'crash' | 'timeout' | 'pass' | 'expected-fail' | 'skip';
     /** `FAIL`, `PASS`, … — the badge's own text. */
     label: string;
     /**
@@ -840,7 +840,7 @@ export function buildJobTable(
                 // Upstream computes this from the rendered DOM after the fact
                 // (`old/test.html:3168`): a cell with no fail/crash/timeout/skip
                 // badge gets `no-hover`. Same predicate, from the values.
-                noHover: !badges.some((badge) => badge.kind !== 'pass'),
+                noHover: !badges.some((badge) => badge.kind !== 'pass' && badge.kind !== 'expected-fail'),
             };
         }),
     }));
@@ -875,10 +875,15 @@ export function buildJobTable(
  * be told only about crashes would hide that the cell also failed 40 times.
  * The PASS and SKIP badges have their own, narrower tooltips.
  */
+function expectedFailsText(count: number): string {
+    return `${count} expected failure${count !== 1 ? 's' : ''}`;
+}
+
 function cellBadges(d: Outcomes, skipMessages: Map<string, number>): CellBadge[] {
     const badges: CellBadge[] = [];
     const total = d.passes + d.failures + d.timeouts + d.crashes;
     const issues = d.failures + d.timeouts + d.crashes;
+    const passes = d.passes - d.expectedFails;
 
     if (issues > 0) {
         const lines: string[] = [];
@@ -891,8 +896,11 @@ function cellBadges(d: Outcomes, skipMessages: Map<string, number>): CellBadge[]
         if (d.timeouts > 0) {
             lines.push(`${d.timeouts} timeout${d.timeouts !== 1 ? 's' : ''}`);
         }
-        if (d.passes > 0) {
-            lines.push(`${d.passes} pass${d.passes !== 1 ? 'es' : ''}`);
+        if (passes > 0) {
+            lines.push(`${passes} pass${passes !== 1 ? 'es' : ''}`);
+        }
+        if (d.expectedFails > 0) {
+            lines.push(expectedFailsText(d.expectedFails));
         }
         lines.push(`${total} total runs`);
         const tooltip = lines.join('\n');
@@ -923,13 +931,24 @@ function cellBadges(d: Outcomes, skipMessages: Map<string, number>): CellBadge[]
                 tooltip,
             });
         }
-    } else if (total > 0) {
-        badges.push({
-            kind: 'pass',
-            label: 'PASS',
-            percentText: null,
-            tooltip: `${d.passes} run${d.passes !== 1 ? 's' : ''}`,
-        });
+    } else {
+        if (passes > 0) {
+            badges.push({
+                kind: 'pass',
+                label: 'PASS',
+                percentText: null,
+                tooltip: `${passes} run${passes !== 1 ? 's' : ''}`,
+            });
+        }
+        // A test that fails as annotated is not a pass to the reader.
+        if (d.expectedFails > 0) {
+            badges.push({
+                kind: 'expected-fail',
+                label: 'EXPECTED FAIL',
+                percentText: null,
+                tooltip: expectedFailsText(d.expectedFails),
+            });
+        }
     }
 
     if (d.skips > 0) {
@@ -1220,8 +1239,11 @@ export function buildDayCellMatrix(
             }
             switch (kind) {
                 case 'pass':
+                    cell.passes += target.count;
+                    break;
                 case 'expected-fail':
                     cell.passes += target.count;
+                    cell.expectedFails += target.count;
                     break;
                 case 'fail':
                     cell.failures += target.count;
@@ -1340,10 +1362,17 @@ export function filteredCell(
     >();
     for (const badge of cell.badges) {
         if (badge.kind === 'pass') {
+            const passes = f.passes - f.expectedFails;
             badges.set('pass', {
-                visible: f.passes > 0,
+                visible: passes > 0,
                 percentText: null,
-                tooltip: `${f.passes} run${f.passes !== 1 ? 's' : ''}`,
+                tooltip: `${passes} run${passes !== 1 ? 's' : ''}`,
+            });
+        } else if (badge.kind === 'expected-fail') {
+            badges.set('expected-fail', {
+                visible: f.expectedFails > 0,
+                percentText: null,
+                tooltip: expectedFailsText(f.expectedFails),
             });
         } else if (badge.kind === 'skip') {
             badges.set('skip', {
