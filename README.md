@@ -41,7 +41,7 @@ ones:
 
 - **Test Health** (`index.html`) — the landing page. Trend charts and a 7-day
   summary of flaky test-failure, flaky job-failure, skip and invalid-job rates
-  for XPCShell and Mochitest.
+  for XPCShell, Mochitest and WPT.
 - **Test Issues** (`issues.html`) — every non-passing test outcome (failures,
   timeouts, crashes, skips) over the last 21 days, grouped by Bugzilla
   component and by directory tree. The best place to start triaging

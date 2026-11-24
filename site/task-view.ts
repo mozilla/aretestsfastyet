@@ -23,6 +23,7 @@ import { stripChunkSuffix } from '../lib/model/job-name.ts';
 import { normalizeTestPath } from '../lib/model/test-path.ts';
 import { baseStatus, isFailureStatus } from '../lib/model/try-jobs.ts';
 import { type TaskDefinition, type TaskFailure, type TaskJson, isRetryRescue } from '../lib/query/task-summary.ts';
+import { splitTestPath } from '../lib/model/wpt-path.ts';
 import type { FlakinessRequest } from './try-view.ts';
 
 // --- URL state -----------------------------------------------------------
@@ -460,7 +461,7 @@ function failureView(
     // that passed on retry is in a section saying so, which is what the
     // "Initial" chip and `try.html`'s "Passed on retry" line would repeat.
     const showRuns = retry.length > 0;
-    const name = failure.path.split('/').pop() ?? failure.path;
+    const { name } = splitTestPath(failure.path);
 
     const profileOf = (group: readonly TestTiming[]): string | null => {
         const filename = group.flatMap((timing) => timing.profileFilenames)[0];
@@ -655,8 +656,8 @@ export function testRows(timings: readonly TestTiming[]): TestRow[] {
 
 /** A path as its directory, for grey, and its file name, which is what a reader scans for. */
 export function splitPath(path: string): { directory: string; name: string } {
-    const slash = path.lastIndexOf('/');
-    return { directory: path.slice(0, slash + 1), name: path.slice(slash + 1) };
+    const { directory, name } = splitTestPath(path);
+    return { directory: directory === '' ? '' : `${directory}/`, name };
 }
 
 /** The table's sort orders. */
@@ -745,7 +746,7 @@ export function manifestGroups(
     // exactly the tests missing from `summary.jsonl`. Each is put in the
     // manifest of its own directory when the run recorded exactly one there,
     // and grouped by directory otherwise rather than guessed between two.
-    const dirOf = (path: string): string => path.slice(0, path.lastIndexOf('/') + 1);
+    const dirOf = (path: string): string => splitPath(path).directory;
     const byDirectory = new Map<string, Set<string>>();
     for (const manifest of manifests?.values() ?? []) {
         const set = byDirectory.get(dirOf(manifest)) ?? new Set<string>();

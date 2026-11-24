@@ -882,6 +882,18 @@
             return runs;
         }
 
+        // The folders of a test path, then its file name. A wpt variant stays in
+        // the name and can contain slashes ("foo.html?url=/common/bar.html").
+        function testPathParts(testPath) {
+            const variantStart = testPath.search(/[?#]/);
+            if (variantStart === -1) {
+                return testPath.split('/');
+            }
+            const parts = testPath.slice(0, variantStart).split('/');
+            parts[parts.length - 1] += testPath.slice(variantStart);
+            return parts;
+        }
+
         // Build tree structure from test entries, computing statistics directly from raw data
         function buildTreeStructure(testEntries) {
             const tree = {
@@ -892,14 +904,15 @@
             };
 
             for (const testPath in testEntries) {
-                const parts = testPath.split('/');
+                const parts = testPathParts(testPath);
                 let currentNode = tree;
 
                 // Navigate/create folder structure
                 for (let i = 0; i < parts.length - 1; i++) {
                     const folder = parts[i];
 
-                    if (!currentNode.children[folder]) {
+                    // hasOwn: wpt has a folder named "constructor".
+                    if (!Object.hasOwn(currentNode.children, folder)) {
                         currentNode.children[folder] = {
                             name: folder,
                             path: parts.slice(0, i + 1).join('/'),
@@ -2592,7 +2605,7 @@
                     const [taskId, retryId] = taskIdString.split('.');
                     const profileUrl = getResourceUsageProfileArtifactUrl(taskId, retryId, timestamp);
                     const profileName = `${jobName} (${taskIdString})`;
-                    const testName = testPath.split('/').pop();
+                    const testName = testPathParts(testPath).pop();
                     const profilerUrl = `${getProfilerOrigin()}/from-url/${encodeURIComponent(profileUrl)}?profileName=${encodeURIComponent(profileName)}&markerSearch=${encodeURIComponent(testName)}`;
                     window.open(profilerUrl, '_blank');
                 }
@@ -2919,7 +2932,7 @@
                     const fullPath = currentPath ? `${currentPath}/${testName}` : testName;
                     if (fullPath.toLowerCase().includes(lowerSearchTerm)) {
                         // Expand all parent folders of this test
-                        const parts = fullPath.split('/');
+                        const parts = testPathParts(fullPath);
                         for (let i = 1; i < parts.length; i++) {
                             expandedRows.add(parts.slice(0, i).join('/'));
                         }

@@ -20,7 +20,7 @@ const DASHBOARDS = [
       desc: 'Overview of flaky test/job failure rates and skip rates across harnesses.',
       long: 'The site landing page. Trend charts plus a 7-day summary of flaky ' +
             'test-failure rates, flaky job-failure rates, skip rates and invalid-job ' +
-            'rates for XPCShell and Mochitest (with a per-flavor breakdown). Start ' +
+            'rates for XPCShell, Mochitest and WPT (with a per-flavor breakdown). Start ' +
             'here to see at a glance whether overall test health is improving or ' +
             'regressing over time.' },
     { file: 'issues.html', tier: 1, title: 'Test Issues', featured: true,
@@ -28,8 +28,8 @@ const DASHBOARDS = [
       long: 'Every non-passing test outcome — failures, timeouts, crashes and skips — ' +
             'over the last 21 days, grouped by Bugzilla component and by directory tree ' +
             'so you can find which areas are noisiest, then drill down to the individual ' +
-            'tests and their failure counts. Switch between XPCShell and Mochitest with ' +
-            'the harness selector. The best place to start triaging intermittents.' },
+            'tests and their failure counts. Switch between XPCShell, Mochitest and WPT ' +
+            'with the harness selector. The best place to start triaging intermittents.' },
     { file: 'flaky.html', tier: 1, title: 'Test Flakiness', featured: true,
       desc: 'How flaky the tree is over time, and which folders are worst.',
       long: 'Classifies every test once per day — flaky if it failed at all, skipped if it ' +
@@ -47,18 +47,19 @@ const DASHBOARDS = [
             'which neither the issues page (no day range) nor the test page (one test) can ' +
             'answer. Two charts share the range: issue counts per day, and how many tests ' +
             'had an issue each day. Hovering a row shows that one test’s share of the ' +
-            'counts. XPCShell and Mochitest are merged, since a directory often holds ' +
-            'both, and the path is an editable field with completion.' },
+            'counts. The harnesses are merged, since a directory often holds tests of ' +
+            'more than one, and the path is an editable field with completion.' },
     { file: 'test.html', tier: 1, title: 'Test Info', featured: true,
       desc: 'Everything about a single test: issues, run times and pass/fail by job.',
       long: 'A deep dive on one test (opened via ?test=path/to/test) that brings 21 days ' +
             'of history together in a single view: the test’s failure / skip / crash ' +
             'history with daily charts, per-run timings, and a pass/fail breakdown across ' +
-            'job configurations. Open this when you are investigating one specific test.' },
+            'job configurations. A web-platform-test also lists its subtests, with the ' +
+            'ones that failed first. Open this when you are investigating one specific test.' },
     { file: 'try.html', tier: 1, title: 'Try Push Results', featured: true,
       desc: 'Aggregated failed tests of a single Try push, perma-fails first.',
       long: 'Point it at one Try push and it aggregates the failed tests from all of that ' +
-            'push’s failed Mochitest and XPCShell jobs, with perma-fails listed first and ' +
+            'push’s failed Mochitest, XPCShell and WPT jobs, with perma-fails listed first and ' +
             'intermittent failures further down. It matches each failure against historical ' +
             'data so you can see whether the outcome you got is unusual, and links through ' +
             'to Test Info for the full detail on any test.' },
@@ -162,8 +163,8 @@ const DASHBOARDS = [
             'Job Speed was used to tune the per-job-type multipliers — e.g. debug builds run ' +
             'slower than opt, and Windows slower than Linux.' },
     { file: 'resource-use.html', tier: 2, title: 'Resource Usage',
-      desc: 'Per-job CPU usage of XPCShell and Mochitest jobs; finds CPU-bound vs single-threaded jobs.',
-      long: 'Per-job resource usage of XPCShell and Mochitest jobs. Built to find jobs that already saturate all ' +
+      desc: 'Per-job CPU usage of XPCShell, Mochitest and WPT jobs; finds CPU-bound vs single-threaded jobs.',
+      long: 'Per-job resource usage of XPCShell, Mochitest and WPT jobs. Built to find jobs that already saturate all ' +
             'the CPU cores they are given — candidates for machines with more cores, since ' +
             'they parallelize well — and, at the other end, jobs spending too much time on a ' +
             'single thread that would be worth profiling to fix.' },

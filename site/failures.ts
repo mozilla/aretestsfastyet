@@ -127,6 +127,7 @@
  */
 
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
+import { splitTestPath } from '../lib/model/wpt-path.ts';
 import {
     type GroupNode,
     type GroupRow,
@@ -252,7 +253,7 @@ function bugButton(testPath: string, message: string, test: TestNode): Node | nu
         return null;
     }
     const { firstDate, lastDate } = getDataDateRange(page.rawData);
-    const totalRuns = hooks.totalRunsOf(testPath.slice(0, testPath.lastIndexOf('/')), test.testName);
+    const totalRuns = hooks.totalRunsOf(splitTestPath(testPath).directory, test.testName);
     const url = getBugzillaUrl({
         testPath,
         summary: message,

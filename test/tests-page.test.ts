@@ -42,6 +42,10 @@ import assert from 'node:assert/strict';
 import { setupPage, fixture } from './dom-harness.ts';
 import type { IssuesFile, IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
 import type { DailyFile } from '../lib/formats/daily.ts';
+import { HARNESSES } from '../lib/model/harness.ts';
+
+/** The aggregate of every harness. The fixtures have no wpt one: it is always missing. */
+const ISSUES_FILES = HARNESSES.map((harness) => `${harness}-issues.json`);
 
 // --- ground truth, read off the raw fixtures ------------------------------
 
@@ -232,10 +236,7 @@ test('the page loads the 21-day window, and no date list', async () => {
         // which harnesses hold this folder and that is a question about the
         // data. Each is fetched **once**: narrowing to xpcshell afterwards
         // drops the mochitest file it already has rather than re-fetching.
-        assert.deepEqual(page.requested, [
-            'xpcshell-issues.json',
-            'mochitest-issues.json',
-        ]);
+        assert.deepEqual(page.requested, ISSUES_FILES);
         assert.equal(
             page.requested.filter((name) => name === 'xpcshell-issues.json').length,
             1,
@@ -1067,10 +1068,7 @@ test('a folder in both harnesses merges them and badges every row', async () => 
     try {
         // Both aggregates loaded and kept: this folder has xpcshell tests in
         // `.../test/xpcshell` and mochitest tests in `.../test/mochitest`.
-        assert.deepEqual(page.requested, [
-            'xpcshell-issues.json',
-            'mochitest-issues.json',
-        ]);
+        assert.deepEqual(page.requested, ISSUES_FILES);
 
         const harnesses = [
             ...page.document.querySelectorAll<HTMLElement>('.tree-row.test-row'),
@@ -1140,10 +1138,7 @@ test('both aggregates load whatever the URL says, including a stale ?kind=', asy
     // must still show the whole path rather than half of it.
     const page = await freshPage('kind', `?path=${SHARED}&kind=mochitest`);
     try {
-        assert.deepEqual(page.requested, [
-            'xpcshell-issues.json',
-            'mochitest-issues.json',
-        ]);
+        assert.deepEqual(page.requested, ISSUES_FILES);
         const harnesses = new Set(
             [...page.document.querySelectorAll<HTMLElement>('.tree-row.test-row')].map((row) =>
                 row.getAttribute('data-harness')
