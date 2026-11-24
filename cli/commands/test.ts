@@ -524,12 +524,19 @@ async function lookUpTest(context: CommandContext, testPath: string): Promise<Lo
         );
     }
     throw notFoundError(
-        // The list step reads both harnesses, whichever bucket was read.
-        `No test path in the xpcshell and mochitest 21-day data contains "${resolution.query}", ` +
+        // Only the harnesses whose test list was found were searched.
+        `No test path in the ${listOfHarnesses(loaders.listedHarnesses)} 21-day data contains "${resolution.query}", ` +
             `so this reports nothing about the test itself.`,
         'It may have been renamed, added after the window started, or never run in CI. ' +
             'Check the spelling, or pass a longer fragment of the path.'
     );
+}
+
+/** "xpcshell and mochitest", "xpcshell, mochitest and wpt". */
+function listOfHarnesses(harnesses: readonly string[]): string {
+    return harnesses.length <= 1
+        ? harnesses.join('')
+        : `${harnesses.slice(0, -1).join(', ')} and ${harnesses[harnesses.length - 1]}`;
 }
 
 /** Runs the command. */

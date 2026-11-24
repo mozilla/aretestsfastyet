@@ -258,6 +258,15 @@ test('searchfoxUrl anchors at the line a failure message names', () => {
     assert.equal(searchfoxUrl('a/b.js', null), 'https://searchfox.org/mozilla-central/source/a/b.js');
     // The prefix must be at the start and must have the `name : digits` shape.
     assert.ok(!searchfoxUrl('a/b.js', 'x [child : 42] y').includes('#'));
+    // A wpt test links to its source file: no variant, the script of a generated test.
+    assert.equal(
+        searchfoxUrl('testing/web-platform/tests/dom/a.html?v=/b/c.html'),
+        'https://searchfox.org/mozilla-central/source/testing/web-platform/tests/dom/a.html'
+    );
+    assert.equal(
+        searchfoxUrl('testing/web-platform/tests/fetch/a.any.worker.html?q'),
+        'https://searchfox.org/mozilla-central/source/testing/web-platform/tests/fetch/a.any.js'
+    );
     assert.ok(!searchfoxUrl('a/b.js', '[child : abc] y').includes('#'));
 });
 

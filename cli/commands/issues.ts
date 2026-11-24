@@ -160,7 +160,7 @@ export const FAILURES_OPTIONS: OptionSpecs = {
     // `harnessesForPathFilter`.
     harness: {
         type: 'string',
-        placeholder: '<xpcshell|mochitest>',
+        placeholder: '<xpcshell|mochitest|wpt>',
         describe:
             'Which harness’s data to read. Omit it and a directory path reads both, printing ' +
             'whichever has rows.',

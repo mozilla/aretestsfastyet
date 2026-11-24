@@ -11,7 +11,7 @@
  *   node tools/validate/main.js <family> <harness> [date] [--keep] [--file <path>]
  *
  * Families: daily issues issues-with-taskids bucket stats index errors
- *           manifests resources stackwalk
+ *           subtests subtests-bucket manifests resources stackwalk
  *
  * Writes a JSON result to stdout and progress to stderr, so the sweep can
  * collect results with a redirect. Exits 0 when the file validates clean, 1
@@ -30,6 +30,7 @@ import {
     checkBucket,
     checkDaily,
     checkErrors,
+    checkSubtests,
     checkIndex,
     checkIssues,
     checkIssuesWithTaskIds,
@@ -51,6 +52,8 @@ type Family =
     | 'stats'
     | 'index'
     | 'errors'
+    | 'subtests'
+    | 'subtests-bucket'
     | 'manifests'
     | 'resources'
     | 'stackwalk';
@@ -123,6 +126,16 @@ function locate(args: Args): { indexName: string; filename: string } {
                 indexName: `${args.harness}-timings`,
                 filename: `${args.harness}-${args.date}-errors.json`,
             };
+        case 'subtests':
+            return {
+                indexName: `${args.harness}-timings`,
+                filename: `${args.harness}-${args.date}-subtests.json`,
+            };
+        case 'subtests-bucket':
+            return {
+                indexName: `${args.harness}-timings`,
+                filename: `${args.harness}-subtests-${args.bucket ?? '00'}.json`,
+            };
         case 'resources':
             return {
                 indexName: `${args.harness}-timings`,
@@ -143,6 +156,8 @@ const CHECKERS: Record<Family, (c: Checker, data: unknown, ctx: FileContext) => 
     stats: checkStats,
     index: checkIndex,
     errors: checkErrors,
+    subtests: checkSubtests,
+    'subtests-bucket': checkSubtests,
     manifests: checkManifests,
     resources: checkResources,
     stackwalk: checkStackwalk,

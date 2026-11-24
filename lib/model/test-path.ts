@@ -6,6 +6,8 @@
  * test path at all — a manifest, an xpcshell selftest name, a range marker's text.
  */
 
+import { isWptPath, isWptTestPath, wptRepoPath } from './wpt-path.ts';
+
 /** Why an id yielded no test path. */
 export type TestPathDropReason = 'no-id' | 'not-a-test-path';
 
@@ -38,6 +40,9 @@ export function stripManifestPrefix(id: string): string {
  * "never failed".
  */
 export function isTestFilePath(path: string): boolean {
+    if (isWptPath(path)) {
+        return isWptTestPath(path);
+    }
     return /\.(js|html|xhtml)$/.test(path);
 }
 
@@ -46,7 +51,8 @@ export function normalizeTestPath(id: string | null | undefined): string | null 
     if (id === null || id === undefined || id === '') {
         return null;
     }
-    const path = stripManifestPrefix(id);
+    // A wpt id is a URL: "/dom/foo.html?variant".
+    const path = wptRepoPath(id) ?? stripManifestPrefix(id);
     return isTestFilePath(path) ? path : null;
 }
 

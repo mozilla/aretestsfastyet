@@ -594,12 +594,12 @@ test('a rejected global is still refused with its own message, not "unknown opti
  */
 test('a rejected global does not mask a bad value in another global', async () => {
     const cases: [string[], RegExp][] = [
-        [['manifests', '--harness', 'bogus', '--since', '3'], /--harness expects xpcshell or mochitest/],
+        [['manifests', '--harness', 'bogus', '--since', '3'], /--harness expects xpcshell, mochitest or wpt/],
         [['manifests', '--data-source', 'bogus', '--since', '3'], /--data-source expects central, try or local/],
         [['manifests', '--json', '--markdown', '--since', '3'], /--json and --markdown are mutually exclusive/],
         [['manifests', '--day', '2026-08-03', '--since', '3'], /--day and --since are mutually exclusive/],
         [['manifests', '--since', '0'], /--since expects at least 1 day/],
-        [['errors', '--harness', 'bogus', '--since', '3'], /--harness expects xpcshell or mochitest/],
+        [['errors', '--harness', 'bogus', '--since', '3'], /--harness expects xpcshell, mochitest or wpt/],
         [['errors', '--data-source', 'bogus', '--since', '3'], /--data-source expects central, try or local/],
         [['errors', '--json', '--markdown', '--since', '3'], /--json and --markdown are mutually exclusive/],
         [['errors', '--since', '0'], /--since expects at least 1 day/],

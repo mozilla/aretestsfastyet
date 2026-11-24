@@ -53,6 +53,8 @@
  * returned a truncated filename, so the link 404ed instead of failing here.
  */
 
+import { isWptPath, wptSourceFile } from './model/wpt-path.ts';
+
 // --- Taskcluster ---------------------------------------------------------
 
 /** The Firefox CI Taskcluster deployment every URL here is rooted at. */
@@ -408,7 +410,9 @@ export function treeherderPushUrl(repository: string, revision: string): string 
  * from `getSearchfoxUrl()` (`common-links.js:104`) with its regex unchanged.
  */
 export function searchfoxUrl(testPath: string, message?: string | null): string {
-    const url = `https://searchfox.org/mozilla-central/source/${testPath}`;
+    // A wpt path keeps its variant, and can name a generated test, not a file.
+    const file = isWptPath(testPath) ? wptSourceFile(testPath) : testPath;
+    const url = `https://searchfox.org/mozilla-central/source/${file}`;
     if (!message) {
         return url;
     }

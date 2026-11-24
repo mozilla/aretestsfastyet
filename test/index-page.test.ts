@@ -44,8 +44,14 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
 import type { StatsFile } from '../lib/formats/stats.ts';
+import { HARNESSES } from '../lib/model/harness.ts';
 import { computeSummary } from '../lib/query/summary.ts';
-import { SUMMARY_DAYS, mergeBackfillStats, summaryRows } from '../site/index-view.ts';
+import {
+    SUMMARY_DAYS,
+    WPT_FLAVORS,
+    mergeBackfillStats,
+    summaryRows,
+} from '../site/index-view.ts';
 
 const ROOT = new URL('../', import.meta.url);
 const FIXTURES = new URL('./fixtures/', import.meta.url);
@@ -72,6 +78,8 @@ interface IndexHarness {
     requested: string[];
     /** URLs the plain `fetch` was asked for — the two backfill siblings. */
     fetched: string[];
+    /** What the page logged with `console.error`, joined per call. */
+    errors: string[];
     restore(): void;
 }
 
@@ -108,12 +116,14 @@ function backfillFile(): StatsFile {
  * `files` are served by `fetchData`; `siblings` by the plain `fetch` the two
  * backfill requests use. A name with no entry 404s, exactly as the real page's
  * xpcshell backfill request does on every load.
+ * A name in `unreachable` rejects instead, like a network failure.
  */
 function setupIndexPage(
     options: {
         url?: string;
         files?: Record<string, unknown>;
         siblings?: Record<string, unknown>;
+        unreachable?: readonly string[];
     } = {}
 ): IndexHarness {
     const dom = new JSDOM(pageMarkup(), {
@@ -173,6 +183,9 @@ function setupIndexPage(
 
     set('fetchData', (filename: string): Promise<Response> => {
         requested.push(filename);
+        if (options.unreachable?.includes(filename)) {
+            return Promise.reject(new TypeError('Failed to fetch'));
+        }
         const body = files.get(filename);
         return Promise.resolve(
             body === undefined
@@ -208,13 +221,22 @@ function setupIndexPage(
     // uses it plus a `setTimeout(…, 0)` before drawing. `flush()` below waits
     // for both rather than this replacing them, so the real sequencing runs.
 
+    // Recorded for the tests, and kept off the test output.
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]): void => {
+        errors.push(args.map(String).join(' '));
+    };
+
     return {
         window: dom.window,
         document: dom.window.document,
         plots,
         requested,
         fetched,
+        errors,
         restore(): void {
+            console.error = realError;
             for (const [name, value] of saved) {
                 if (value === undefined) {
                     delete scope[name];
@@ -261,18 +283,33 @@ async function freshController(): Promise<{ start(): Promise<void> }> {
     )) as { start(): Promise<void> };
 }
 
+/** The default files: no wpt one, so its request is a miss. */
+function publishedFiles(): Record<string, unknown> {
+    return {
+        'xpcshell-stats.json': statsFixture('xpcshell-stats.json'),
+        'mochitest-stats.json': statsFixture('mochitest-stats.json'),
+    };
+}
+
+/** The same, plus the pinned wpt file, two days long. */
+function filesWithWpt(): Record<string, unknown> {
+    return { ...publishedFiles(), 'wpt-stats.json': statsFixture('wpt-stats.json') };
+}
+
 /** Starts the page with the pinned files loaded. */
 async function startPage(
-    options: { files?: Record<string, unknown>; siblings?: Record<string, unknown> } = {}
+    options: {
+        files?: Record<string, unknown>;
+        siblings?: Record<string, unknown>;
+        unreachable?: readonly string[];
+    } = {}
 ): Promise<IndexHarness> {
     const harness = setupIndexPage({
-        files: options.files ?? {
-            'xpcshell-stats.json': statsFixture('xpcshell-stats.json'),
-            'mochitest-stats.json': statsFixture('mochitest-stats.json'),
-        },
+        files: options.files ?? publishedFiles(),
         ...(options.siblings === undefined
             ? { siblings: { './mochitest-stats-backfill.json': backfillFile() } }
             : { siblings: options.siblings }),
+        ...(options.unreachable === undefined ? {} : { unreachable: options.unreachable }),
     });
     const { start } = await freshController();
     await start();
@@ -299,12 +336,17 @@ function tableRows(harness: IndexHarness): { name: string; cells: [string, strin
 // First paint
 // =========================================================================
 
-test('the page fetches both stats files and both backfill siblings', async () => {
+test('the page fetches every harness\'s stats file and the two backfill siblings', async () => {
     const harness = await startPage();
     try {
-        assert.deepEqual(harness.requested, ['xpcshell-stats.json', 'mochitest-stats.json']);
+        assert.deepEqual(harness.requested, [
+            'xpcshell-stats.json',
+            'mochitest-stats.json',
+            'wpt-stats.json',
+        ]);
         // The xpcshell one 404s on every real load too: only mochitest has a
         // committed backfill. Both are still requested, as upstream does.
+        // WPT asks for none.
         assert.deepEqual(harness.fetched, [
             './xpcshell-stats-backfill.json',
             './mochitest-stats-backfill.json',
@@ -348,10 +390,11 @@ test('the rendered numbers match a tally taken off the fixtures', async () => {
         // second path to the numbers, not the renderer's own output. The
         // separators come from `toLocaleString()` because this machine's locale
         // renders 1078 as `1 078`.
-        const expected = summaryRows(
-            mergeBackfillStats(null, statsFixture('xpcshell-stats.json')).stats,
-            mergeBackfillStats(backfillFile(), statsFixture('mochitest-stats.json')).stats
-        );
+        const expected = summaryRows({
+            xpcshell: mergeBackfillStats(null, statsFixture('xpcshell-stats.json')).stats,
+            mochitest: mergeBackfillStats(backfillFile(), statsFixture('mochitest-stats.json'))
+                .stats,
+        });
         const rows = tableRows(harness);
         assert.equal(rows.length, expected.length);
 
@@ -832,12 +875,15 @@ test('clicking an h2 writes its id to the hash, and the h3s do not', async () =>
             assert.equal(harness.window.location.hash, `#${heading.id}`);
         }
 
-        // The two `<h3>` in the breakdown container are not click-to-anchor,
+        // The `<h3>` in the breakdown container are not click-to-anchor,
         // because the selector is `h2[id]`. Asserted so the property is a
         // recorded decision rather than an accident of the `</h2>` typo.
         const before = harness.window.location.hash;
         const h3s = [...harness.document.querySelectorAll('h3[id]')];
-        assert.equal(h3s.length, 2);
+        assert.deepEqual(
+            h3s.map((heading) => heading.id),
+            ['xpcshell-failure-breakdown', 'mochitest-failure-breakdown', 'wpt-failure-breakdown']
+        );
         for (const heading of h3s) {
             heading.dispatchEvent(new harness.window.Event('click'));
         }
@@ -935,6 +981,332 @@ test('a missing backfill leaves the mochitest charts on the live span', async ()
         // The summary table is unaffected: its window is the last 7 dates,
         // which live has.
         assert.equal(tableRows(harness)[1]!.cells[0]![0], '0.09%');
+    } finally {
+        harness.restore();
+    }
+});
+
+// =========================================================================
+// web-platform-tests (divergence 9)
+// =========================================================================
+
+/** The rows and the legend entries of the page without WPT. */
+const NAMES_WITHOUT_WPT = [
+    'XPCShell',
+    'Mochitest',
+    'Browser Chrome',
+    'DevTools',
+    'Plain',
+    'Chrome',
+    'A11y',
+    'Media',
+    'Remote',
+    'WebGL',
+];
+
+const WPT_NAMES = [
+    'WPT',
+    'Testharness',
+    'Reftest',
+    'Print Reftest',
+    'Crashtest',
+    'WDSpec',
+    'WebGPU',
+    'WebCodecs',
+    'WebRTC',
+    'Canvas',
+    'EME',
+    'AAM',
+];
+
+const CONTAINERS = [
+    'testFailureContainer',
+    'jobFailureContainer',
+    'skipRateContainer',
+    'xpcshellBreakdownContainer',
+] as const;
+
+/** Draws every chart and returns what Plotly was given, per chart id. */
+function drawAll(harness: IndexHarness): Map<string, Record<string, unknown>[]> {
+    const before = harness.plots.length;
+    for (const id of CONTAINERS) {
+        (harness.window as unknown as { __drawChart(id: string): void }).__drawChart(id);
+    }
+    return new Map(harness.plots.slice(before).map((plot) => [plot.id, plot.traces]));
+}
+
+function assertNoWpt(harness: IndexHarness): void {
+    assert.deepEqual(
+        tableRows(harness).map((row) => row.name),
+        NAMES_WITHOUT_WPT
+    );
+    assert.equal(harness.document.getElementById('errorMessage')!.style.display, 'none');
+    assert.deepEqual(harness.errors, [], 'a missing wpt file is not reported as an error');
+
+    const charts = drawAll(harness);
+    assert.deepEqual(
+        [...charts.keys()],
+        [
+            'testFailureChart',
+            'jobFailureChart',
+            'skipRateChart',
+            'xpcshellBreakdownChart',
+            'mochitestBreakdownChart',
+        ],
+        'no WPT breakdown chart is drawn'
+    );
+    for (const id of ['testFailureChart', 'jobFailureChart', 'skipRateChart']) {
+        assert.deepEqual(
+            charts.get(id)!.map((trace) => trace['name']),
+            NAMES_WITHOUT_WPT,
+            `${id} has the two harnesses and mochitest's flavors, and nothing else`
+        );
+    }
+
+    assert.equal(harness.document.getElementById('wpt-failure-breakdown')!.hidden, true);
+    assert.equal(harness.document.getElementById('wptBreakdownChart')!.hidden, true);
+    for (const id of CONTAINERS) {
+        const info = harness.document.getElementById(id)!.querySelector('.info-text')!;
+        assert.ok(!info.textContent!.includes('WPT'), `${id}: ${info.textContent}`);
+    }
+    const view = (
+        harness.window as unknown as { __view(): { chartDates: Record<string, number> } }
+    ).__view();
+    assert.deepEqual(Object.keys(view.chartDates), ['xpcshell', 'mochitest']);
+}
+
+test('every harness has a breakdown heading and chart in the markup', async () => {
+    // The controller builds both ids from the harness key.
+    const harness = await startPage();
+    try {
+        for (const name of HARNESSES) {
+            assert.ok(harness.document.getElementById(`${name}-failure-breakdown`), name);
+            assert.ok(harness.document.getElementById(`${name}BreakdownChart`), name);
+        }
+        for (const name of ['xpcshell', 'mochitest']) {
+            assert.equal(harness.document.getElementById(`${name}BreakdownChart`)!.hidden, false);
+        }
+    } finally {
+        harness.restore();
+    }
+});
+
+test('an unpublished wpt file leaves the page as it was', async () => {
+    const harness = await startPage();
+    try {
+        assert.ok(harness.requested.includes('wpt-stats.json'), 'the file was asked for');
+        assertNoWpt(harness);
+    } finally {
+        harness.restore();
+    }
+});
+
+test('a wpt request that fails outright is the same quiet absence', async () => {
+    const harness = await startPage({ unreachable: ['wpt-stats.json'] });
+    try {
+        assertNoWpt(harness);
+    } finally {
+        harness.restore();
+    }
+});
+
+test('an xpcshell request that fails outright is still the page-level error', async () => {
+    // Upstream's behaviour, which the wpt case above is an exception to.
+    const harness = await startPage({ unreachable: ['xpcshell-stats.json'] });
+    try {
+        const message = harness.document.getElementById('errorMessage')!;
+        assert.equal(message.style.display, 'block');
+        assert.equal(harness.errors.length, 1);
+        assert.equal(tableRows(harness).length, 10, 'the placeholder rows are left in place');
+    } finally {
+        harness.restore();
+    }
+});
+
+test('a published wpt file adds the WPT row and its flavor rows, after the others', async () => {
+    const without = await startPage();
+    const before = tableRows(without);
+    without.restore();
+
+    const harness = await startPage({ files: filesWithWpt() });
+    try {
+        const rows = tableRows(harness);
+        assert.deepEqual(
+            rows.map((row) => row.name),
+            [...NAMES_WITHOUT_WPT, ...WPT_NAMES]
+        );
+        assert.deepEqual(rows.slice(0, before.length), before);
+
+        const wpt = rows[before.length]!;
+        assert.deepEqual(
+            wpt.cells.map(([value]) => value),
+            ['0.08%', '0.89%', '1.34%', '0.00%']
+        );
+        const n = (value: number): string => value.toLocaleString();
+        assert.deepEqual(
+            wpt.cells.map(([, secondary]) => secondary),
+            [
+                `${n(908)} / ${n(1143290)}`,
+                `${n(4)} / ${n(449)}`,
+                `${n(15341)} / ${n(1143290)}`,
+                `${n(0)} / ${n(449)}`,
+            ]
+        );
+
+        const trs = [...harness.document.getElementById('statsSummary')!.querySelectorAll('tr')];
+        const wptRow = trs[before.length]!;
+        assert.ok(!wptRow.classList.contains('flavor-row'));
+        const flavorRows = trs.slice(before.length + 1);
+        assert.equal(flavorRows.length, WPT_FLAVORS.length);
+        for (const row of flavorRows) {
+            assert.ok(row.classList.contains('flavor-row'));
+            assert.equal(row.querySelectorAll('a').length, 0);
+            const invalid = [...row.querySelectorAll('td')][4]!;
+            assert.equal(invalid.querySelector('.stat-value')!.textContent, '—');
+            assert.equal(invalid.querySelector('.stat-secondary'), null);
+        }
+
+        // `green.html` names its section after the Treeherder test type.
+        const links = [...wptRow.querySelectorAll('a.stat-link')];
+        assert.deepEqual(
+            links.map((link) => link.getAttribute('href')),
+            ['issues.html?kind=wpt#date=21days', 'green.html#web-platform-tests']
+        );
+
+        // Two days is no prior period, so the tooltip is the bare sentence.
+        assert.equal(
+            wptRow.querySelector('td[title]')!.getAttribute('title'),
+            'Percentage of test runs that failed'
+        );
+        // The heading is the first row's window, xpcshell's.
+        assert.equal(
+            harness.document.getElementById('summary')!.textContent,
+            `Summary (Last ${SUMMARY_DAYS} Days)`
+        );
+        assert.equal(harness.document.getElementById('errorMessage')!.style.display, 'none');
+    } finally {
+        harness.restore();
+    }
+});
+
+test('a published wpt file adds a WPT series and hidden flavor traces to the trend charts', async () => {
+    const without = await startPage();
+    const before = drawAll(without);
+    without.restore();
+
+    const harness = await startPage({ files: filesWithWpt() });
+    try {
+        const charts = drawAll(harness);
+        const file = statsFixture('wpt-stats.json');
+
+        for (const id of ['testFailureChart', 'skipRateChart']) {
+            const traces = charts.get(id)!;
+            assert.deepEqual(
+                traces.map((trace) => trace['name']),
+                [...NAMES_WITHOUT_WPT, ...WPT_NAMES],
+                `${id}: each harness is followed by its own flavors`
+            );
+            assert.deepEqual(traces.slice(0, 10), before.get(id), id);
+        }
+
+        // The job chart lists every harness before any flavor.
+        const jobTraces = charts.get('jobFailureChart')!;
+        assert.deepEqual(
+            jobTraces.map((trace) => trace['name']),
+            ['XPCShell', 'Mochitest', 'WPT', ...NAMES_WITHOUT_WPT.slice(2), ...WPT_NAMES.slice(1)]
+        );
+        assert.deepEqual(
+            [...jobTraces.slice(0, 2), ...jobTraces.slice(3, 11)],
+            before.get('jobFailureChart'),
+            'the xpcshell and mochitest traces are unchanged'
+        );
+
+        const traces = charts.get('testFailureChart')!;
+        const wpt = traces[10]!;
+        assert.equal(wpt['visible'], undefined, 'the harness series is shown');
+        assert.deepEqual(wpt['line'], { color: '#00695c', width: 2 });
+        assert.deepEqual(wpt['x'], file.dates);
+        assert.deepEqual(
+            wpt['y'],
+            file.dates.map((_, i) => (file.failedTestRuns[i]! / file.totalTestRuns[i]!) * 100)
+        );
+
+        // WPT's flavors are dashed where mochitest's stay dotted.
+        const flavorTraces = traces.slice(11);
+        assert.equal(flavorTraces.length, WPT_FLAVORS.length);
+        for (const [i, trace] of flavorTraces.entries()) {
+            assert.equal(trace['visible'], 'legendonly', `${String(trace['name'])} starts hidden`);
+            assert.deepEqual(trace['line'], {
+                color: WPT_FLAVORS[i]!.color,
+                width: 1.5,
+                dash: 'dash',
+            });
+        }
+        assert.deepEqual(traces[2]!['line'], { color: '#c0392b', width: 1.5, dash: 'dot' });
+        const reftest = flavorTraces[1]!;
+        assert.deepEqual(reftest['y'], [(229 / 296260) * 100, (224 / 297310) * 100]);
+
+        // The job chart's flavor rate is over the flavor's own job count.
+        const jobReftest = jobTraces.find((trace) => trace['name'] === 'Reftest')!;
+        assert.deepEqual(jobReftest['y'], [(2 / 33) * 100, 0]);
+    } finally {
+        harness.restore();
+    }
+});
+
+test('a published wpt file gets a breakdown chart, and its section is shown', async () => {
+    const harness = await startPage({ files: filesWithWpt() });
+    try {
+        assert.equal(harness.document.getElementById('wpt-failure-breakdown')!.hidden, false);
+        assert.equal(harness.document.getElementById('wptBreakdownChart')!.hidden, false);
+
+        (harness.window as unknown as { __drawChart(id: string): void }).__drawChart(
+            'xpcshellBreakdownContainer'
+        );
+        assert.deepEqual(
+            harness.plots.map((plot) => plot.id),
+            ['xpcshellBreakdownChart', 'mochitestBreakdownChart', 'wptBreakdownChart']
+        );
+        const traces = harness.plots[2]!.traces;
+        assert.deepEqual(
+            traces.map((trace) => trace['name']),
+            ['Intermittent', 'Invalid', 'Backout']
+        );
+        assert.deepEqual(traces[0]!['y'], [(3 / 224) * 100, (1 / 225) * 100]);
+        assert.deepEqual(traces[1]!['y'], [0, 0]);
+
+        for (const id of CONTAINERS) {
+            const info = harness.document.getElementById(id)!.querySelector('.info-text')!;
+            assert.ok(
+                info.textContent!.endsWith('; WPT 2 days, 2026-11-21 to 2026-11-22.'),
+                `${id}: ${info.textContent}`
+            );
+        }
+
+        // No wpt backfill was asked for.
+        assert.deepEqual(harness.fetched, [
+            './xpcshell-stats-backfill.json',
+            './mochitest-stats-backfill.json',
+        ]);
+    } finally {
+        harness.restore();
+    }
+});
+
+test('wpt alone is a page, not an error', async () => {
+    // "No stats data available" is every harness missing, not the first two.
+    const harness = await startPage({
+        files: { 'wpt-stats.json': statsFixture('wpt-stats.json') },
+        siblings: {},
+    });
+    try {
+        assert.equal(harness.document.getElementById('errorMessage')!.style.display, 'none');
+        assert.deepEqual(
+            tableRows(harness).map((row) => row.name),
+            WPT_NAMES
+        );
+        // The first row is WPT's, so the heading says how short its window is.
+        assert.equal(harness.document.getElementById('summary')!.textContent, 'Summary (Last 2 Days)');
     } finally {
         harness.restore();
     }

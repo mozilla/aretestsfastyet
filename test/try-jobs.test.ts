@@ -100,8 +100,13 @@ test('a job is a test job when its name contains a parseable harness', () => {
     // `SUPPORTED_HARNESSES` draws and the reason it is not a taxonomy: a
     // `test-` prefix and a `-2` chunk suffix are not what the rule reads.
     assert.equal(isTestJob('test-linux2404-64/opt-reftest-2'), false);
-    assert.equal(isTestJob('test-linux2404-64/opt-web-platform-tests-2'), false);
-    assert.deepEqual([...SUPPORTED_HARNESSES], ['mochitest', 'xpcshell']);
+    assert.equal(isTestJob('test-linux2404-64/opt-crashtest-1'), false);
+
+    // A wpt job name never says `wpt`, and a wpt reftest is a wpt job.
+    assert.equal(isTestJob('test-linux2404-64/opt-web-platform-tests-2'), true);
+    assert.equal(isTestJob('test-linux2404-64/opt-web-platform-tests-reftest-3'), true);
+    assert.equal(isTestJob('test-android-em-14-x86_64/opt-geckoview-web-platform-tests-wdspec-1'), true);
+    assert.deepEqual([...SUPPORTED_HARNESSES], ['mochitest', 'xpcshell', 'web-platform-tests']);
 
     // And the harness name is not the only way a job runs one. `test-verify`
     // reruns the tests a push touched through `desktop_unittest.py`, so its

@@ -18,6 +18,13 @@ import { uploadedProfileName } from '../links.ts';
 import { normalizeMessage } from './failure-message.ts';
 import { type MarkerMessage, type PartitionedMessages, partitionMarkerMessages } from './marker-messages.ts';
 import { type TestPathDropReason, describeTestPathDrop, normalizeTestPath } from './test-path.ts';
+import { wptRepoPath } from './wpt-path.ts';
+import {
+    type WptUnexpectedSubtest,
+    classifyWptSubtestMarker,
+    wptRunStatus,
+    wptSubtestMessage,
+} from './wpt-status.ts';
 
 /**
  * The job run a profile belongs to, as the parser needs it.
@@ -156,6 +163,12 @@ interface ProfileThread {
              * one. Drives `UNEXPECTED-PASS`; see `parseTestMarkers`.
              */
             expected?: string;
+            /** wpt: on a `TestStatus` marker that is a subtest result, not a log line. */
+            subtest?: string;
+            /** wpt: how many subtest results of a `Test` marker were unexpected. */
+            unexpected_subtests?: number;
+            /** wpt: the listed statuses, when a `Test` marker's status is one of them. */
+            known_intermittent?: string;
             text?: string;
             signature?: string;
             minidump?: string;
@@ -395,6 +408,39 @@ export function parseTestMarkers(
             status: marker.statusName,
         }));
 
+    // The unexpected subtest results of a wpt job, built on its first `Test` marker.
+    type WptSubtestMarker = WptUnexpectedSubtest & { test: string; time: number; stack: string | null };
+    let wptSubtestMarkers: WptSubtestMarker[] | undefined;
+    const unexpectedWptSubtests = (test: string, start: number, end: number): WptSubtestMarker[] => {
+        if (wptSubtestMarkers === undefined) {
+            wptSubtestMarkers = [];
+            for (let i = 0; i < length; i++) {
+                const data = markers.data![i];
+                if (data?.type !== 'TestStatus' || data.test === undefined || !data.subtest) {
+                    continue;
+                }
+                const name = stringArray[markers.name![i]!] ?? '';
+                const kind = classifyWptSubtestMarker(name, data.color, data.expected);
+                if (kind === null) {
+                    continue;
+                }
+                wptSubtestMarkers.push({
+                    test: data.test,
+                    time: startTime[i] ?? 0,
+                    status: name,
+                    subtest: data.subtest,
+                    message: normalizeMessage(data.message ?? null),
+                    isPass: kind === 'pass',
+                    stack: resolveStack(markers.stack?.[i], thread!),
+                });
+            }
+            wptSubtestMarkers.sort((a, b) => a.time - b.time);
+        }
+        return wptSubtestMarkers.filter(
+            (marker) => marker.test === test && marker.time >= start && marker.time <= end
+        );
+    };
+
     const testStringId = stringArray.indexOf('test');
     const timings: TestTiming[] = [];
 
@@ -428,7 +474,13 @@ export function parseTestMarkers(
         const start = startTime[i] ?? 0;
         const end = endTime[i] ?? 0;
         let status = data.status ?? 'UNKNOWN';
-        if (status === 'FAIL' && data.color === 'green') {
+        // A wpt id is a URL, and `lib/model/wpt-status.ts` gives the run its status.
+        const isWpt = wptRepoPath(fullTestId) !== null;
+        const wptSubtests = isWpt ? unexpectedWptSubtests(fullTestId, start, end) : [];
+        const wptRun = isWpt ? wptRunStatus(data, wptSubtests) : null;
+        if (wptRun !== null) {
+            status = wptRun.status;
+        } else if (status === 'FAIL' && data.color === 'green') {
             status = 'EXPECTED-FAIL';
         } else if (status === 'PASS' && data.expected !== undefined && data.expected !== 'PASS') {
             // A test the manifest annotated `fail-if` that passed anyway: the
@@ -446,7 +498,7 @@ export function parseTestMarkers(
             status += overlaps(start, end, parallelRanges) ? '-PARALLEL' : '-SEQUENTIAL';
         }
 
-        let message = normalizeMessage(data.message ?? null);
+        let message = normalizeMessage(wptRun === null ? (data.message ?? null) : wptRun.message);
         // A failing test's messages come from the `TestStatus` markers logged
         // inside its execution, and the first of them overrides the `Test`
         // marker's own `message` when there is one — `old/try.html:983` assigns
@@ -461,7 +513,25 @@ export function parseTestMarkers(
         let minidump: string | null = null;
         let details: MessageDetail[] = [];
         let partitioned: PartitionedMessages = { messages: [], profileFilenames: [] };
-        if (status.startsWith('FAIL') || status.startsWith('TIMEOUT') || status === 'ERROR') {
+        if (isWpt) {
+            // The unexpected subtest results, failures first. `message` stays
+            // what `wptRunStatus` gave, as in the 21-day files.
+            const ordered = [
+                ...wptSubtests.filter((subtest) => !subtest.isPass),
+                ...wptSubtests.filter((subtest) => subtest.isPass),
+            ];
+            partitioned = partitionMarkerMessages(
+                ordered.map((subtest) => ({
+                    message: wptSubtestMessage(subtest),
+                    status: subtest.status,
+                }))
+            );
+            details = ordered.map((subtest) => ({
+                message: wptSubtestMessage(subtest),
+                status: subtest.status,
+                stack: subtest.stack,
+            }));
+        } else if (status.startsWith('FAIL') || status.startsWith('TIMEOUT') || status === 'ERROR') {
             partitioned = partitionMarkerMessages(messagesInRange(fullTestId, start, end));
             message = partitioned.messages[0] ?? message;
             details = markersInRange(fullTestId, start, end)

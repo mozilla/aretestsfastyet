@@ -26,16 +26,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { StatsFile } from '../lib/formats/stats.ts';
+import { HARNESSES } from '../lib/model/harness.ts';
 import {
     type MergedStats,
+    HARNESS_VIEWS,
     MOCHITEST_FLAVORS,
     SUMMARY_DAYS,
     SUMMARY_LINK_HASH,
+    WPT_FLAVORS,
     breakdownSeries,
     breakdownTotals,
     displayValue,
     droppedDates,
     holeCount,
+    loadedHarnesses,
     mergeBackfillStats,
     rateSeries,
     recentWindow,
@@ -61,6 +65,8 @@ function backfillFile(name: string): StatsFile {
 const xpcshell = (): StatsFile => statsFixture('xpcshell-stats.json');
 const mochitest = (): StatsFile => statsFixture('mochitest-stats.json');
 const backfill = (): StatsFile => backfillFile('mochitest-stats-backfill.json');
+/** The pinned wpt file, two days long. */
+const wpt = (): StatsFile => statsFixture('wpt-stats.json');
 
 /** The merged mochitest file the page actually renders from. */
 function mergedMochitest(): MergedStats {
@@ -95,7 +101,7 @@ test('the summary window is 7 dates and the charts are the whole file', () => {
 
     // The property the page never states, asserted as a ratio rather than as
     // two constants, so a fixture refresh does not need this test edited.
-    const summary = summaryRows({ ...toMerged(xpc) }, moch);
+    const summary = summaryRows({ xpcshell: { ...toMerged(xpc) }, mochitest: moch });
     assert.equal(summary[0]!.totals.dates.length, SUMMARY_DAYS);
     assert.equal(summary[1]!.totals.dates.length, SUMMARY_DAYS);
 
@@ -270,7 +276,7 @@ function toMerged(file: StatsFile): MergedStats {
 test('the summary rows are harnesses then flavors, in source order, unsorted', () => {
     // Framing parity: `PARITY.md` §1 counts a wrong sort key among the defects
     // that produced correct numbers, so the *order* is asserted as a sequence.
-    const rows = summaryRows(toMerged(xpcshell()), mergedMochitest());
+    const rows = summaryRows({ xpcshell: toMerged(xpcshell()), mochitest: mergedMochitest() });
     assert.deepEqual(
         rows.map((row) => row.name),
         ['XPCShell', 'Mochitest', ...MOCHITEST_FLAVORS.map((flavor) => flavor.name)]
@@ -313,7 +319,7 @@ test('the four rates match a tally computed independently of the view model', ()
     // the population `failedJobs` is counted over. See `summaryRow`.
     const jobPopulation = totalJobs + invalidJobs;
 
-    const row = summaryRows(stats, null)[0]!;
+    const row = summaryRows({ xpcshell: stats })[0]!;
     assert.equal(row.totals.totalTestRuns, totalTests);
     assert.equal(row.totals.failedTestRuns, totalFailed);
     assert.equal(row.jobPopulation, jobPopulation);
@@ -346,7 +352,7 @@ test('a rate is carried unrounded so the renderer rounds once', () => {
         totalTestRuns: [10000],
         failedTestRuns: [1438],
     });
-    const row = summaryRows(toMerged(file), null)[0]!;
+    const row = summaryRows({ xpcshell: toMerged(file) })[0]!;
     assert.equal(row.testFailureRate, 14.38, 'the raw ratio, not a string');
     assert.equal(typeof row.testFailureRate, 'number');
 });
@@ -363,7 +369,7 @@ test('more invalid jobs than failed ones no longer produces a negative rate', ()
         failedJobs: [10],
         invalidJobs: [50],
     });
-    const row = summaryRows(toMerged(file), null)[0]!;
+    const row = summaryRows({ xpcshell: toMerged(file) })[0]!;
     assert.equal(row.jobPopulation, 1050);
     assert.equal(row.jobFailureRate, (10 / 1050) * 100);
     assert.ok(row.jobFailureRate! > 0, 'not clamped to zero: the rate is a real positive value');
@@ -409,7 +415,7 @@ test('a flavor row has no invalid-job rate, and flavors carry no such series', (
     for (const [name, counters] of Object.entries(moch.flavors ?? {})) {
         assert.ok(!('invalidJobs' in counters), `flavors.${name} should have no invalidJobs`);
     }
-    const flavorRows = summaryRows(null, moch).filter((row) => row.isFlavor);
+    const flavorRows = summaryRows({ mochitest: moch }).filter((row) => row.isFlavor);
     assert.ok(flavorRows.length > 0);
     for (const row of flavorRows) {
         assert.equal(row.invalidJobRate, null);
@@ -444,7 +450,7 @@ test('a flavor row divides by processedJobCount alone, not by the wider populati
     // And on the real file, where `invalidJobs` is 0, the two expressions
     // coincide — so the branch above is a statement about *why*, not a number
     // anyone sees today.
-    for (const row of summaryRows(null, mergedMochitest()).filter((r) => r.isFlavor)) {
+    for (const row of summaryRows({ mochitest: mergedMochitest() }).filter((r) => r.isFlavor)) {
         assert.equal(row.jobPopulation, row.totals.processedJobCount);
     }
 });
@@ -453,12 +459,12 @@ test('a flavor with zero test runs in the window is hidden, and hides nothing el
     // `old/index.html:545`. The aggregate row must not move when a flavor drops
     // out, because it comes from the top-level arrays.
     const moch = mergedMochitest();
-    const before = summaryRows(null, moch);
+    const before = summaryRows({ mochitest: moch });
     const aggregateBefore = before.find((row) => row.name === 'Mochitest')!;
 
     const silenced = structuredClone(moch);
     silenced.flavors!['webgl']!.totalTestRuns = silenced.dates.map(() => 0);
-    const after = summaryRows(null, silenced);
+    const after = summaryRows({ mochitest: silenced });
 
     assert.ok(before.some((row) => row.name === 'WebGL'));
     assert.ok(!after.some((row) => row.name === 'WebGL'), 'WebGL should be hidden');
@@ -474,16 +480,16 @@ test('a flavor absent from the data is skipped', () => {
     const moch = mergedMochitest();
     const trimmed = structuredClone(moch);
     delete trimmed.flavors!['media'];
-    const rows = summaryRows(null, trimmed);
+    const rows = summaryRows({ mochitest: trimmed });
     assert.ok(!rows.map((row) => row.name).includes('Media'));
-    assert.equal(rows.length, summaryRows(null, moch).length - 1);
+    assert.equal(rows.length, summaryRows({ mochitest: moch }).length - 1);
 });
 
 test('the aggregate row is not the sum of the flavor rows', () => {
     // Measured: the eight flavors sum to 60,101,543 test runs against the
     // aggregate's 60,119,846 — an 18,303 shortfall. Recomputed here so a
     // fixture refresh does not compare a stale constant.
-    const rows = summaryRows(null, mergedMochitest());
+    const rows = summaryRows({ mochitest: mergedMochitest() });
     const aggregate = rows.find((row) => row.name === 'Mochitest')!;
     const flavorSum = rows
         .filter((row) => row.isFlavor)
@@ -497,7 +503,7 @@ test('the aggregate row is not the sum of the flavor rows', () => {
 
 test('a rate with a zero denominator is null, not zero', () => {
     const empty = syntheticFile({ dates: ['2026-08-03'] });
-    const row = summaryRows(toMerged(empty), null)[0]!;
+    const row = summaryRows({ xpcshell: toMerged(empty) })[0]!;
     // The view model keeps the distinction the renderer collapses: "no tests
     // ran" and "no tests failed" are different answers.
     assert.equal(row.testFailureRate, null);
@@ -639,15 +645,221 @@ test('the display mode picks the percentage or the numerator', () => {
 test('every flavor in the pinned data is one this page shows', () => {
     // The hardcoded list is a presentation choice, but a flavor the data grew
     // and the list lacks would silently vanish from the page.
-    assert.deepEqual(unlistedFlavors(mochitest()), []);
+    assert.deepEqual(unlistedFlavors(mochitest(), 'mochitest'), []);
     assert.equal(Object.keys(mochitest().flavors ?? {}).length, MOCHITEST_FLAVORS.length);
 });
 
 test('unlistedFlavors names a flavor the page would drop', () => {
     const grown = mochitest();
     grown.flavors!['brand-new'] = grown.flavors!['plain']!;
-    assert.deepEqual(unlistedFlavors(grown), ['brand-new']);
+    assert.deepEqual(unlistedFlavors(grown, 'mochitest'), ['brand-new']);
     // And it really is dropped, which is the behaviour the warning exists for.
-    const rows = summaryRows(null, toMerged(grown));
+    const rows = summaryRows({ mochitest: toMerged(grown) });
     assert.ok(!rows.map((row) => row.name).includes('brand-new'));
+});
+
+test('a flavor is listed or not per harness, not across them', () => {
+    // "reftest" is a WPT flavor, and still unlisted in a mochitest file.
+    const grown = mochitest();
+    grown.flavors!['reftest'] = grown.flavors!['plain']!;
+    assert.deepEqual(unlistedFlavors(grown, 'mochitest'), ['reftest']);
+    assert.deepEqual(HARNESS_VIEWS.xpcshell.flavors, []);
+    assert.equal(xpcshell().flavors, undefined);
+    assert.deepEqual(unlistedFlavors(xpcshell(), 'xpcshell'), []);
+});
+
+// =========================================================================
+// web-platform-tests
+// =========================================================================
+
+const ROWS_WITHOUT_WPT = [
+    'XPCShell',
+    'Mochitest',
+    'Browser Chrome',
+    'DevTools',
+    'Plain',
+    'Chrome',
+    'A11y',
+    'Media',
+    'Remote',
+    'WebGL',
+];
+
+test('an unpublished wpt file leaves the summary rows exactly as they were', () => {
+    // Absent and `null` are the same: the rows of the other two, untouched.
+    const loaded = { xpcshell: toMerged(xpcshell()), mochitest: mergedMochitest() };
+    const before = summaryRows(loaded);
+    assert.deepEqual(
+        before.map((row) => row.name),
+        ROWS_WITHOUT_WPT
+    );
+    assert.deepEqual(summaryRows({ ...loaded, wpt: null }), before);
+    assert.deepEqual(
+        loadedHarnesses({ ...loaded, wpt: null }).map(([harness]) => harness),
+        ['xpcshell', 'mochitest']
+    );
+    assert.deepEqual(summaryRows({}), []);
+    assert.deepEqual(summaryRows({ xpcshell: null, mochitest: null, wpt: null }), []);
+});
+
+test('a published wpt file adds WPT and its flavors after the rows that were there', () => {
+    const loaded = { xpcshell: toMerged(xpcshell()), mochitest: mergedMochitest() };
+    const before = summaryRows(loaded);
+    const rows = summaryRows({ ...loaded, wpt: toMerged(wpt()) });
+
+    assert.deepEqual(rows.slice(0, before.length), before);
+
+    // Written out, not mapped from `WPT_FLAVORS`, so that this pins the order.
+    const added = rows.slice(before.length);
+    assert.deepEqual(
+        added.map((row) => row.name),
+        [
+            'WPT',
+            'Testharness',
+            'Reftest',
+            'Print Reftest',
+            'Crashtest',
+            'WDSpec',
+            'WebGPU',
+            'WebCodecs',
+            'WebRTC',
+            'Canvas',
+            'EME',
+            'AAM',
+        ]
+    );
+    assert.deepEqual(
+        added.map((row) => row.isFlavor),
+        [false, ...WPT_FLAVORS.map(() => true)]
+    );
+    assert.ok(added.every((row) => row.kind === 'wpt'));
+    assert.deepEqual(
+        rows.filter((row) => !row.isFlavor).map((row) => row.kind),
+        [...HARNESSES]
+    );
+});
+
+test('the WPT row matches a tally taken off the wpt file', () => {
+    // The file has two dates, so the 7-day window is both of them.
+    const file = wpt();
+    assert.deepEqual(file.dates, ['2026-11-21', '2026-11-22']);
+    const sum = (values: number[]): number => values.reduce((total, value) => total + value, 0);
+
+    const row = summaryRows({ wpt: toMerged(file) })[0]!;
+    assert.equal(row.name, 'WPT');
+    assert.deepEqual(row.totals.dates, file.dates);
+    assert.equal(row.totals.totalTestRuns, sum(file.totalTestRuns));
+    assert.equal(row.testFailureRate, (sum(file.failedTestRuns) / sum(file.totalTestRuns)) * 100);
+    assert.equal(row.skipRate, (sum(file.skippedTestRuns) / sum(file.totalTestRuns)) * 100);
+    assert.equal(row.jobPopulation, sum(file.processedJobCount) + sum(file.invalidJobs));
+    assert.equal(row.jobFailureRate, (sum(file.failedJobs) / row.jobPopulation) * 100);
+    assert.equal(
+        row.invalidJobRate,
+        (sum(file.invalidJobs) / sum(file.processedJobCount)) * 100
+    );
+
+    assert.equal(row.totals.totalTestRuns, 1143290);
+    assert.equal(row.totals.failedTestRuns, 908);
+    assert.equal(row.totals.failedJobs, 4);
+    assert.equal(row.jobPopulation, 449);
+    assert.equal(row.testFailureRate!.toFixed(2), '0.08');
+    assert.equal(row.jobFailureRate!.toFixed(2), '0.89');
+    assert.equal(row.skipRate!.toFixed(2), '1.34');
+    // A measured zero, not a missing rate.
+    assert.equal(row.invalidJobRate, 0);
+});
+
+test('a wpt flavor row follows the mochitest flavor rules', () => {
+    const merged = toMerged(wpt());
+    for (const [name, counters] of Object.entries(merged.flavors ?? {})) {
+        assert.ok(!('invalidJobs' in counters), `flavors.${name} should have no invalidJobs`);
+    }
+    const rows = summaryRows({ wpt: merged });
+    const flavorRows = rows.filter((row) => row.isFlavor);
+    assert.equal(flavorRows.length, WPT_FLAVORS.length);
+    for (const row of flavorRows) {
+        assert.equal(row.invalidJobRate, null, `${row.name}: a dash, not 0.00%`);
+        assert.equal(row.jobPopulation, row.totals.processedJobCount);
+    }
+    const reftest = flavorRows.find((row) => row.name === 'Reftest')!;
+    assert.equal(reftest.totals.totalTestRuns, 296260 + 297310);
+    assert.equal(reftest.totals.failedTestRuns, 229 + 224);
+    assert.equal(reftest.jobFailureRate, (2 / 65) * 100);
+
+    // A flavor the data lacks is skipped.
+    const trimmed = structuredClone(merged);
+    delete trimmed.flavors!['wdspec'];
+    assert.deepEqual(
+        summaryRows({ wpt: trimmed }).map((row) => row.name),
+        rows.map((row) => row.name).filter((name) => name !== 'WDSpec')
+    );
+
+    // So is one with no test run in the window, without moving the WPT row.
+    const silenced = structuredClone(merged);
+    silenced.flavors!['aam']!.totalTestRuns = silenced.dates.map(() => 0);
+    const after = summaryRows({ wpt: silenced });
+    assert.ok(!after.some((row) => row.name === 'AAM'));
+    assert.deepEqual(after[0], rows[0]);
+});
+
+test('the wpt flavor list is every test type the generator can emit', () => {
+    // As in `lib/formats/FORMATS.md`; the pinned file has all eleven.
+    assert.deepEqual(
+        WPT_FLAVORS.map((flavor) => flavor.key),
+        [
+            'testharness',
+            'reftest',
+            'print-reftest',
+            'crashtest',
+            'wdspec',
+            'webgpu',
+            'webcodecs',
+            'webrtc',
+            'canvas',
+            'eme',
+            'aam',
+        ]
+    );
+    assert.deepEqual(unlistedFlavors(wpt(), 'wpt'), []);
+    assert.deepEqual(
+        Object.keys(wpt().flavors ?? {}).sort(),
+        WPT_FLAVORS.map((flavor) => flavor.key).sort()
+    );
+});
+
+test('every harness and every flavor has a colour of its own', () => {
+    // Upstream's two colours.
+    assert.equal(HARNESS_VIEWS.xpcshell.color, '#0060df');
+    assert.equal(HARNESS_VIEWS.mochitest.color, '#ff6b6b');
+
+    // Within a harness, colour alone tells the traces apart.
+    const harnessColors = HARNESSES.map((harness) => HARNESS_VIEWS[harness].color);
+    for (const harness of HARNESSES) {
+        const family = [...harnessColors, ...HARNESS_VIEWS[harness].flavors.map((f) => f.color)];
+        assert.equal(new Set(family).size, family.length, `${harness}: a colour is used twice`);
+    }
+    // Across harnesses the line style does; mochitest keeps upstream's dots.
+    assert.equal(HARNESS_VIEWS.mochitest.flavorDash, 'dot');
+    assert.notEqual(HARNESS_VIEWS.wpt.flavorDash, HARNESS_VIEWS.mochitest.flavorDash);
+    // A name is a legend entry and a row label.
+    const names = HARNESSES.flatMap((harness) =>
+        HARNESS_VIEWS[harness].flavors.map((flavor) => flavor.name)
+    );
+    assert.equal(new Set(names).size, names.length);
+});
+
+test('the wpt series are charted like the other harnesses\'', () => {
+    // The chart functions take a file: the wpt one must have what they read.
+    const merged = toMerged(wpt());
+    assert.equal(droppedDates(merged.dates, merged.failedTestRuns, merged.totalTestRuns), 0);
+    assert.deepEqual(testFailedJobSeries(merged), [3, 1]);
+    assert.deepEqual(breakdownTotals(merged), [224, 225]);
+    for (const flavor of WPT_FLAVORS) {
+        const counters = merged.flavors![flavor.key]!;
+        assert.equal(
+            rateSeries(merged.dates, counters.failedJobs, counters.processedJobCount).length,
+            2,
+            `${flavor.key} has a job series for both days`
+        );
+    }
 });

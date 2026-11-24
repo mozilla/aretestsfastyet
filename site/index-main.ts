@@ -5,7 +5,7 @@
  * being imported — the property `site/crashes-main.ts` documents, and the one
  * that makes `test/index-page.test.ts` able to drive the landing page under
  * jsdom at all. Without it, importing the controller would render the dashboard
- * teaser, attach the observer and fetch two artifacts.
+ * teaser, attach the observer and fetch an artifact per harness.
  *
  * It matters more here than on the other pages. This page's charts are
  * *entirely* driven by an `IntersectionObserver`, which jsdom does not

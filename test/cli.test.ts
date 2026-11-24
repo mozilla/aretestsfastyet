@@ -269,7 +269,7 @@ test('--day and --since together is a usage error', async () => {
 test('--harness rejects an unknown harness', async () => {
     const { code, stderr } = await invoke(['test', TEST_PATH, '--harness', 'reftest']);
     assert.equal(code, ExitCode.Usage);
-    assert.match(stderr, /expects xpcshell or mochitest/);
+    assert.match(stderr, /expects xpcshell, mochitest or wpt/);
 });
 
 test('an unknown command exits 1 and lists what exists', async () => {
@@ -2622,6 +2622,15 @@ test('harness inference follows detectHarness for every rule', async () => {
         ['toolkit/content/tests/chrome/test_menupopup_scroll_amount.xhtml', 'mochitest'],
         ['no_prefix.js', 'xpcshell'],
         ['test_at_root.html', 'mochitest'],
+        // The wpt tree decides before the extension does.
+        ['testing/web-platform/tests/dom/nodes/Node-cloneNode.html', 'wpt'],
+        ['testing/web-platform/tests/fetch/api/basic/accept-header.any.worker.html', 'wpt'],
+        ['testing/web-platform/mozilla/tests/dom/foo.html?variant=1', 'wpt'],
+        ['testing/web-platform/tests/webdriver/tests/classic/get_title/get.py', 'wpt'],
+        ['testing/web-platform/tests/dom', 'wpt'],
+        ['/dom/nodes/Node-cloneNode.html', 'wpt'],
+        // Outside the tree, a directory is still xpcshell.
+        ['testing/xpcshell', 'xpcshell'],
     ];
     for (const [path, expected] of cases) {
         assert.equal(detectHarness(path), expected, path);
@@ -2731,9 +2740,15 @@ test('the cache keys on the file name, so two files do not share an entry', asyn
         // cache must still report each harness's own numbers. Under a shared
         // key one of them silently becomes a copy of the other.
         const first = json(streams.stdout);
+        const coldRequests = source.requested.length;
         const warmStreams = captureStreams();
         await run({ argv: ['summary', '--json'], streams: warmStreams, source: wrapped, cache });
-        assert.equal(source.requested.length, 2, 'the warm run fetched nothing');
+        // The fixtures have no wpt file, and a miss is never cached.
+        assert.deepEqual(
+            source.requested.slice(coldRequests),
+            ['wpt-timings/wpt-stats.json'],
+            'the warm run fetched nothing it already had'
+        );
         const second = json(warmStreams.stdout);
         assert.deepEqual(second, first, 'the cached answer matches the fetched one');
         const harnesses = second['harnesses'] as { harness: string; current: Record<string, number> }[];
@@ -5365,4 +5380,73 @@ test('try --help documents both Lando forms', async () => {
             );
         }
     }
+});
+
+// --- web-platform-tests ---------------------------------------------------
+
+/** `fixtureSource()`, plus the wpt files a published wpt index would add. */
+function fixtureSourceWithWpt(): DataSource & { requested: string[] } {
+    const base = fixtureSource();
+    const wpt: Record<string, string> = {
+        'wpt-timings/wpt-00.json': 'wpt-00.json',
+        'wpt-timings/wpt-stats.json': 'wpt-stats.json',
+        // The test list is served from the bucket, like `fixtureSource()` does.
+        'wpt-timings/wpt-issues.json': 'wpt-00.json',
+    };
+    return {
+        name: base.name,
+        requested: base.requested,
+        async fetch(name) {
+            const local = wpt[`${name.index}/${name.filename}`];
+            if (local === undefined) {
+                return base.fetch(name);
+            }
+            base.requested.push(`${name.index}/${name.filename}`);
+            return new Uint8Array(await readFile(new URL(`./fixtures/${local}`, import.meta.url)));
+        },
+    };
+}
+
+/** A wpt test of the fixture with a variant, which the shell would need quoted. */
+const WPT_VARIANT_TEST =
+    'testing/web-platform/tests/html/browsers/origin/cross-origin-objects/' +
+    'location-properties-smoke-test.window.html?toString';
+
+test('a wpt test is read from the wpt bucket, variant and all', async () => {
+    const { code, stdout, source } = await invoke(['test', WPT_VARIANT_TEST, '--json'], {
+        source: fixtureSourceWithWpt(),
+    });
+    assert.equal(code, ExitCode.Success);
+    const result = json(stdout);
+    // The tree decides, before the filename: `.html` alone would be mochitest.
+    assert.equal(result['harness'], 'wpt');
+    assert.equal(result['path'], WPT_VARIANT_TEST);
+    assert.deepEqual(source.requested, ['wpt-timings/wpt-00.json']);
+    const totals = result['totals'] as Record<string, number>;
+    assert.ok(totals['passCount']! > 0);
+    assert.equal(totals['failCount'], 0);
+});
+
+test('a fragment of a wpt path resolves through the wpt test list', async () => {
+    const { code, stdout } = await invoke(['test', 'location-properties-smoke', '--json'], {
+        source: fixtureSourceWithWpt(),
+    });
+    assert.equal(code, ExitCode.Success);
+    assert.equal(json(stdout)['path'], WPT_VARIANT_TEST);
+});
+
+test('summary and the not-found message name wpt once its files are published', async () => {
+    const summary = await invoke(['summary', '--json'], { source: fixtureSourceWithWpt() });
+    assert.equal(summary.code, ExitCode.Success);
+    assert.deepEqual(
+        (json(summary.stdout)['harnesses'] as { harness: string }[]).map((entry) => entry.harness),
+        ['xpcshell', 'mochitest', 'wpt']
+    );
+
+    const missing = await invoke(['test', 'no_such_test_anywhere'], { source: fixtureSourceWithWpt() });
+    assert.equal(missing.code, ExitCode.NotFound);
+    assert.match(
+        missing.stderr,
+        /No test path in the xpcshell, mochitest and wpt 21-day data contains/
+    );
 });

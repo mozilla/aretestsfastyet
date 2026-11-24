@@ -450,6 +450,102 @@ mochitest daily files would exceed 2 GB of heap.
   of kinds.
 - **`totalBuckets` is 64** in all 128 bucket files.
 
+## web-platform-tests
+
+**Measured on files that are not published yet.** The generator's wpt support
+is in review, so there is no `wpt-timings` index to sweep: everything in this
+section comes from running the patched `testing/timings/fetch-test-data.js` on
+real pushes, and validating what it wrote with `tools/validate/` (`--file`). The
+figures are from one mozilla-central push, `c28bf988c1c6` of 2026-11-23, with
+1,826 wpt jobs of which 1,753 had a usable profile. Re-run the sweep with `wpt`
+added to it once the nightly task exists, and correct what follows.
+
+### The timing families are the same families
+
+`wpt-{date}.json`, `wpt-issues.json`, `wpt-XX.json`, `wpt-stats.json`,
+`-resources.json` and `-errors.json` have the layout of the other two
+harnesses' files. What differs is in the values:
+
+- **A test path is a repository path that keeps the variant of the test**:
+  `testing/web-platform/tests/close-watcher/basic.html?dialog`. 9,383 of the
+  77,866 tests of the push have one. `tables.testNames` holds the variant, and a
+  variant can contain a `/` (`foo.html?url=/common/bar.html`), so a path splits
+  into directory and name at the last `/` *before* the `?` or `#`. Joining the
+  two back is unchanged. `lib/model/wpt-path.ts` has the rules.
+- **A test can have any extension**: `.html` 61,757, `.xht` 7,515, `.svg` 732,
+  `.py` 544 (wdspec), `.htm` 458, `.xml` 335, `.xhtml` 305, `.js` 59.
+- **No test had a `null` component.** A test generated from a script takes the
+  component of the script, and one the component map does not know takes the
+  one most files of its directory have.
+- **Seven statuses**, none with a `-PARALLEL`/`-SEQUENTIAL` suffix:
+
+  | status | runs |
+  | --- | --- |
+  | `PASS` | 1,569,654 |
+  | `SKIP` | 936,990 |
+  | `EXPECTED-FAIL` | 151,343 |
+  | `FAIL` | 3,013 |
+  | `TIMEOUT` | 491 |
+  | `CRASH` | 9 |
+  | `UNEXPECTED-PASS` | 1 |
+
+  `UNEXPECTED-PASS` is the one the other harnesses never had.
+- **A third of the runs are `SKIP`, and 95% of those are not disabled tests.**
+  wpt jobs are split by implementation status: the `backlog` jobs run only the
+  tests whose metadata says `implementation-status: backlog`, the others leave
+  those out, and each reports what it leaves out as a `SKIP` with no message.
+  Measured on the Linux jobs of 2026-11-22 (225 jobs, 151,836 skipped runs):
+  135,910 were in backlog jobs, where 97 to 99% of the test markers are skips,
+  8,252 were backlog tests in the other jobs, and 7,674 were anything else —
+  2,066 tests that no job ran, in `webgpu`, `webnn` and the like. The generator
+  gives the first two a message, `run-if implementation-status == "backlog"`
+  and `run-if implementation-status != "backlog"`, which makes them `run-if`
+  skips to everything downstream: kept in the daily file, dropped from the
+  aggregates and from `skippedTestRuns` (151,836 → 7,674 for that day), and not
+  counted by `skipReason`. It cannot read a test's implementation status from a
+  profile, so a test is a backlog one when a backlog job in the same file ran
+  it: on a day when no backlog job of a test's chunk ran, its skips stay
+  message-less and count.
+- **`FAIL` covers more than a failed test.** A testharness.js test ends `OK`
+  whenever it ran to completion and its subtests decide, so the generator
+  records `FAIL` when a subtest had a result its metadata does not expect, with
+  that subtest as the message (`FAIL | <subtest> - <message>`), and
+  `UNEXPECTED-PASS` when the only such results are passes. A known intermittent
+  failure counts when a pass is expected first (`[PASS, FAIL]`), not when the
+  metadata lists failures only (`[TIMEOUT, FAIL]`); a known intermittent pass
+  does not. `JSON_FORMAT.md` has the table.
+- **`stats.json` has `flavors`**, as mochitest's does, keyed by test type:
+  `testharness` (jobs with no type in their name), `reftest`, `print-reftest`,
+  `crashtest`, `wdspec`, `webgpu`, `webcodecs`, `webrtc`, `canvas`, `eme`, `aam`.
+
+### The subtests family is new
+
+`wpt-{date}-subtests.json`, `wpt-{project}-{revision}-subtests.json` and the 64
+`wpt-subtests-XX.json`. `lib/formats/subtests.ts` declares it and says why it
+keeps counts rather than results.
+
+- **45,424,578 `PASS` results against 1,570,555 `KNOWN-FAIL`**, for 2,317,904
+  subtests of 42,980 tests; the other 34,886 tests of the push have no subtest.
+  96.6% of the subtests of one Linux configuration only ever passed.
+- **Fourteen statuses** in `metadata.resultCounts`: `PASS`; four expected
+  (`KNOWN-FAIL` 1,570,555, `KNOWN-NOTRUN` 7,503, `KNOWN-PRECONDITION_FAILED`
+  7,310, `KNOWN-TIMEOUT` 3,229); five known intermittent
+  (`KNOWN-INTERMITTENT-FAIL` 2,192, `-PASS` 2,070, `-TIMEOUT` 152, `-NOTRUN` 79,
+  `-PRECONDITION_FAILED` 1); and four unexpected (`ERROR` 8,406, `FAIL` 274,
+  `NOTRUN` 77, `TIMEOUT` 2). No `UNEXPECTED-PASS` and no bare
+  `PRECONDITION_FAILED` on that push; both can occur.
+- **All 8,406 `ERROR` results were one broken configuration**, the Android
+  ccov wdspec jobs failing to launch the browser. `ERROR` is a wdspec subtest
+  status, and the one status whose marker does not say whether it was expected,
+  so it is always listed as unexpected.
+- **`messageIds` entries are `null`** for a result without a message: all 77
+  `NOTRUN` of the push.
+- **Sizes.** The push's file is 125.0 MB, of which the subtest names are 88 MB
+  — 1,179,754 distinct names for 2.3 million subtests, so the name table halves
+  what inlining them would cost. Merged into buckets, the same subtests are
+  1.6 to 4.4 MB a file, against 13 to 16 MB for a mochitest timing bucket.
+- **Validation peak**: 738 MB of RSS for the 125 MB file, 135 MB for a bucket.
+
 ## How this was measured
 
 `tools/validate/` walks a whole file asserting every field's presence and type,

@@ -21,11 +21,11 @@ import { fetchJson, timingsIndex } from '../../lib/sources/source.ts';
 import type { OptionSpecs } from '../args.ts';
 import { type ParsedArgs, numberOption } from '../args.ts';
 import { type CommandContext, emit, progress } from '../context.ts';
+import { loadPerHarness } from '../data.ts';
 import { usageError } from '../errors.ts';
 import * as md from '../format/markdown.ts';
 import { toJson } from '../format/json.ts';
 import { dateWithWeekday, delta, joinLines, percent } from '../format/text.ts';
-import type { Harness } from '../options.ts';
 
 /** Options `summary` adds to the globals. */
 export const SUMMARY_OPTIONS: OptionSpecs = {
@@ -64,18 +64,20 @@ export async function runSummary(context: CommandContext, args: ParsedArgs): Pro
         );
     }
 
-    const harnesses: Harness[] =
-        context.globals.harness !== undefined
-            ? [context.globals.harness]
-            : ['xpcshell', 'mochitest'];
+    const files = await loadPerHarness(
+        context.globals.harness,
+        (harness) => {
+            progress(context, `Reading ${harness}-stats.json…`);
+            return fetchJson<StatsFile>(context.source, {
+                index: timingsIndex(harness),
+                filename: `${harness}-stats.json`,
+            });
+        },
+        (harness) => progress(context, `No ${harness}-stats.json is published; leaving ${harness} out.`)
+    );
 
     const results: SummaryJson[] = [];
-    for (const harness of harnesses) {
-        progress(context, `Reading ${harness}-stats.json…`);
-        const file = await fetchJson<StatsFile>(context.source, {
-            index: timingsIndex(harness),
-            filename: `${harness}-stats.json`,
-        });
+    for (const { harness, loaded: file } of files) {
         const summary = computeSummary(file, days === undefined ? {} : { days });
         results.push({
             harness,

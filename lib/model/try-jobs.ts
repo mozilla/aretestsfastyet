@@ -76,10 +76,17 @@ import { FAILED_JOB_RESULTS } from '../sources/treeherder.ts';
  * this tooling can extract per-test timings from. A reftest job is a test job
  * in every ordinary sense and is not in here, because its profile has no `Test`
  * markers to parse. Both consumers say so in their own words: the page's empty
- * state names these two harnesses in its caveat, and the CLI's header does the
+ * state names these harnesses in its caveat, and the CLI's header does the
  * same.
+ *
+ * A wpt job name says `web-platform-tests`, never `wpt`, and a wpt reftest is
+ * read like any wpt test: see `lib/model/wpt-status.ts`.
  */
-export const SUPPORTED_HARNESSES: readonly string[] = ['mochitest', 'xpcshell'];
+export const SUPPORTED_HARNESSES: readonly string[] = [
+    'mochitest',
+    'xpcshell',
+    'web-platform-tests',
+];
 
 /**
  * Job kinds that run a supported harness without naming it.
@@ -102,9 +109,8 @@ export const SUPPORTED_HARNESSES: readonly string[] = ['mochitest', 'xpcshell'];
  *
  * `test-verify-wpt` is **not** here, and is why this is a list of prefixes read
  * longest-first rather than a `test-verify` prefix test. It is the wpt harness
- * (`taskcluster/kinds/web-platform-tests/kind.yml:966`), whose profile has no
- * `Test` markers — the same line `SUPPORTED_HARNESSES` draws for
- * `test-linux2404-64/opt-web-platform-tests-2`.
+ * (`taskcluster/kinds/web-platform-tests/kind.yml`), repeating each test in ways
+ * the wpt status rule has not been checked against.
  */
 const VERIFY_JOB_KINDS: readonly { prefix: string; parseable: boolean }[] = [
     { prefix: 'test-verify-wpt', parseable: false },

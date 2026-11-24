@@ -42,7 +42,7 @@
  *
  * The obvious move — the brief's suggestion, and what a reader of `PARITY.md`
  * §5 would expect — is to render the table straight out of `computeSummary`.
- * The table keeps its own arithmetic instead, because it renders eight flavor
+ * The table keeps its own arithmetic instead, because it renders flavor
  * sub-rows and `computeSummary` reads a `StatsFile`, which a flavor is not: it
  * has no `invalidJobs` and no `markerCounts`.
  *
@@ -62,6 +62,7 @@
  */
 
 import type { StatsCounters, StatsFile } from '../lib/formats/stats.ts';
+import { type Harness, HARNESSES, HARNESS_LABELS } from '../lib/model/harness.ts';
 
 /**
  * The summary table's window, in dates. `old/index.html:524`, `:534`, `:541-544`.
@@ -116,6 +117,24 @@ export const MOCHITEST_FLAVORS: readonly FlavorSpec[] = [
     { key: 'webgl', name: 'WebGL', color: '#2c3e50' },
 ];
 
+/**
+ * One flavor per wpt test type, in `lib/formats/FORMATS.md` order; `testharness`
+ * is the jobs that name no type. The colours stay apart under colour blindness.
+ */
+export const WPT_FLAVORS: readonly FlavorSpec[] = [
+    { key: 'testharness', name: 'Testharness', color: '#c62685' },
+    { key: 'reftest', name: 'Reftest', color: '#785715' },
+    { key: 'print-reftest', name: 'Print Reftest', color: '#9f8d0e' },
+    { key: 'crashtest', name: 'Crashtest', color: '#222222' },
+    { key: 'wdspec', name: 'WDSpec', color: '#631e8a' },
+    { key: 'webgpu', name: 'WebGPU', color: '#4399b2' },
+    { key: 'webcodecs', name: 'WebCodecs', color: '#7f2117' },
+    { key: 'webrtc', name: 'WebRTC', color: '#242bb6' },
+    { key: 'canvas', name: 'Canvas', color: '#f665cd' },
+    { key: 'eme', name: 'EME', color: '#746ba6' },
+    { key: 'aam', name: 'AAM', color: '#b688fe' },
+];
+
 /** One flavor's identity on this page. */
 export interface FlavorSpec {
     /** The key in `stats.flavors`. */
@@ -126,15 +145,56 @@ export interface FlavorSpec {
     color: string;
 }
 
-/** The two harnesses' series colours. `old/index.html:634`, `:639`. */
-export const HARNESS_COLORS: Readonly<Record<string, string>> = {
-    xpcshell: '#0060df',
-    mochitest: '#ff6b6b',
+/** What this page shows of one harness, beyond the numbers in its file. */
+export interface HarnessView {
+    /** The colour of the harness's own series. */
+    color: string;
+    /** The flavors listed under the harness, in order. Empty when it has none. */
+    flavors: readonly FlavorSpec[];
+    /** How a flavor trace of this harness is drawn, to tell the families apart. */
+    flavorDash: 'dot' | 'dash';
+    /** The fragment of `green.html` that holds the harness's section. */
+    greenAnchor: string;
+}
+
+/**
+ * What differs between the harnesses. A harness without a row does not compile.
+ * xpcshell's and mochitest's colours are upstream's, `old/index.html:634`, `:639`.
+ */
+export const HARNESS_VIEWS: Readonly<Record<Harness, HarnessView>> = {
+    xpcshell: { color: '#0060df', flavors: [], flavorDash: 'dot', greenAnchor: 'xpcshell' },
+    mochitest: {
+        color: '#ff6b6b',
+        flavors: MOCHITEST_FLAVORS,
+        flavorDash: 'dot',
+        greenAnchor: 'mochitest',
+    },
+    wpt: {
+        color: '#00695c',
+        flavors: WPT_FLAVORS,
+        flavorDash: 'dash',
+        greenAnchor: 'web-platform-tests',
+    },
 };
 
-/** Flavor names in the data that this page's hardcoded list does not show. */
-export function unlistedFlavors(file: StatsFile): string[] {
-    const listed = new Set(MOCHITEST_FLAVORS.map((flavor) => flavor.key));
+/** The merged file of each harness; absent or `null` for one that did not load. */
+export type HarnessStats = Readonly<Partial<Record<Harness, MergedStats | null>>>;
+
+/** The harnesses that loaded, in page order, each with its file. */
+export function loadedHarnesses(stats: HarnessStats): [Harness, MergedStats][] {
+    const loaded: [Harness, MergedStats][] = [];
+    for (const harness of HARNESSES) {
+        const merged = stats[harness] ?? null;
+        if (merged !== null) {
+            loaded.push([harness, merged]);
+        }
+    }
+    return loaded;
+}
+
+/** Flavor names in a harness's data that its hardcoded list does not show. */
+export function unlistedFlavors(file: StatsFile, harness: Harness): string[] {
+    const listed = new Set(HARNESS_VIEWS[harness].flavors.map((flavor) => flavor.key));
     return Object.keys(file.flavors ?? {}).filter((name) => !listed.has(name));
 }
 
@@ -482,8 +542,8 @@ export function recentWindow(
 export interface SummaryRow {
     /** The label in the first column. */
     name: string;
-    /** `xpcshell` or `mochitest`; a flavor row carries its parent's. */
-    kind: string;
+    /** The harness; a flavor row carries its parent's. */
+    kind: Harness;
     /** Whether this is an indented per-flavor sub-row. */
     isFlavor: boolean;
     /** The window this row was computed over. */
@@ -562,7 +622,7 @@ function rate(numerator: number, denominator: number): number | null {
 export function summaryRow(
     totals: WindowTotals,
     name: string,
-    kind: string,
+    kind: Harness,
     isFlavor: boolean
 ): SummaryRow {
     // A harness row: the two fetch branches. A flavor row: `processedJobCount`
@@ -594,8 +654,8 @@ export function summaryRow(
 /**
  * Every row of the summary table, in the order the page renders them.
  *
- * **There is no sort.** Source order throughout: XPCShell, then Mochitest, then
- * the flavors in `MOCHITEST_FLAVORS` order. Upstream builds it exactly this way
+ * **There is no sort.** Source order throughout: the harnesses in `HARNESSES`
+ * order, each followed by its flavors. Upstream builds it exactly this way
  * — the two harness rows hardcoded and the flavors looped (`:517-556`) — and
  * the only `.sort()` anywhere in the file is `mergedDates.sort()` in the
  * backfill merge. Stated because "no sort" is a framing property that a value
@@ -608,31 +668,24 @@ export function summaryRow(
  * - a flavor with **zero test runs in the window** is skipped (`:545`), even
  *   though it may have run jobs.
  *
- * Neither affects the Mochitest aggregate row above them, which is computed
+ * Neither affects the harness's aggregate row above them, which is computed
  * from the top-level arrays and not by summing the flavors. Measured on the
  * pinned file: all eight flavors clear both bars, and their `totalTestRuns`
  * sum to 60,101,543 against the aggregate row's 60,119,846 — a 18,303 shortfall
  * (0.03%), so the aggregate is genuinely not the sum of the visible sub-rows.
  */
-export function summaryRows(
-    xpcshell: MergedStats | null,
-    mochitest: MergedStats | null,
-    days: number = SUMMARY_DAYS
-): SummaryRow[] {
+export function summaryRows(stats: HarnessStats, days: number = SUMMARY_DAYS): SummaryRow[] {
     const rows: SummaryRow[] = [];
-    if (xpcshell !== null) {
-        rows.push(summaryRow(recentWindow(xpcshell, days), 'XPCShell', 'xpcshell', false));
-    }
-    if (mochitest !== null) {
-        rows.push(summaryRow(recentWindow(mochitest, days), 'Mochitest', 'mochitest', false));
-        for (const flavor of MOCHITEST_FLAVORS) {
-            const counters = mochitest.flavors?.[flavor.key];
+    for (const [harness, merged] of loadedHarnesses(stats)) {
+        rows.push(summaryRow(recentWindow(merged, days), HARNESS_LABELS[harness], harness, false));
+        for (const flavor of HARNESS_VIEWS[harness].flavors) {
+            const counters = merged.flavors?.[flavor.key];
             if (counters === undefined) {
                 continue;
             }
-            const totals = recentWindow({ dates: mochitest.dates, ...counters }, days);
+            const totals = recentWindow({ dates: merged.dates, ...counters }, days);
             if (totals.totalTestRuns > 0) {
-                rows.push(summaryRow(totals, flavor.name, 'mochitest', true));
+                rows.push(summaryRow(totals, flavor.name, harness, true));
             }
         }
     }

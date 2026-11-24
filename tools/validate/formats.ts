@@ -955,6 +955,308 @@ export function checkErrors(c: Checker, data: unknown, ctx: FileContext): void {
     }
 }
 
+/** The daily, per-revision and bucket subtests files, told apart by their metadata. */
+export function checkSubtests(c: Checker, data: unknown, _ctx: FileContext): void {
+    if (!c.object(data)) {
+        return;
+    }
+    c.noExtraKeys(data, ['metadata', 'tables', 'taskInfo', 'testInfo', 'subtests']);
+
+    const metadata = data['metadata'];
+    const isBucket = c.object(metadata, '.metadata') && 'startDate' in metadata;
+    let dayCount = 0;
+    let resultCounts: Record<string, unknown> | undefined;
+    let declaredSubtestCount: unknown;
+    if (c.object(metadata, '.metadata')) {
+        declaredSubtestCount = metadata['subtestCount'];
+        if (isBucket) {
+            c.in('.metadata', () => {
+                c.noExtraKeys(metadata, [
+                    'startDate',
+                    'endDate',
+                    'days',
+                    'startTime',
+                    'generatedAt',
+                    'totalTestCount',
+                    'subtestCount',
+                    'totalBuckets',
+                    'bucketIndex',
+                    'aggregatedFrom',
+                ]);
+                c.date(metadata['startDate'], '.startDate');
+                c.date(metadata['endDate'], '.endDate');
+                c.integer(metadata['days'], '.days');
+                c.integer(metadata['startTime'], '.startTime');
+                c.timestamp(metadata['generatedAt'], '.generatedAt');
+                c.integer(metadata['totalTestCount'], '.totalTestCount');
+                c.integer(metadata['subtestCount'], '.subtestCount');
+                c.integer(metadata['totalBuckets'], '.totalBuckets');
+                c.integer(metadata['bucketIndex'], '.bucketIndex');
+                if (c.array(metadata['aggregatedFrom'], '.aggregatedFrom')) {
+                    for (const entry of metadata['aggregatedFrom'] as unknown[]) {
+                        if (
+                            c.string(entry, '.aggregatedFrom[]') &&
+                            !/^wpt-\d{4}-\d{2}-\d{2}-subtests\.json$/.test(entry)
+                        ) {
+                            c.error(
+                                `expected a wpt-{date}-subtests.json filename, got ${JSON.stringify(entry)}`,
+                                '.aggregatedFrom[]'
+                            );
+                        }
+                    }
+                }
+            });
+            dayCount = typeof metadata['days'] === 'number' ? metadata['days'] : 0;
+        } else {
+            const isRevision = !('date' in metadata);
+            c.in('.metadata', () => {
+                c.noExtraKeys(metadata, [
+                    ...(isRevision ? ['project', 'revision', 'pushId'] : ['date']),
+                    'startTime',
+                    'generatedAt',
+                    'jobCount',
+                    'processedJobCount',
+                    'invalidJobCount',
+                    'subtestCount',
+                    'resultCounts',
+                ]);
+                if (isRevision) {
+                    c.string(metadata['project'], '.project');
+                    c.string(metadata['revision'], '.revision');
+                    c.integer(metadata['pushId'], '.pushId');
+                } else {
+                    c.date(metadata['date'], '.date');
+                }
+                c.integer(metadata['startTime'], '.startTime');
+                c.timestamp(metadata['generatedAt'], '.generatedAt');
+                c.integer(metadata['jobCount'], '.jobCount');
+                c.integer(metadata['processedJobCount'], '.processedJobCount');
+                c.integer(metadata['invalidJobCount'], '.invalidJobCount');
+                c.integer(metadata['subtestCount'], '.subtestCount');
+                if (c.object(metadata['resultCounts'], '.resultCounts')) {
+                    resultCounts = metadata['resultCounts'];
+                    for (const [status, count] of Object.entries(resultCounts)) {
+                        c.observe('subtestStatuses', status);
+                        c.integer(count, '.resultCounts[]');
+                    }
+                }
+            });
+        }
+    }
+
+    const tables = checkTables(c, data['tables'], [
+        'jobNames',
+        'testPaths',
+        'testNames',
+        'repositories',
+        'taskIds',
+        'components',
+        'commitIds',
+        'subtestNames',
+        'statuses',
+        'messages',
+    ]);
+    checkSuffixedTaskIds(c, tables['taskIds'] ?? [], 'subtests tables.taskIds');
+    const statuses = tables['statuses'] ?? [];
+    if (statuses.includes('PASS')) {
+        c.error('PASS is a count per subtest, and must not be a status of a row', '.tables.statuses');
+    }
+    if (isBucket) {
+        for (const jobName of tables['jobNames'] ?? []) {
+            if (/-\d+(-cf)?$/.test(jobName)) {
+                c.error(`a bucket job name keeps its chunk: ${jobName}`, '.tables.jobNames[]');
+                break;
+            }
+        }
+    }
+
+    checkTaskInfo(
+        c,
+        data['taskInfo'],
+        {
+            repositories: len(tables, 'repositories'),
+            jobNames: len(tables, 'jobNames'),
+            commitIds: len(tables, 'commitIds'),
+            taskIds: len(tables, 'taskIds'),
+        },
+        { expectChunks: isBucket }
+    );
+    const testCount = checkTestInfo(c, data['testInfo'], {
+        testPaths: len(tables, 'testPaths'),
+        testNames: len(tables, 'testNames'),
+        components: len(tables, 'components'),
+    });
+
+    const subtests = data['subtests'];
+    if (!c.object(subtests, '.subtests')) {
+        return;
+    }
+    const totals = new Map<string, number>();
+    const addTotal = (status: string, count: number): void => {
+        totals.set(status, (totals.get(status) ?? 0) + count);
+    };
+
+    c.in('.subtests', () => {
+        c.noExtraKeys(subtests, [
+            'countsByTest',
+            'nameIds',
+            'passCounts',
+            'expectedFailures',
+            'unexpected',
+        ]);
+        c.numberArray(subtests['countsByTest'], '.countsByTest', { nonNegative: true });
+        c.indexArray(subtests['nameIds'], len(tables, 'subtestNames'), 'tables.subtestNames', '.nameIds');
+        c.numberArray(subtests['passCounts'], '.passCounts', { nonNegative: true });
+        const subtestCount =
+            c.parallel({ nameIds: subtests['nameIds'], passCounts: subtests['passCounts'] }) ?? 0;
+
+        const countsByTest = Array.isArray(subtests['countsByTest'])
+            ? (subtests['countsByTest'] as number[])
+            : [];
+        if (countsByTest.length !== testCount) {
+            c.error(
+                `countsByTest has ${countsByTest.length} entries but testInfo has ${testCount} tests`,
+                '.countsByTest'
+            );
+        }
+        const summed = countsByTest.reduce((sum, count) => sum + count, 0);
+        if (summed !== subtestCount) {
+            c.error(
+                `countsByTest sums to ${summed} but there are ${subtestCount} subtests`,
+                '.countsByTest'
+            );
+        }
+        if (declaredSubtestCount !== subtestCount) {
+            c.error(
+                `metadata.subtestCount is ${String(declaredSubtestCount)} but there are ${subtestCount} subtests`
+            );
+        }
+        if (Array.isArray(subtests['passCounts'])) {
+            addTotal(
+                'PASS',
+                (subtests['passCounts'] as number[]).reduce((sum, count) => sum + count, 0)
+            );
+        }
+
+        /** The checks the two row tables share; returns their row count. */
+        const checkRows = (rows: Record<string, unknown>, columns: readonly string[]): number => {
+            c.noExtraKeys(rows, ['subtestIds', 'statusIds', ...columns]);
+            c.indexArray(rows['subtestIds'], subtestCount, 'subtests.nameIds', '.subtestIds');
+            c.indexArray(rows['statusIds'], statuses.length, 'tables.statuses', '.statusIds');
+            const rowCount =
+                c.parallel({
+                    subtestIds: rows['subtestIds'],
+                    statusIds: rows['statusIds'],
+                    ...Object.fromEntries(columns.map((column) => [column, rows[column]])),
+                }) ?? 0;
+            const subtestIds = Array.isArray(rows['subtestIds']) ? (rows['subtestIds'] as number[]) : [];
+            for (let row = 1; row < subtestIds.length; row++) {
+                if (subtestIds[row]! < subtestIds[row - 1]!) {
+                    c.error('rows are not in the order of their subtest', '.subtestIds');
+                    break;
+                }
+            }
+            return rowCount;
+        };
+        const statusOfRow = (rows: Record<string, unknown>, row: number): string =>
+            statuses[(rows['statusIds'] as number[] | undefined)?.[row] ?? -1] ?? '?';
+        const isExpected = (status: string): boolean =>
+            status.startsWith('KNOWN-') && !status.startsWith('KNOWN-INTERMITTENT-');
+
+        const expectedFailures = subtests['expectedFailures'];
+        if (c.object(expectedFailures, '.expectedFailures')) {
+            c.in('.expectedFailures', () => {
+                const rowCount = checkRows(expectedFailures, ['jobNameIds', 'counts']);
+                for (let row = 0; row < rowCount; row++) {
+                    const jobNameIds = (expectedFailures['jobNameIds'] as unknown[])[row];
+                    const counts = (expectedFailures['counts'] as unknown[])[row];
+                    c.indexArray(jobNameIds, len(tables, 'jobNames'), 'tables.jobNames', '.jobNameIds[]');
+                    c.numberArray(counts, '.counts[]', { nonNegative: true });
+                    c.parallel({ jobNameIds, counts }, '.jobNameIds[]');
+                    const status = statusOfRow(expectedFailures, row);
+                    c.observe('subtestStatuses', status);
+                    if (!isExpected(status)) {
+                        c.error(`${status} is not a failure the metadata expects`, '.statusIds[]');
+                    }
+                    if (Array.isArray(counts)) {
+                        addTotal(status, (counts as number[]).reduce((sum, count) => sum + count, 0));
+                    }
+                }
+            });
+        }
+
+        const unexpected = subtests['unexpected'];
+        if (c.object(unexpected, '.unexpected')) {
+            c.in('.unexpected', () => {
+                const hasDays = unexpected['days'] !== undefined;
+                if (hasDays !== isBucket) {
+                    c.error(
+                        isBucket
+                            ? 'declared present on the bucket files but absent'
+                            : 'declared absent on the daily files but present',
+                        '.days'
+                    );
+                }
+                const rowCount = checkRows(unexpected, [
+                    'taskIdIds',
+                    'messageIds',
+                    ...(hasDays ? ['days'] : []),
+                ]);
+                for (let row = 0; row < rowCount; row++) {
+                    const taskIdIds = (unexpected['taskIdIds'] as unknown[])[row];
+                    const messageIds = (unexpected['messageIds'] as unknown[])[row];
+                    const days = hasDays ? (unexpected['days'] as unknown[])[row] : undefined;
+                    c.indexArray(taskIdIds, len(tables, 'taskIds'), 'tables.taskIds', '.taskIdIds[]');
+                    c.indexArray(
+                        messageIds,
+                        len(tables, 'messages'),
+                        'tables.messages',
+                        '.messageIds[]',
+                        'nullable'
+                    );
+                    c.parallel({ taskIdIds, messageIds, ...(hasDays ? { days } : {}) }, '.taskIdIds[]');
+                    if (Array.isArray(days)) {
+                        for (let index = 0; index < days.length; index++) {
+                            const day = days[index];
+                            if (!c.integer(day, '.days[][]')) {
+                                continue;
+                            }
+                            if (day < 0 || day >= dayCount) {
+                                c.error(`day ${day} outside 0…${dayCount - 1}`, '.days[][]');
+                            }
+                            if (index > 0 && day < (days[index - 1] as number)) {
+                                c.error('the results of a row are not in the order of their day', '.days[]');
+                                break;
+                            }
+                        }
+                    }
+                    const status = statusOfRow(unexpected, row);
+                    c.observe('subtestStatuses', status);
+                    if (isExpected(status)) {
+                        c.error(`${status} is a failure the metadata expects`, '.statusIds[]');
+                    }
+                    if (Array.isArray(taskIdIds)) {
+                        addTotal(status, taskIdIds.length);
+                    }
+                }
+            });
+        }
+    });
+
+    if (resultCounts !== undefined) {
+        const declared = new Map(Object.entries(resultCounts));
+        for (const status of new Set([...declared.keys(), ...totals.keys()])) {
+            const held = totals.get(status) ?? 0;
+            if ((declared.get(status) ?? 0) !== held) {
+                c.error(
+                    `metadata.resultCounts has ${String(declared.get(status))} ${status} results ` +
+                        `but the tables hold ${held}`
+                );
+            }
+        }
+    }
+}
+
 export function checkManifests(c: Checker, data: unknown, _ctx: FileContext): void {
     if (!c.object(data)) {
         return;

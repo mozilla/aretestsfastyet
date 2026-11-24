@@ -42,6 +42,13 @@ import type { DailyFile } from '../lib/formats/daily.ts';
 import type { IssuesFile, IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
 import type { ResourcesFile } from '../lib/formats/resources.ts';
 import type { StatsFile } from '../lib/formats/stats.ts';
+import {
+    type SubtestsFile,
+    decodeSubtests,
+    isExpectedSubtestStatus,
+    isKnownIntermittentSubtestStatus,
+    subtestsBucketFileName,
+} from '../lib/formats/subtests.ts';
 
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
@@ -59,6 +66,9 @@ const xpcshellDaily = await fixture<DailyFile>('xpcshell-2026-08-03.json');
 const xpcshellStats = await fixture<StatsFile>('xpcshell-stats.json');
 const mochitestStats = await fixture<StatsFile>('mochitest-stats.json');
 const xpcshellResources = await fixture<ResourcesFile>('xpcshell-2026-08-03-resources.json');
+const wptBucket = await fixture<BucketFile>('wpt-00.json');
+const wptSubtests = await fixture<SubtestsFile>('wpt-subtests-00.json');
+const wptStats = await fixture<StatsFile>('wpt-stats.json');
 
 /** Totals runs per status over every test in a decoded file. */
 function totalsByStatus(file: DecodedTimingFile): Record<string, number> {
@@ -779,4 +789,139 @@ test('stats reaches beyond the 21-day window', () => {
     // This is what makes `fx-tests summary` cheap: it is the only file with
     // real history, so a long-run trend needs no other fetch.
     assert.ok(xpcshellStats.dates.length > 21 || mochitestStats.dates.length > 21);
+});
+
+// --- web-platform-tests ---------------------------------------------------
+
+test('a wpt bucket decodes like the others, variants and all', () => {
+    // A test's subtests are in `wpt-subtests-XX.json` for the same `XX`.
+    const file = decodeBucket(wptBucket);
+    assert.ok(file.testCount > 0);
+    const paths = Array.from({ length: file.testCount }, (_, testId) => file.testAt(testId).fullPath);
+    for (const testPath of paths) {
+        assert.ok(testPath.startsWith('testing/web-platform/'), testPath);
+        assert.equal(bucketIndexForPath(testPath), wptBucket.metadata.bucketIndex, testPath);
+    }
+    assert.ok(paths.some((testPath) => testPath.includes('?')), 'a path keeps the variant of its test');
+    // None of the xpcshell-only suffixes.
+    assert.deepEqual(
+        wptBucket.tables.statuses.filter((status) => /-(PARALLEL|SEQUENTIAL)$/.test(status)),
+        []
+    );
+});
+
+test('the subtests of a test come out in name order, with their three kinds of result', () => {
+    const file = decodeSubtests(wptSubtests);
+    assert.equal(file.testCount, wptSubtests.testInfo.testPathIds.length);
+    assert.equal(file.subtestCount, wptSubtests.subtests.nameIds.length);
+    assert.equal(file.subtestCount, wptSubtests.metadata.subtestCount);
+
+    const timings = decodeBucket(wptBucket);
+    const timed = new Set(
+        Array.from({ length: timings.testCount }, (_, testId) => timings.testAt(testId).fullPath)
+    );
+    let subtestCount = 0;
+    let expectedResults = 0;
+    let unexpectedResults = 0;
+    for (const testPath of file.testPaths()) {
+        // The two fixtures are cut together.
+        assert.ok(timed.has(testPath), `${testPath} is in wpt-00.json`);
+        const subtests = file.subtestsOfTest(testPath);
+        assert.ok(subtests !== null && subtests.length > 0, testPath);
+        subtestCount += subtests.length;
+        const names = subtests.map((subtest) => subtest.name);
+        assert.deepEqual(names, [...names].sort(), `${testPath}: subtests in name order`);
+        for (const subtest of subtests) {
+            assert.ok(Number.isInteger(subtest.passCount) && subtest.passCount >= 0);
+            for (const failure of subtest.expectedFailures) {
+                assert.equal(isExpectedSubtestStatus(failure.status), true, failure.status);
+                assert.equal(
+                    failure.count,
+                    failure.jobs.reduce((sum, job) => sum + job.count, 0)
+                );
+                // A bucket's job names have no chunk.
+                for (const job of failure.jobs) {
+                    assert.doesNotMatch(job.jobName, /-\d+$/);
+                }
+                expectedResults += failure.count;
+            }
+            for (const group of subtest.unexpected) {
+                assert.equal(isExpectedSubtestStatus(group.status), false, group.status);
+                assert.notEqual(group.status, 'PASS');
+                for (const result of group.results) {
+                    assert.match(result.taskId, /^[\w-]{22}\.\d+$/);
+                    assert.ok(result.day !== null && result.day >= 0 && result.day < 2);
+                    assert.equal(result.repository, 'mozilla-central');
+                }
+                unexpectedResults += group.results.length;
+            }
+        }
+    }
+    assert.equal(subtestCount, file.subtestCount, 'every subtest belongs to exactly one test');
+    // Both row tables are exercised, or the loops above proved nothing.
+    assert.ok(expectedResults > 0);
+    assert.ok(unexpectedResults > 0);
+    assert.equal(
+        wptSubtests.subtests.unexpected.taskIdIds.reduce((sum, tasks) => sum + tasks.length, 0),
+        unexpectedResults
+    );
+});
+
+test('a test the subtests file does not have is null, not an empty list', () => {
+    // An empty list would be a test that ran and reported no subtest.
+    const file = decodeSubtests(wptSubtests);
+    assert.equal(file.subtestsOfTest('testing/web-platform/tests/css/CSS2/nope.xht'), null);
+    assert.equal(file.subtestsOfTest(''), null);
+});
+
+test('a subtests file whose arrays disagree is refused', () => {
+    // Decoded anyway, it would give the counts of the wrong subtests.
+    const clone = (): SubtestsFile => structuredClone(wptSubtests);
+
+    const shortCounts = clone();
+    shortCounts.subtests.countsByTest.pop();
+    assert.throws(() => decodeSubtests(shortCounts), /countsByTest has/);
+
+    const wrongSum = clone();
+    wrongSum.subtests.countsByTest[0]! += 1;
+    assert.throws(() => decodeSubtests(wrongSum), /countsByTest sums to/);
+
+    const shortPasses = clone();
+    shortPasses.subtests.passCounts.pop();
+    assert.throws(() => decodeSubtests(shortPasses), /passCounts has/);
+
+    const shortRows = clone();
+    shortRows.subtests.unexpected.messageIds.pop();
+    assert.throws(() => decodeSubtests(shortRows), /unexpected\.messageIds has/);
+
+    const shortDays = clone();
+    shortDays.subtests.unexpected.days!.pop();
+    assert.throws(() => decodeSubtests(shortDays), /unexpected\.days has/);
+});
+
+test('a subtest status says what was expected of it', () => {
+    for (const status of ['KNOWN-FAIL', 'KNOWN-TIMEOUT', 'KNOWN-NOTRUN', 'KNOWN-PRECONDITION_FAILED']) {
+        assert.equal(isExpectedSubtestStatus(status), true, status);
+        assert.equal(isKnownIntermittentSubtestStatus(status), false, status);
+    }
+    for (const status of ['KNOWN-INTERMITTENT-FAIL', 'KNOWN-INTERMITTENT-PASS']) {
+        assert.equal(isExpectedSubtestStatus(status), false, status);
+        assert.equal(isKnownIntermittentSubtestStatus(status), true, status);
+    }
+    for (const status of ['FAIL', 'TIMEOUT', 'NOTRUN', 'ERROR', 'UNEXPECTED-PASS']) {
+        assert.equal(isExpectedSubtestStatus(status), false, status);
+        assert.equal(isKnownIntermittentSubtestStatus(status), false, status);
+    }
+    assert.equal(subtestsBucketFileName(bucketFileSuffix(10)), 'wpt-subtests-0a.json');
+});
+
+test('wpt stats carry flavors, keyed by test type', () => {
+    // Like mochitest's: the jobs are split by type.
+    const flavors = flavorNames(wptStats);
+    assert.ok(flavors.includes('testharness'));
+    assert.ok(flavors.includes('reftest'));
+    assert.ok(flavors.includes('wdspec'));
+    for (const flavor of flavors) {
+        assert.equal(wptStats.flavors![flavor]!.totalTestRuns.length, wptStats.dates.length);
+    }
 });

@@ -14,8 +14,9 @@
  *
  * ## The rule
  *
- * | filename | harness |
+ * | path | harness |
  * | --- | --- |
+ * | under `testing/web-platform/`, or a wpt URL (`/dom/foo.html`) | wpt |
  * | `*.html`, `*.xhtml` | mochitest |
  * | `browser_*.js` | mochitest |
  * | everything else | xpcshell |
@@ -35,16 +36,34 @@
  */
 
 import { isTestFilePath } from './test-path.ts';
+import { WPT_ROOT, isWptPath, wptRepoPath } from './wpt-path.ts';
 
 /** Which harness's data files describe a test. */
-export type Harness = 'xpcshell' | 'mochitest';
+export type Harness = 'xpcshell' | 'mochitest' | 'wpt';
+
+/** Every harness with published files, in the order the pages list them. */
+export const HARNESSES: readonly Harness[] = ['xpcshell', 'mochitest', 'wpt'];
+
+export const HARNESS_LABELS: Record<Harness, string> = {
+    xpcshell: 'XPCShell',
+    mochitest: 'Mochitest',
+    wpt: 'WPT',
+};
+
+export function isHarness(value: string): value is Harness {
+    return (HARNESSES as readonly string[]).includes(value);
+}
 
 /**
  * The harness a test path implies.
  *
- * Never fails: an unrecognized filename, or a directory, is xpcshell.
+ * Never fails: an unrecognized filename, or a non-wpt directory, is xpcshell.
  */
 export function detectHarness(testPath: string): Harness {
+    // Before the filename: most wpt tests end in `.html`.
+    if (isWptPath(testPath) || wptRepoPath(testPath) !== null) {
+        return 'wpt';
+    }
     const fileName = testPath.split('/').pop() ?? testPath;
     if (fileName.endsWith('.html') || fileName.endsWith('.xhtml')) {
         return 'mochitest';
@@ -112,10 +131,21 @@ export function harnessesForPathFilter(
     // is what omitting `--path` already means, and the two must not differ in
     // what they download. Without this an empty string reaches `isDirectoryPath`,
     // which calls it a directory and doubles the fetch for an identical query.
-    if (pathPrefix === undefined || pathPrefix === '' || !isDirectoryPath(pathPrefix)) {
+    if (pathPrefix === undefined || pathPrefix === '') {
         return { required: 'xpcshell', speculative: [] };
     }
-    return { required: 'xpcshell', speculative: ['mochitest'] };
+    if (isWptPath(pathPrefix)) {
+        return { required: 'wpt', speculative: [] };
+    }
+    if (!isDirectoryPath(pathPrefix)) {
+        return { required: 'xpcshell', speculative: [] };
+    }
+    // Only a directory above the wpt tree, eg. `testing/`, can also hold wpt tests.
+    const containsWptTree = WPT_ROOT.startsWith(pathPrefix.replace(/\/*$/, '/'));
+    return {
+        required: 'xpcshell',
+        speculative: containsWptTree ? ['mochitest', 'wpt'] : ['mochitest'],
+    };
 }
 
 /** One aggregate a command read, for the messages that must name them all. */

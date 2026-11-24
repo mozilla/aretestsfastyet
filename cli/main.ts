@@ -82,13 +82,13 @@ interface CommandSpec {
     /** Globals this command refuses: omitted from `--help`, refused by `dispatch()`. */
     rejectsGlobals?: readonly RejectedGlobals[];
     /**
-     * Extra `--harness` values this command accepts beyond the two harnesses.
+     * The `--harness` values this command accepts, when not the harnesses.
      *
      * Only `intermittent`, which classifies a bug as mochitest, xpcshell or
      * `unknown` and takes the third on the same flag rather than on a second
      * one. Declared here so the shared validator does not reject it first.
      */
-    extraHarnessValues?: readonly string[];
+    harnessValues?: readonly string[];
     /**
      * Standing definitions printed after the options, for a command whose output
      * would otherwise have to carry them on every run.
@@ -198,7 +198,7 @@ const COMMANDS: CommandSpec[] = [
         summary: 'The sheriff-annotated top offenders, tree-wide, with bug numbers.',
         usage: 'fx-tests intermittent [--harness <h>] [--bug <id>] [options]',
         options: INTERMITTENT_OPTIONS,
-        extraHarnessValues: ['unknown'],
+        harnessValues: ['xpcshell', 'mochitest', 'unknown'],
         rejectsGlobals: [
             {
                 names: ['data-source'],
@@ -528,7 +528,7 @@ async function dispatch(options: RunOptions): Promise<ExitCodeValue> {
         return ExitCode.Success;
     }
 
-    const globals = readGlobalOptions(args, options.env ?? {}, command.extraHarnessValues ?? []);
+    const globals = readGlobalOptions(args, options.env ?? {}, command.harnessValues);
 
     // Must stay after `readGlobalOptions`, which validates every global's value:
     // refusing first masks a typo'd `--harness` behind a complaint about an

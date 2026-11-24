@@ -218,6 +218,7 @@
 
 import { OLD_RESOURCE_USAGE_PROFILE_PATH, resourceUsageProfilePath } from '../lib/links.ts';
 import { stripChunkSuffix } from '../lib/model/job-name.ts';
+import { splitTestPath } from '../lib/model/wpt-path.ts';
 import { el, searchBox } from './drilldown-render.ts';
 import { fetchFlakiness, mitten, paintFlakinessCell } from './flakiness-fetch.ts';
 import { type AssertionItem, renderAssertionItem } from './assertion-render.ts';
@@ -431,13 +432,30 @@ function stripManifestPrefix(id) {
     return id.replace(/^[^:]+\.(?:toml|ini):/, '').replace(/\s+\(finished\)$/, '').trim();
 }
 
+// A wpt marker names its test by URL ("/dom/a.html?v=1"), the published files
+// by repository path. Copies of lib/model/wpt-path.ts.
+function wptRepoPath(id) {
+    if (!id.startsWith('/')) return null;
+    if (id.startsWith('/_mozilla/')) {
+        return 'testing/web-platform/mozilla/tests/' + id.slice('/_mozilla/'.length);
+    }
+    return 'testing/web-platform/tests' + id;
+}
+
+function isWptTestPath(path) {
+    const variantStart = path.search(/[?#]/);
+    const withoutVariant = variantStart === -1 ? path : path.slice(0, variantStart);
+    return /\.[A-Za-z0-9]+$/.test(withoutVariant.split('/').pop());
+}
+
 function isTestFilePath(path) {
+    if (path.startsWith('testing/web-platform/')) return isWptTestPath(path);
     return /\.(js|html|xhtml)$/.test(path);
 }
 
 function normalizeTestPath(id) {
     if (id === null || id === undefined || id === '') return null;
-    const path = stripManifestPrefix(id);
+    const path = wptRepoPath(id) ?? stripManifestPrefix(id);
     return isTestFilePath(path) ? path : null;
 }
 
@@ -479,6 +497,59 @@ function resolveStack(stackIndex, thread) {
         idx = stackTable.prefix[idx];
     }
     return frames.length ? frames.join('\n') : null;
+}
+
+// The outcome of a wpt run. Copies of lib/model/wpt-status.ts, pinned by
+// test/try-parity.test.ts.
+function isWptPass(status) {
+    return status === 'OK' || status === 'PASS';
+}
+
+function classifyWptSubtestMarker(name, color, expected) {
+    if (name.startsWith('KNOWN-INTERMITTENT-')) {
+        return name !== 'KNOWN-INTERMITTENT-PASS' && expected === 'PASS' ? 'failure' : null;
+    }
+    if (color !== 'orange') return null;
+    return name === 'UNEXPECTED-PASS' ? 'pass' : 'failure';
+}
+
+function wptSubtestMessage(subtest) {
+    return subtest.status + ' | ' + subtest.subtest + (subtest.message ? ' - ' + subtest.message : '');
+}
+
+function wptRunStatus(marker, unexpectedSubtests) {
+    const status = marker.status;
+    const expected = marker.expected;
+    const ownMessage = marker.message ?? null;
+    if (!status) return { status: 'UNKNOWN', message: null };
+    if (status === 'SKIP') return { status, message: ownMessage };
+
+    const isPass = isWptPass(status);
+    const isListedFailure =
+        !isWptPass(expected) &&
+        (marker.known_intermittent !== undefined || (marker.color === 'yellow' && status !== 'TIMEOUT'));
+    if (!isPass && expected !== undefined && !isListedFailure) {
+        return {
+            status: status === 'TIMEOUT' || status === 'CRASH' ? status : 'FAIL',
+            message: ownMessage,
+        };
+    }
+
+    const failure = unexpectedSubtests.find(subtest => !subtest.isPass);
+    if (failure !== undefined) return { status: 'FAIL', message: wptSubtestMessage(failure) };
+    const unexpectedCount = unexpectedSubtests.filter(
+        subtest => !subtest.status.startsWith('KNOWN-INTERMITTENT-')
+    ).length;
+    if ((marker.unexpected_subtests ?? 0) > unexpectedCount) {
+        return { status: 'FAIL', message: ownMessage };
+    }
+    if (unexpectedSubtests.length > 0) {
+        return { status: 'UNEXPECTED-PASS', message: wptSubtestMessage(unexpectedSubtests[0]) };
+    }
+    if (isPass && expected !== undefined && marker.color !== 'yellow') {
+        return { status: 'UNEXPECTED-PASS', message: ownMessage };
+    }
+    return { status: isPass ? 'PASS' : 'EXPECTED-FAIL', message: null };
 }
 
 function extractTestTimings(profile) {
@@ -524,6 +595,32 @@ function extractTestTimings(profile) {
     }
     testStatusMarkers.sort((a, b) => a.test.localeCompare(b.test) || a.time - b.time);
 
+    // The unexpected subtest results of a wpt job, built on the first wpt Test marker.
+    let wptSubtestMarkers = null;
+    function unexpectedWptSubtests(test, start, end) {
+        if (wptSubtestMarkers === null) {
+            wptSubtestMarkers = [];
+            for (let j = 0; j < markers.length; j++) {
+                const data = markers.data[j];
+                if (data?.type !== 'TestStatus' || !data.test || !data.subtest) continue;
+                const name = stringArray[markers.name[j]] ?? '';
+                const kind = classifyWptSubtestMarker(name, data.color, data.expected);
+                if (kind === null) continue;
+                wptSubtestMarkers.push({
+                    test: data.test,
+                    time: markers.startTime[j],
+                    status: name,
+                    subtest: data.subtest,
+                    message: normalizeMessage(data.message) ?? null,
+                    isPass: kind === 'pass',
+                    stack: markers.stack ? resolveStack(markers.stack[j], thread) : null,
+                });
+            }
+            wptSubtestMarkers.sort((a, b) => a.time - b.time);
+        }
+        return wptSubtestMarkers.filter(m => m.test === test && m.time >= start && m.time <= end);
+    }
+
     const testStringId = stringArray.indexOf('test');
     const timings = [];
 
@@ -547,7 +644,20 @@ function extractTestTimings(profile) {
             // the point of moving it there.
             message = normalizeMessage(data.message);
 
-            if (status === 'FAIL' && data.color === 'green') {
+            const isWpt = wptRepoPath(fullTestId || '') !== null;
+            if (isWpt) {
+                const subtests = unexpectedWptSubtests(fullTestId, markers.startTime[i], markers.endTime[i]);
+                const run = wptRunStatus(data, subtests);
+                status = run.status;
+                message = normalizeMessage(run.message);
+                // Failures first, so the first message is the one wptRunStatus named.
+                const ordered = subtests.filter(s => !s.isPass).concat(subtests.filter(s => s.isPass));
+                for (const subtest of ordered) {
+                    const entry = { message: wptSubtestMessage(subtest), status: subtest.status };
+                    if (subtest.stack) entry.stack = subtest.stack;
+                    allMessages.push(entry);
+                }
+            } else if (status === 'FAIL' && data.color === 'green') {
                 status = 'EXPECTED-FAIL';
             } else if (status === 'PASS' && data.expected && data.expected !== 'PASS') {
                 status = 'UNEXPECTED-PASS';
@@ -556,7 +666,7 @@ function extractTestTimings(profile) {
                     ? '-PARALLEL' : '-SEQUENTIAL';
             }
 
-            if (status.startsWith('FAIL') || status.startsWith('TIMEOUT') || status === 'ERROR') {
+            if (!isWpt && (status.startsWith('FAIL') || status.startsWith('TIMEOUT') || status === 'ERROR')) {
                 const testStartTime = markers.startTime[i];
                 const testEndTime = markers.endTime[i];
                 for (const m of testStatusMarkers) {
@@ -625,7 +735,8 @@ function extractTestTimings(profile) {
     for (const c of crashMarkers) {
         if (c.consumed || !c.testPath) continue;
         const timing = {
-            path: stripManifestPrefix(c.testPath),
+            // A wpt crash names its test by URL, like the Test marker it missed.
+            path: wptRepoPath(c.testPath) ?? stripManifestPrefix(c.testPath),
             duration: 0,
             status: 'CRASH',
             timestamp: profile.meta.startTime + c.startTime,
@@ -1929,7 +2040,7 @@ function renderJobDetailRow(
     const builds = extractBuildTypes(job.jobName);
     const profilerUrl = getProfilerUrl(
         { taskId: job.taskId, retryId: job.retryId, jobName: job.jobName, date: pushTime },
-        test.path.split('/').pop()
+        splitTestPath(test.path).name
     );
 
     const jobStatuses = new Set<string>();
@@ -2418,7 +2529,7 @@ function profilerLink(
         profile.retryId,
         profile.filename
     );
-    const leaf = testPath.split('/').pop();
+    const leaf = splitTestPath(testPath).name;
     const url = getProfilerUrl({
         profile: artifactUrl,
         profileName: `${profile.jobName} — ${leaf}`,
