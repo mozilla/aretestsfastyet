@@ -111,6 +111,10 @@ const GLOBAL_NAMES = [
     // `?data-source=` onto it. The real implementation, so an assertion on a
     // row's `href` compares against that file's rules.
     'withDevParams',
+    // `site/test.ts` uses these three directly. Real, like the others.
+    'setFavicon',
+    'getProfilerOrigin',
+    'prepareRunsForDisplay',
 ] as const;
 
 /**
@@ -296,14 +300,24 @@ const TESTS_PAGE_HTML = `<!DOCTYPE html><html><body>
 </div>
 </body></html>`;
 
+/** `site/test.html`'s body: the page draws everything else into `#content`. */
+const TEST_PAGE_HTML = `<!DOCTYPE html><html><head><title>Test Info</title></head><body>
+<div class="container">
+  <div id="loading" class="loading" style="display: none;">Loading test data...</div>
+  <div id="error" class="error" style="display: none;"></div>
+  <div id="content" style="display: none;"></div>
+</div>
+</body></html>`;
+
 /** Which page's markup a harness should be built with. */
-export type PageKind = 'crashes' | 'issues' | 'intermittent' | 'tests';
+export type PageKind = 'crashes' | 'issues' | 'intermittent' | 'tests' | 'test';
 
 const MARKUP: Record<PageKind, string> = {
     crashes: PAGE_HTML,
     issues: ISSUES_PAGE_HTML,
     intermittent: INTERMITTENT_PAGE_HTML,
     tests: TESTS_PAGE_HTML,
+    test: TEST_PAGE_HTML,
 };
 
 /** Where each page's rendered list goes. */
@@ -312,6 +326,7 @@ const CONTENT_ID: Record<PageKind, string> = {
     issues: 'tree-table',
     intermittent: 'ranking-table',
     tests: 'worklist-table',
+    test: 'content',
 };
 
 /** One recorded `createRateChart` call. */
@@ -364,7 +379,10 @@ export interface Harness {
     chartJs: ChartJsCall[];
     /** Plugins the page registered with `Chart.register`. */
     chartPlugins: unknown[];
-    /** Files `fetchData` will serve, by the name the controller asks for. */
+    /**
+     * Files `fetchData` will serve, by the name the controller asks for: the
+     * parsed JSON, or a `Response` for a body that is not JSON.
+     */
     files: Map<string, unknown>;
     /** Names `fetchData` was asked for, in order, including the 404s. */
     requested: string[];
@@ -459,6 +477,9 @@ export function setupPage(
         const body = files.get(filename);
         if (body === undefined) {
             return new Response('not found', { status: 404 });
+        }
+        if (body instanceof Response) {
+            return body;
         }
         return new Response(JSON.stringify(body), { status: 200 });
     });

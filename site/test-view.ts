@@ -76,10 +76,18 @@
  */
 
 import { type DecodedTimingFile, type RunEntry } from '../lib/formats/decode.ts';
+import {
+    type DecodedSubtest,
+    isExpectedSubtestStatus,
+    isKnownIntermittentSubtestStatus,
+} from '../lib/formats/subtests.ts';
+import { parseTaskId } from '../lib/formats/tables.ts';
 import { formatDurationMs } from '../lib/model/duration.ts';
 import { extractPlatform } from '../lib/model/job-name.ts';
 import { classifyStatus } from '../lib/model/status.ts';
+import { searchfoxUrl, treeherderJobUrl } from '../lib/links.ts';
 import { displaySkipMessage, skipReason } from '../lib/model/skips.ts';
+import { splitTestPath } from '../lib/model/wpt-path.ts';
 import { type ConfigCoverage, coverageOf } from '../lib/query/coverage.ts';
 import {
     type TestIssue,
@@ -88,6 +96,7 @@ import {
     TIMEOUT_MESSAGE,
     buildTestIssues,
 } from '../lib/query/test-issues.ts';
+import { searchTerms } from '../lib/query/test-lookup.ts';
 import { type TestStats } from '../lib/query/test-stats.ts';
 
 /**
@@ -2002,7 +2011,7 @@ export function formatCount(value: number): string {
 export interface TestView {
     /** The full path, as given. */
     testPath: string;
-    /** The filename — the `<h1>`. */
+    /** The filename, with its variant for a web-platform-test — the `<h1>`. */
     testName: string;
     /** The harness the data was actually found under. */
     harness: string;
@@ -2037,6 +2046,26 @@ export interface TestViewMetadata {
     date?: string | undefined;
 }
 
+/** `a/foo.html?url=/b/bar.html` -> `foo.html?url=/b/bar.html`, not `bar.html`. */
+export function testNameOf(testPath: string): string {
+    return splitTestPath(testPath).name;
+}
+
+/** The folders of a test path, each with the path up to it, then the name. */
+export function testPathSegments(testPath: string): {
+    folders: { name: string; path: string }[];
+    name: string;
+} {
+    const { directory, name } = splitTestPath(testPath);
+    const folders: { name: string; path: string }[] = [];
+    let path = '';
+    for (const part of directory === '' ? [] : directory.split('/')) {
+        path = path === '' ? part : `${path}/${part}`;
+        folders.push({ name: part, path });
+    }
+    return { folders, name };
+}
+
 /**
  * Builds the whole view for a test that was found.
  *
@@ -2058,6 +2087,7 @@ export function buildTestView(
     }
 ): TestView {
     const { testId, testPath, stats, metadata } = options;
+    const testName = testNameOf(testPath);
     // In the page's own walk order, not `coverageOf`'s sorted order: a tie in
     // the row sort is broken by this. See `coverageInPageOrder`.
     const configs = coverageInPageOrder(file, testId);
@@ -2069,16 +2099,16 @@ export function buildTestView(
 
     return {
         testPath,
-        testName: testPath.split('/').pop() ?? testPath,
+        testName,
         harness: options.harness,
         component: options.component,
-        searchfoxUrl: `https://searchfox.org/mozilla-central/source/${testPath}`,
+        searchfoxUrl: searchfoxUrl(testPath),
         dateRangeText:
             metadata.startDate && metadata.endDate
                 ? `${metadata.days} days (${metadata.startDate} to ${metadata.endDate})`
                 : '',
         jobTableDateInfo: jobTableDateInfo(metadata),
-        documentTitle: `${testPath.split('/').pop() ?? testPath} - Test Info`,
+        documentTitle: `${testName} - Test Info`,
         stats,
         summary: summaryStats(stats),
         rates,
@@ -2106,4 +2136,341 @@ function jobTableDateInfo(metadata: TestViewMetadata): string {
         return `${metadata.days} days, ${metadata.startDate} to ${metadata.endDate}`;
     }
     return metadata.date ?? '';
+}
+
+// --- subtests -------------------------------------------------------------
+//
+// web-platform-tests only: a testharness.js test is a file of subtests.
+
+/** A test can have thousands of subtests, so the rows are drawn a page at a time. */
+export const SUBTEST_ROWS_PER_PAGE = 100;
+
+/** A row's kind, by its most notable result: `unexpected` wins over `expected`. */
+export type SubtestGroup = 'unexpected' | 'expected' | 'pass';
+
+export interface SubtestStatusCount {
+    /** `KNOWN-FAIL`, `KNOWN-INTERMITTENT-TIMEOUT`, `FAIL`… */
+    status: string;
+    count: number;
+    badgeClass: string;
+}
+
+export interface SubtestRow {
+    /** The row's place in `SubtestsView.rows`, and what `subtestDetail` takes. */
+    index: number;
+    name: string;
+    group: SubtestGroup;
+    passCount: number;
+    /** The failures the metadata expects, one entry per status. */
+    expected: SubtestStatusCount[];
+    expectedCount: number;
+    unexpected: SubtestStatusCount[];
+    unexpectedCount: number;
+    /** False for a subtest that only passed: there is no detail to open. */
+    expandable: boolean;
+}
+
+export interface SubtestsSummaryPart {
+    text: string;
+    /** `unexpected`, `expected`, `pass`, `zero`, or `''` for the total. */
+    cssClass: string;
+}
+
+/** The counts above the table. */
+export interface SubtestsSummary {
+    total: number;
+    withUnexpected: number;
+    /** Overlaps `withUnexpected`: a known failure that sometimes passes is in both. */
+    withExpectedFailures: number;
+    passOnly: number;
+    parts: SubtestsSummaryPart[];
+    text: string;
+}
+
+export interface SubtestsView {
+    /** Unexpected results first, then expected failures, then passes. */
+    rows: SubtestRow[];
+    summary: SubtestsSummary;
+    /** `21 days, 2026-11-02 to 2026-11-22`, or `''`. */
+    dateInfo: string;
+    /** The first day of the file, which a result's `day` counts from. */
+    startDate: string | null;
+    /** Parallel to `rows`: the detail of a row is built from it when the row opens. */
+    decoded: readonly DecodedSubtest[];
+}
+
+/** The days the subtests file covers, which can differ from the timing file's. */
+export interface SubtestsWindow {
+    days: number;
+    startDate: string;
+    endDate: string;
+}
+
+/** The badge of a subtest status: muted for an expected failure, else by outcome. */
+export function subtestBadgeClass(status: string): string {
+    if (isExpectedSubtestStatus(status)) {
+        return 'badge-expected';
+    }
+    const outcome = status.replace(/^(?:KNOWN-INTERMITTENT-|UNEXPECTED-)/, '');
+    if (outcome === 'PASS') {
+        return 'badge-pass';
+    }
+    return outcome === 'TIMEOUT' ? 'badge-timeout' : 'badge-fail';
+}
+
+/** `('2026-11-21', 1)` -> `'2026-11-22'`, in UTC so that a DST change moves nothing. */
+export function dateOfSubtestDay(startDate: string | null, day: number | null): string | null {
+    if (startDate === null || day === null) {
+        return null;
+    }
+    const start = Date.parse(`${startDate}T00:00:00Z`);
+    return Number.isNaN(start)
+        ? null
+        : new Date(start + day * 86400000).toISOString().slice(0, 10);
+}
+
+const SUBTEST_GROUP_ORDER: Record<SubtestGroup, number> = { unexpected: 0, expected: 1, pass: 2 };
+
+/** Builds the Subtests section, or `null` for a test with no subtests, like a reftest. */
+export function buildSubtestsView(
+    subtests: readonly DecodedSubtest[] | null,
+    window: SubtestsWindow | null = null
+): SubtestsView | null {
+    if (subtests === null || subtests.length === 0) {
+        return null;
+    }
+
+    const measured = subtests.map((subtest, fileIndex) => {
+        const expected = subtest.expectedFailures.map((failure) => ({
+            status: failure.status,
+            count: failure.count,
+            badgeClass: subtestBadgeClass(failure.status),
+        }));
+        const unexpected = subtest.unexpected.map((group) => ({
+            status: group.status,
+            count: group.results.length,
+            badgeClass: subtestBadgeClass(group.status),
+        }));
+        const expectedCount = expected.reduce((sum, entry) => sum + entry.count, 0);
+        const unexpectedCount = unexpected.reduce((sum, entry) => sum + entry.count, 0);
+        const unlistedCount = unexpected.reduce(
+            (sum, entry) => sum + (isKnownIntermittentSubtestStatus(entry.status) ? 0 : entry.count),
+            0
+        );
+        const group: SubtestGroup =
+            unexpectedCount > 0 ? 'unexpected' : expectedCount > 0 ? 'expected' : 'pass';
+        return {
+            subtest,
+            fileIndex,
+            expected,
+            unexpected,
+            expectedCount,
+            unexpectedCount,
+            unlistedCount,
+            group,
+        };
+    });
+
+    // A result the metadata does not list (`FAIL`, `UNEXPECTED-PASS`…) outranks a
+    // known intermittent. Ties keep the file's name order.
+    measured.sort(
+        (a, b) =>
+            SUBTEST_GROUP_ORDER[a.group] - SUBTEST_GROUP_ORDER[b.group] ||
+            b.unlistedCount - a.unlistedCount ||
+            b.unexpectedCount - a.unexpectedCount ||
+            a.fileIndex - b.fileIndex
+    );
+
+    const rows: SubtestRow[] = measured.map((entry, index) => ({
+        index,
+        name: entry.subtest.name,
+        group: entry.group,
+        passCount: entry.subtest.passCount,
+        expected: entry.expected,
+        expectedCount: entry.expectedCount,
+        unexpected: entry.unexpected,
+        unexpectedCount: entry.unexpectedCount,
+        expandable: entry.group !== 'pass',
+    }));
+
+    return {
+        rows,
+        summary: subtestsSummary(rows),
+        // The job table's phrase, so the two headings read alike.
+        dateInfo:
+            window === null
+                ? ''
+                : `${window.days} days, ${window.startDate} to ${window.endDate}`,
+        startDate: window?.startDate ?? null,
+        decoded: measured.map((entry) => entry.subtest),
+    };
+}
+
+export const SUBTESTS_SUMMARY_SEPARATOR = ' · ';
+
+function subtestsSummary(rows: readonly SubtestRow[]): SubtestsSummary {
+    const total = rows.length;
+    const withUnexpected = rows.filter((row) => row.unexpectedCount > 0).length;
+    const withExpectedFailures = rows.filter((row) => row.expectedCount > 0).length;
+    const passOnly = rows.filter((row) => row.group === 'pass').length;
+    const part = (count: number, label: string, cssClass: string): SubtestsSummaryPart => ({
+        text: `${formatCount(count)} ${label}`,
+        cssClass: count === 0 ? 'zero' : cssClass,
+    });
+    const parts = [
+        { text: `${formatCount(total)} ${total === 1 ? 'subtest' : 'subtests'}`, cssClass: '' },
+        part(withUnexpected, 'with unexpected results', 'unexpected'),
+        part(withExpectedFailures, 'with expected failures', 'expected'),
+        part(passOnly, 'only passed', 'pass'),
+    ];
+    return {
+        total,
+        withUnexpected,
+        withExpectedFailures,
+        passOnly,
+        parts,
+        text: parts.map((entry) => entry.text).join(SUBTESTS_SUMMARY_SEPARATOR),
+    };
+}
+
+export interface VisibleSubtests {
+    rows: SubtestRow[];
+    /** How many rows the filter keeps, drawn or not. */
+    matching: number;
+    hidden: number;
+    /** `Showing 100 of 15,000 subtests`, or `''` when every subtest is drawn. */
+    countText: string;
+    /** `Show 100 more`, or `null` when nothing is left to show. */
+    moreLabel: string | null;
+}
+
+/** The rows to draw. `filter` matches like the page's search form, and before `limit`. */
+export function visibleSubtests(
+    view: SubtestsView,
+    options: { filter?: string | undefined; limit?: number | undefined } = {}
+): VisibleSubtests {
+    const limit = Math.max(0, options.limit ?? SUBTEST_ROWS_PER_PAGE);
+    const terms = searchTerms(options.filter ?? '');
+    const total = view.rows.length;
+
+    const rows: SubtestRow[] = [];
+    let matching = 0;
+    for (const row of view.rows) {
+        if (terms.length > 0) {
+            const name = row.name.toLowerCase();
+            if (!terms.every((term) => name.includes(term))) {
+                continue;
+            }
+        }
+        matching++;
+        if (rows.length < limit) {
+            rows.push(row);
+        }
+    }
+
+    const hidden = matching - rows.length;
+    let countText = '';
+    if (terms.length > 0) {
+        countText =
+            matching === 0
+                ? `No subtest matches, of ${formatCount(total)}`
+                : `Showing ${formatCount(rows.length)} of ${formatCount(matching)} matching ` +
+                  `${matching === 1 ? 'subtest' : 'subtests'}, of ${formatCount(total)}`;
+    } else if (hidden > 0) {
+        countText = `Showing ${formatCount(rows.length)} of ${formatCount(total)} subtests`;
+    }
+    return {
+        rows,
+        matching,
+        hidden,
+        countText,
+        moreLabel:
+            hidden > 0 ? `Show ${formatCount(Math.min(hidden, SUBTEST_ROWS_PER_PAGE))} more` : null,
+    };
+}
+
+export interface SubtestExpectedDetail {
+    status: string;
+    badgeClass: string;
+    count: number;
+    /** `8 results on 4 jobs`. */
+    countText: string;
+    /** Most results first, then by name. The job names have no chunk. */
+    jobs: { jobName: string; count: number }[];
+}
+
+export interface SubtestUnexpectedDetail {
+    status: string;
+    badgeClass: string;
+    /** `YYYY-MM-DD`, or `null` when the file does not say. */
+    date: string | null;
+    /** `date`, or `''` on a row whose date is that of the row above. */
+    dateLabel: string;
+    /** With its chunk put back, so it is the name Treeherder shows. */
+    jobName: string;
+    taskId: string;
+    retryId: number;
+    /** `"<taskId>.<retryId>"`. */
+    taskRun: string;
+    /** `null` for a result that has none: a pass, a `NOTRUN`. */
+    message: string | null;
+    /** `null` when the file has no revision for the task. */
+    treeherderUrl: string | null;
+}
+
+/** What opening a row shows. */
+export interface SubtestDetail {
+    unexpected: SubtestUnexpectedDetail[];
+    expected: SubtestExpectedDetail[];
+}
+
+/** The detail of one row. Unexpected results are newest first, dated once per day. */
+export function subtestDetail(view: SubtestsView, index: number): SubtestDetail {
+    const subtest = view.decoded[index];
+    if (subtest === undefined) {
+        return { unexpected: [], expected: [] };
+    }
+
+    const unexpected: SubtestUnexpectedDetail[] = [];
+    for (const group of subtest.unexpected) {
+        for (const result of group.results) {
+            const { taskId, retryId } = parseTaskId(result.taskId);
+            unexpected.push({
+                status: group.status,
+                badgeClass: subtestBadgeClass(group.status),
+                date: dateOfSubtestDay(view.startDate, result.day),
+                dateLabel: '',
+                jobName: result.chunk === null ? result.jobName : `${result.jobName}-${result.chunk}`,
+                taskId,
+                retryId,
+                taskRun: result.taskId,
+                message: result.message,
+                treeherderUrl:
+                    result.commitId === null
+                        ? null
+                        : treeherderJobUrl(result.repository, result.commitId, taskId, retryId),
+            });
+        }
+    }
+    unexpected.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    let lastDate: string | null = null;
+    for (const result of unexpected) {
+        result.dateLabel = result.date === null || result.date === lastDate ? '' : result.date;
+        lastDate = result.date;
+    }
+
+    const expected = subtest.expectedFailures.map((failure) => ({
+        status: failure.status,
+        badgeClass: subtestBadgeClass(failure.status),
+        count: failure.count,
+        countText:
+            `${formatCount(failure.count)} ${failure.count === 1 ? 'result' : 'results'} on ` +
+            `${formatCount(failure.jobs.length)} ${failure.jobs.length === 1 ? 'job' : 'jobs'}`,
+        // By code unit: the order must not depend on the reader's locale.
+        jobs: [...failure.jobs].sort(
+            (a, b) => b.count - a.count || (a.jobName < b.jobName ? -1 : a.jobName > b.jobName ? 1 : 0)
+        ),
+    }));
+
+    return { unexpected, expected };
 }

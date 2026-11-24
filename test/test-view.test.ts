@@ -35,8 +35,19 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { type BucketFile, decodeBucket } from '../lib/formats/buckets.ts';
+import {
+    type BucketFile,
+    bucketFileSuffix,
+    bucketIndexForPath,
+    decodeBucket,
+} from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
+import {
+    type DecodedSubtest,
+    type SubtestsFile,
+    decodeSubtests,
+    subtestsBucketFileName,
+} from '../lib/formats/subtests.ts';
 import { detectHarness } from '../lib/model/harness.ts';
 import { coverageOf } from '../lib/query/coverage.ts';
 import { computeTestStats } from '../lib/query/test-stats.ts';
@@ -45,12 +56,14 @@ import {
     type Outcomes,
     CRASH_NO_SIGNATURE,
     FAILURE_NO_MESSAGE,
+    SUBTEST_ROWS_PER_PAGE,
     buildDayCellMatrix,
     buildHistogram,
     buildIssueAttribution,
     buildIssues,
     buildJobTable,
     buildRuntimePanel,
+    buildSubtestsView,
     buildTestView,
     cellKey,
     chartPresence,
@@ -61,6 +74,7 @@ import {
     computePercentile,
     dailyRates,
     dateOfDay,
+    dateOfSubtestDay,
     displayPlatformOf,
     displayVariantOf,
     emptyOutcomes,
@@ -75,8 +89,13 @@ import {
     platformDisplayName,
     runtimeTitleFor,
     splitCellKey,
+    subtestBadgeClass,
+    subtestDetail,
     summaryStats,
+    testNameOf,
+    testPathSegments,
     variantLabel,
+    visibleSubtests,
 } from '../site/test-view.ts';
 
 const FIXTURES = new URL('./fixtures/', import.meta.url);
@@ -2341,4 +2360,570 @@ test('the synthetic placeholders are the exact strings the old page used', () =>
         'Failure details not recorded (likely Android or platform logging issue)'
     );
     assert.equal(CRASH_NO_SIGNATURE, 'Crash signature not recorded');
+});
+
+// --- web-platform-tests ---------------------------------------------------
+
+const WPT = fixture('wpt-00.json');
+const WPT_SUBTESTS = JSON.parse(
+    readFileSync(new URL('wpt-subtests-00.json', FIXTURES), 'utf8')
+) as SubtestsFile;
+
+const COOP_TEST = 'testing/web-platform/tests/html/cross-origin-opener-policy/resource-popup.https.html';
+const MOVING_TEST =
+    'testing/web-platform/tests/html/semantics/scripting-1/the-script-element/' +
+    'moving-between-documents/after-prepare-createHTMLDocument-parse-error-external-classic.html';
+const ARGON_TEST =
+    'testing/web-platform/tests/WebCryptoAPI/modern-algos/import_export/Argon2_importKey.https.any.html';
+/** In the timing bucket and not in the subtests file: it is disabled. */
+const WITHOUT_SUBTESTS = 'testing/web-platform/tests/webusb/usb.serviceworker.https.html';
+
+const WPT_WINDOW = { days: 2, startDate: '2026-11-21', endDate: '2026-11-22' };
+
+function subtestsOf(testPath: string): DecodedSubtest[] {
+    const subtests = decodeSubtests(WPT_SUBTESTS).subtestsOfTest(testPath);
+    assert.notEqual(subtests, null, `${testPath} is not in the subtests fixture any more`);
+    return subtests!;
+}
+
+/** A test's subtests off the raw arrays: the view under test is built on the decoder. */
+function rawSubtests(
+    testPath: string
+): { name: string; passes: number; expected: number; unexpected: number }[] {
+    const { tables, testInfo, subtests } = WPT_SUBTESTS;
+    let first = 0;
+    for (let testId = 0; testId < testInfo.testPathIds.length; testId++) {
+        const count = subtests.countsByTest[testId]!;
+        const path = `${tables.testPaths[testInfo.testPathIds[testId]!]}/${tables.testNames[testInfo.testNameIds[testId]!]}`;
+        if (path !== testPath) {
+            first += count;
+            continue;
+        }
+        const out = [];
+        for (let id = first; id < first + count; id++) {
+            let expected = 0;
+            subtests.expectedFailures.subtestIds.forEach((subtestId, row) => {
+                if (subtestId === id) {
+                    expected += subtests.expectedFailures.counts[row]!.reduce((a, b) => a + b, 0);
+                }
+            });
+            let unexpected = 0;
+            subtests.unexpected.subtestIds.forEach((subtestId, row) => {
+                if (subtestId === id) {
+                    unexpected += subtests.unexpected.taskIdIds[row]!.length;
+                }
+            });
+            out.push({
+                name: tables.subtestNames[subtests.nameIds[id]!]!,
+                passes: subtests.passCounts[id]!,
+                expected,
+                unexpected,
+            });
+        }
+        return out;
+    }
+    assert.fail(`${testPath} is not in the subtests fixture any more`);
+}
+
+test('a wpt test is named by its file and its variant, wherever the variant has a slash', () => {
+    const directory = 'testing/web-platform/tests/html/cross-origin-opener-policy';
+    // `split('/').pop()` gives `bar.html`, `b` and `e` for the last three.
+    const names = [
+        'resource-popup.https.html',
+        'resource-popup.https.html?dialog',
+        'resource-popup.https.html?url=/common/bar.html',
+        'resource-popup.https.html#/a/b',
+        'resource-popup.https.html?a=1&b=/c/#d/e',
+    ];
+    for (const name of names) {
+        const path = `${directory}/${name}`;
+        assert.equal(testNameOf(path), name);
+        const segments = testPathSegments(path);
+        assert.equal(segments.name, name);
+        assert.deepEqual(
+            segments.folders.map((folder) => folder.name),
+            ['testing', 'web-platform', 'tests', 'html', 'cross-origin-opener-policy'],
+            path
+        );
+        assert.equal(segments.folders[1]!.path, 'testing/web-platform');
+        assert.equal(segments.folders.at(-1)!.path, directory);
+    }
+
+    assert.equal(testNameOf('dom/base/test/test_foo.html'), 'test_foo.html');
+    assert.deepEqual(testPathSegments('dom/base/test/test_foo.html'), {
+        folders: [
+            { name: 'dom', path: 'dom' },
+            { name: 'base', path: 'dom/base' },
+            { name: 'test', path: 'dom/base/test' },
+        ],
+        name: 'test_foo.html',
+    });
+    assert.deepEqual(testPathSegments('test_foo.js'), { folders: [], name: 'test_foo.js' });
+});
+
+test('buildTestView names a wpt test with a slash in its variant, and links its source file', () => {
+    // One test renamed to carry a variant: the fixture has none.
+    const variant = '?url=/common/blank.html&x=1#frag';
+    const raw = structuredClone(WPT);
+    const nameId = raw.tables.testNames.indexOf('resource-popup.https.html');
+    assert.notEqual(nameId, -1);
+    raw.tables.testNames[nameId] = `resource-popup.https.html${variant}`;
+
+    const path = `${COOP_TEST}${variant}`;
+    const file = decodeBucket(raw);
+    const identity = file.findTest(path);
+    assert.notEqual(identity, null, 'the decoder joins directory and name back to the path');
+    const view = buildTestView(file, {
+        testId: identity!.testId,
+        testPath: path,
+        component: identity!.component,
+        harness: detectHarness(path),
+        stats: computeTestStats(file, identity!.testId),
+        metadata: { days: 2, startTime: raw.metadata.startTime },
+    });
+
+    assert.equal(view.harness, 'wpt');
+    assert.equal(view.testName, `resource-popup.https.html${variant}`);
+    assert.equal(view.documentTitle, `resource-popup.https.html${variant} - Test Info`);
+    // The file, without the variant: Searchfox has no page for a variant.
+    assert.equal(view.searchfoxUrl, `https://searchfox.org/mozilla-central/source/${COOP_TEST}`);
+    assert.equal(view.stats.runCount, 8);
+    assert.equal(view.stats.timeoutCount, 2);
+});
+
+test('every wpt fixture test is found under the wpt harness, in the bucket its path hashes to', () => {
+    const file = decoded(WPT);
+    assert.equal(file.testCount, 12);
+    const withSubtests = new Set(decodeSubtests(WPT_SUBTESTS).testPaths());
+    assert.equal(withSubtests.size, 9);
+    for (let testId = 0; testId < file.testCount; testId++) {
+        const { fullPath } = file.testAt(testId);
+        // Most end in `.html`: by filename alone they would be mochitests.
+        assert.equal(detectHarness(fullPath), 'wpt', fullPath);
+        const suffix = bucketFileSuffix(bucketIndexForPath(fullPath));
+        assert.equal(`${detectHarness(fullPath)}-${suffix}.json`, 'wpt-00.json', fullPath);
+        assert.equal(subtestsBucketFileName(suffix), 'wpt-subtests-00.json', fullPath);
+
+        const view = buildTestView(file, {
+            testId,
+            testPath: fullPath,
+            component: null,
+            harness: 'wpt',
+            stats: computeTestStats(file, testId),
+            metadata: { days: 2, startTime: WPT.metadata.startTime },
+        });
+        assert.equal(`${file.testAt(testId).directory}/${view.testName}`, fullPath);
+        assert.ok(view.jobTable.rows.length > 0, fullPath);
+    }
+});
+
+test('the subtests view counts each kind of subtest as the raw file has them', () => {
+    for (const testPath of decodeSubtests(WPT_SUBTESTS).testPaths()) {
+        const raw = rawSubtests(testPath);
+        const view = buildSubtestsView(subtestsOf(testPath), WPT_WINDOW);
+        assert.notEqual(view, null, testPath);
+        const { summary, rows } = view!;
+
+        assert.equal(summary.total, raw.length, testPath);
+        assert.equal(summary.withUnexpected, raw.filter((s) => s.unexpected > 0).length, testPath);
+        assert.equal(summary.withExpectedFailures, raw.filter((s) => s.expected > 0).length, testPath);
+        assert.equal(
+            summary.passOnly,
+            raw.filter((s) => s.expected === 0 && s.unexpected === 0).length,
+            testPath
+        );
+
+        assert.equal(rows.length, raw.length);
+        const byName = new Map(raw.map((s) => [s.name, s]));
+        assert.equal(byName.size, raw.length, 'subtest names are unique within a test');
+        for (const [index, row] of rows.entries()) {
+            const expected = byName.get(row.name);
+            assert.ok(expected !== undefined, row.name);
+            assert.equal(row.index, index);
+            assert.equal(row.passCount, expected.passes, row.name);
+            assert.equal(row.expectedCount, expected.expected, row.name);
+            assert.equal(row.unexpectedCount, expected.unexpected, row.name);
+            assert.equal(row.expandable, expected.expected + expected.unexpected > 0, row.name);
+        }
+    }
+});
+
+test('the summary line says how many subtests, and how many of each kind', () => {
+    const coop = buildSubtestsView(subtestsOf(COOP_TEST), WPT_WINDOW)!;
+    assert.equal(
+        coop.summary.text,
+        '12 subtests · 1 with unexpected results · 0 with expected failures · 11 only passed'
+    );
+    assert.deepEqual(
+        coop.summary.parts.map((part) => part.cssClass),
+        ['', 'unexpected', 'zero', 'pass']
+    );
+    assert.equal(coop.dateInfo, '2 days, 2026-11-21 to 2026-11-22');
+
+    // Expected to fail and sometimes passing counts under both: 2 + 2 + 3 is not 5.
+    const moving = buildSubtestsView(subtestsOf(MOVING_TEST), WPT_WINDOW)!;
+    assert.equal(
+        moving.summary.text,
+        '5 subtests · 2 with unexpected results · 2 with expected failures · 3 only passed'
+    );
+
+    const argon = buildSubtestsView(subtestsOf(ARGON_TEST), WPT_WINDOW)!;
+    assert.equal(
+        argon.summary.text,
+        '40 subtests · 0 with unexpected results · 40 with expected failures · 0 only passed'
+    );
+    assert.deepEqual(
+        argon.summary.parts.map((part) => part.cssClass),
+        ['', 'zero', 'expected', 'zero']
+    );
+
+    const single = buildSubtestsView(subtestsOf(COOP_TEST).slice(0, 1))!;
+    assert.equal(
+        single.summary.text,
+        '1 subtest · 0 with unexpected results · 0 with expected failures · 1 only passed'
+    );
+    assert.equal(single.dateInfo, '');
+});
+
+test('subtests with unexpected results come first, then expected failures, then passes', () => {
+    // In the file's name order, the one that timed out is tenth of twelve.
+    const fileOrder = rawSubtests(COOP_TEST).map((s) => s.name);
+    const timedOut = '/media/2x2-green.mp4 - parent COOP: ""; child COOP: "same-origin"';
+    assert.equal(fileOrder.indexOf(timedOut), 9);
+
+    const coop = buildSubtestsView(subtestsOf(COOP_TEST), WPT_WINDOW)!;
+    assert.equal(coop.rows[0]!.name, timedOut);
+    assert.equal(coop.rows[0]!.group, 'unexpected');
+    assert.deepEqual(coop.rows[0]!.unexpected, [
+        { status: 'KNOWN-INTERMITTENT-TIMEOUT', count: 2, badgeClass: 'badge-timeout' },
+    ]);
+    assert.deepEqual(coop.rows[0]!.expected, []);
+    assert.equal(coop.rows[0]!.passCount, 6);
+    assert.deepEqual(
+        coop.rows.slice(1).map((row) => row.name),
+        fileOrder.filter((name) => name !== timedOut)
+    );
+    assert.ok(coop.rows.slice(1).every((row) => row.group === 'pass' && !row.expandable));
+
+    const moving = buildSubtestsView(subtestsOf(MOVING_TEST), WPT_WINDOW)!;
+    assert.deepEqual(
+        moving.rows.map((row) => [row.name.split(':')[0], row.group]),
+        [
+            ['<script> load', 'unexpected'],
+            ['window error', 'unexpected'],
+            ['<script> error', 'pass'],
+            ['Eval', 'pass'],
+            ['Sanity check around top-level Window', 'pass'],
+        ]
+    );
+    assert.deepEqual(moving.rows[0]!.expected, [
+        { status: 'KNOWN-FAIL', count: 4, badgeClass: 'badge-expected' },
+    ]);
+    assert.deepEqual(moving.rows[0]!.unexpected, [
+        { status: 'KNOWN-INTERMITTENT-PASS', count: 2, badgeClass: 'badge-pass' },
+    ]);
+    assert.equal(moving.rows[0]!.passCount, 2);
+
+    // All three groups, given in the reverse of the order they must come out in.
+    const mixed = buildSubtestsView([
+        ...subtestsOf(MOVING_TEST).slice().reverse(),
+        subtestsOf(ARGON_TEST)[0]!,
+    ])!;
+    assert.deepEqual(
+        mixed.rows.map((row) => row.group),
+        ['unexpected', 'unexpected', 'expected', 'pass', 'pass', 'pass']
+    );
+    assert.match(mixed.rows[2]!.name, /^Empty Usages: 128 bits/);
+});
+
+test('among unexpected results, one the metadata does not list outranks a known intermittent', () => {
+    // The fixture has only known intermittents, so an unlisted result is made of one.
+    const [timedOut] = subtestsOf(COOP_TEST).filter((subtest) => subtest.unexpected.length > 0);
+    assert.ok(timedOut !== undefined);
+    assert.equal(timedOut.unexpected[0]!.results.length, 2);
+    const unlisted: DecodedSubtest = {
+        ...timedOut,
+        name: 'made unlisted',
+        unexpected: [{ status: 'TIMEOUT', results: timedOut.unexpected[0]!.results.slice(0, 1) }],
+    };
+
+    const view = buildSubtestsView([timedOut, unlisted])!;
+    assert.deepEqual(
+        view.rows.map((row) => [row.name, row.unexpectedCount]),
+        [
+            ['made unlisted', 1],
+            [timedOut.name, 2],
+        ]
+    );
+    // `decoded` follows the rows, or the detail of a row would be another's.
+    assert.equal(subtestDetail(view, 0).unexpected.length, 1);
+    assert.equal(subtestDetail(view, 0).unexpected[0]!.status, 'TIMEOUT');
+    assert.equal(subtestDetail(view, 1).unexpected.length, 2);
+});
+
+test('a subtest status is drawn by what happened, and muted when it was expected', () => {
+    const classes: [string, string][] = [
+        ['KNOWN-FAIL', 'badge-expected'],
+        ['KNOWN-TIMEOUT', 'badge-expected'],
+        ['KNOWN-NOTRUN', 'badge-expected'],
+        ['KNOWN-PRECONDITION_FAILED', 'badge-expected'],
+        ['KNOWN-INTERMITTENT-FAIL', 'badge-fail'],
+        ['KNOWN-INTERMITTENT-TIMEOUT', 'badge-timeout'],
+        ['KNOWN-INTERMITTENT-PASS', 'badge-pass'],
+        ['KNOWN-INTERMITTENT-NOTRUN', 'badge-fail'],
+        ['UNEXPECTED-PASS', 'badge-pass'],
+        ['FAIL', 'badge-fail'],
+        ['TIMEOUT', 'badge-timeout'],
+        ['NOTRUN', 'badge-fail'],
+        ['PRECONDITION_FAILED', 'badge-fail'],
+        ['ERROR', 'badge-fail'],
+    ];
+    for (const [status, badgeClass] of classes) {
+        assert.equal(subtestBadgeClass(status), badgeClass, status);
+    }
+});
+
+test('an unexpected result opens to its status, date, job, task and message', () => {
+    const view = buildSubtestsView(subtestsOf(COOP_TEST), WPT_WINDOW)!;
+    const detail = subtestDetail(view, 0);
+    assert.deepEqual(detail.expected, []);
+    // Newest first, and the chunk is back on the job name.
+    assert.deepEqual(detail.unexpected, [
+        {
+            status: 'KNOWN-INTERMITTENT-TIMEOUT',
+            badgeClass: 'badge-timeout',
+            date: '2026-11-22',
+            dateLabel: '2026-11-22',
+            jobName: 'test-linux2404-64/debug-web-platform-tests-nofis-33',
+            taskId: 'CLry8KtFR-eAY4VGehyChQ',
+            retryId: 0,
+            taskRun: 'CLry8KtFR-eAY4VGehyChQ.0',
+            message: 'Test timed out',
+            treeherderUrl:
+                'https://treeherder.mozilla.org/jobs?repo=mozilla-central' +
+                '&selectedTaskRun=CLry8KtFR-eAY4VGehyChQ.0' +
+                '&revision=254865aba31f7e1570dc915e5821972b2464fe6f',
+        },
+        {
+            status: 'KNOWN-INTERMITTENT-TIMEOUT',
+            badgeClass: 'badge-timeout',
+            date: '2026-11-21',
+            dateLabel: '2026-11-21',
+            jobName: 'test-linux2404-64/debug-web-platform-tests-nofis-32',
+            taskId: 'bhBCXu9iQoO3H46Re3sjfg',
+            retryId: 0,
+            taskRun: 'bhBCXu9iQoO3H46Re3sjfg.0',
+            message: 'Test timed out',
+            treeherderUrl:
+                'https://treeherder.mozilla.org/jobs?repo=mozilla-central' +
+                '&selectedTaskRun=bhBCXu9iQoO3H46Re3sjfg.0' +
+                '&revision=c8d4699f7d2c798707aa30fb8359d4613f6440f9',
+        },
+    ]);
+
+    const moving = buildSubtestsView(subtestsOf(MOVING_TEST), WPT_WINDOW)!;
+    assert.deepEqual(
+        subtestDetail(moving, 0).unexpected.map((result) => [
+            result.status,
+            result.date,
+            result.jobName,
+            result.message,
+        ]),
+        [
+            ['KNOWN-INTERMITTENT-PASS', '2026-11-22', 'test-linux2404-64-shippable/opt-web-platform-tests-9', null],
+            ['KNOWN-INTERMITTENT-PASS', '2026-11-21', 'test-linux2404-64-shippable/opt-web-platform-tests-8', null],
+        ]
+    );
+
+    // Nothing behind a row that only passed, or one that does not exist.
+    assert.deepEqual(subtestDetail(view, 1), { unexpected: [], expected: [] });
+    assert.deepEqual(subtestDetail(view, 99), { unexpected: [], expected: [] });
+});
+
+test('two results of one day show the date once, and a result without a day sorts last', () => {
+    const [timedOut] = subtestsOf(COOP_TEST).filter((subtest) => subtest.unexpected.length > 0);
+    const [first, second] = timedOut!.unexpected[0]!.results;
+    assert.deepEqual([first!.day, second!.day], [0, 1]);
+    const sameDay: DecodedSubtest = {
+        ...timedOut!,
+        unexpected: [
+            {
+                status: 'KNOWN-INTERMITTENT-TIMEOUT',
+                // Given oldest first, with the undated one in the middle.
+                results: [first!, { ...second!, day: null }, second!, { ...first!, day: 1 }],
+            },
+        ],
+    };
+    const view = buildSubtestsView([sameDay], WPT_WINDOW)!;
+    assert.deepEqual(
+        subtestDetail(view, 0).unexpected.map((result) => [result.date, result.dateLabel]),
+        [
+            ['2026-11-22', '2026-11-22'],
+            ['2026-11-22', ''],
+            ['2026-11-21', '2026-11-21'],
+            [null, ''],
+        ]
+    );
+
+    const undated = buildSubtestsView([timedOut!])!;
+    assert.deepEqual(
+        subtestDetail(undated, 0).unexpected.map((result) => result.date),
+        [null, null]
+    );
+});
+
+test('the date of a result is its day counted from the first day of the file', () => {
+    assert.equal(dateOfSubtestDay('2026-11-21', 0), '2026-11-21');
+    assert.equal(dateOfSubtestDay('2026-11-21', 1), '2026-11-22');
+    // Across a month end, and across the European DST change of 2026-10-25.
+    assert.equal(dateOfSubtestDay('2026-11-21', 10), '2026-12-01');
+    assert.equal(dateOfSubtestDay('2026-10-24', 2), '2026-10-26');
+    assert.equal(dateOfSubtestDay('2026-11-21', null), null);
+    assert.equal(dateOfSubtestDay(null, 3), null);
+    assert.equal(dateOfSubtestDay('not a date', 3), null);
+});
+
+test('an expected failure opens to the jobs that had it, and how many times each', () => {
+    const moving = buildSubtestsView(subtestsOf(MOVING_TEST), WPT_WINDOW)!;
+    assert.deepEqual(subtestDetail(moving, 0).expected, [
+        {
+            status: 'KNOWN-FAIL',
+            badgeClass: 'badge-expected',
+            count: 4,
+            countText: '4 results on 2 jobs',
+            jobs: [
+                { jobName: 'test-linux2404-64/debug-web-platform-tests', count: 2 },
+                { jobName: 'test-linux2404-64/debug-web-platform-tests-nofis', count: 2 },
+            ],
+        },
+    ]);
+
+    const [failing] = subtestsOf(ARGON_TEST);
+    const failure = failing!.expectedFailures[0]!;
+    assert.equal(failure.jobs.length, 4);
+    const uneven: DecodedSubtest = {
+        ...failing!,
+        expectedFailures: [
+            {
+                status: failure.status,
+                count: 1,
+                jobs: [{ ...failure.jobs[3]!, count: 1 }],
+            },
+            {
+                ...failure,
+                jobs: failure.jobs.map((job, index) => ({ ...job, count: index === 2 ? 5 : job.count })),
+            },
+        ],
+    };
+    const detail = subtestDetail(buildSubtestsView([uneven])!, 0).expected;
+    assert.equal(detail[0]!.countText, '1 result on 1 job');
+    assert.deepEqual(
+        detail[1]!.jobs.map((job) => [job.jobName, job.count]),
+        [
+            ['test-linux2404-64/debug-web-platform-tests', 5],
+            ['test-linux2404-64-shippable/opt-web-platform-tests', 2],
+            ['test-linux2404-64-shippable/opt-web-platform-tests-nofis', 2],
+            ['test-linux2404-64/debug-web-platform-tests-nofis', 2],
+        ]
+    );
+});
+
+/** The five subtests of `MOVING_TEST`, `copies` times over, numbered in their names. */
+function manySubtests(copies: number): DecodedSubtest[] {
+    const real = subtestsOf(MOVING_TEST);
+    const out: DecodedSubtest[] = [];
+    for (let copy = 0; copy < copies; copy++) {
+        for (const subtest of real) {
+            out.push({ ...subtest, name: `${subtest.name} #${copy}` });
+        }
+    }
+    return out;
+}
+
+test('at most 100 subtest rows are drawn at a time, however many the test has', () => {
+    assert.equal(SUBTEST_ROWS_PER_PAGE, 100);
+
+    const view = buildSubtestsView(manySubtests(3000))!;
+    assert.equal(view.rows.length, 15000);
+    // 2 of every 5 have unexpected results, and all of those come first.
+    assert.equal(view.summary.withUnexpected, 6000);
+    assert.equal(view.summary.passOnly, 9000);
+
+    const first = visibleSubtests(view);
+    assert.equal(first.rows.length, 100);
+    assert.deepEqual(first.rows, view.rows.slice(0, 100));
+    assert.ok(first.rows.every((row) => row.group === 'unexpected'));
+    assert.equal(first.matching, 15000);
+    assert.equal(first.hidden, 14900);
+    assert.equal(first.countText, `Showing 100 of ${(15000).toLocaleString()} subtests`);
+    assert.equal(first.moreLabel, 'Show 100 more');
+
+    const second = visibleSubtests(view, { limit: 200 });
+    assert.deepEqual(second.rows, view.rows.slice(0, 200));
+    assert.equal(second.hidden, 14800);
+
+    const nearlyAll = visibleSubtests(view, { limit: 14960 });
+    assert.equal(nearlyAll.moreLabel, 'Show 40 more');
+    const all = visibleSubtests(view, { limit: 15000 });
+    assert.equal(all.rows.length, 15000);
+    assert.equal(all.moreLabel, null);
+    assert.equal(all.countText, '');
+});
+
+test('a test with a page of subtests or fewer draws them all, with no count and no button', () => {
+    const exactly = visibleSubtests(buildSubtestsView(manySubtests(20))!);
+    assert.equal(exactly.rows.length, 100);
+    assert.equal(exactly.hidden, 0);
+    assert.equal(exactly.countText, '');
+    assert.equal(exactly.moreLabel, null);
+
+    const one = visibleSubtests(buildSubtestsView(manySubtests(21))!);
+    assert.equal(one.rows.length, 100);
+    assert.equal(one.moreLabel, 'Show 5 more');
+
+    const coop = visibleSubtests(buildSubtestsView(subtestsOf(COOP_TEST), WPT_WINDOW)!);
+    assert.equal(coop.rows.length, 12);
+    assert.equal(coop.countText, '');
+    assert.equal(coop.moreLabel, null);
+});
+
+test('the filter reaches a subtest the bound hides, and is bounded itself', () => {
+    const view = buildSubtestsView(manySubtests(3000))!;
+    // Rows 14,997 to 14,999: 150 presses of the button away.
+    const hit = visibleSubtests(view, { filter: 'sanity #2999' });
+    assert.equal(hit.matching, 1);
+    assert.deepEqual(
+        hit.rows.map((row) => row.name),
+        ['Sanity check around top-level Window #2999']
+    );
+    assert.equal(hit.rows[0]!.index, 14999);
+    assert.equal(hit.countText, `Showing 1 of 1 matching subtest, of ${(15000).toLocaleString()}`);
+    assert.equal(hit.moreLabel, null);
+
+    assert.equal(visibleSubtests(view, { filter: '#2999 SANITY' }).matching, 1);
+    const broad = visibleSubtests(view, { filter: 'window' });
+    // `window error…` and `Sanity check around top-level Window`, per copy.
+    assert.equal(broad.matching, 6000);
+    assert.equal(broad.rows.length, 100);
+    assert.ok(broad.rows.every((row) => row.group === 'unexpected'));
+    assert.equal(
+        broad.countText,
+        `Showing 100 of ${(6000).toLocaleString()} matching subtests, of ${(15000).toLocaleString()}`
+    );
+    assert.equal(broad.moreLabel, 'Show 100 more');
+
+    const none = visibleSubtests(view, { filter: 'no such subtest' });
+    assert.deepEqual(none.rows, []);
+    assert.equal(none.countText, `No subtest matches, of ${(15000).toLocaleString()}`);
+    assert.equal(none.moreLabel, null);
+    // Whitespace is no filter at all, not one that matches nothing.
+    assert.equal(visibleSubtests(view, { filter: '   ' }).matching, 15000);
+});
+
+test('there is no subtests view for a test the file does not have, or one with no subtest', () => {
+    assert.notEqual(decoded(WPT).findTest(WITHOUT_SUBTESTS), null);
+    const missing = decodeSubtests(WPT_SUBTESTS).subtestsOfTest(WITHOUT_SUBTESTS);
+    assert.equal(missing, null);
+    assert.equal(buildSubtestsView(missing, WPT_WINDOW), null);
+    assert.equal(buildSubtestsView([], WPT_WINDOW), null);
 });
