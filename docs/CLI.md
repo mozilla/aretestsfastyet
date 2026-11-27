@@ -81,7 +81,7 @@ Installed as a `bin` entry in `package.json`; run without installing via
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--harness <xpcshell\|mochitest>` | inferred from the test path, else `xpcshell` — but `mochitest` for `errors`, and **both** for a directory path on `failures` and `flaky` (see below) | Which harness's data files to read. |
+| `--harness <xpcshell\|mochitest\|wpt>` | inferred from the test path, else `xpcshell` — but `mochitest` for `errors`, and **both** for a directory path on `failures` and `flaky` (see below) | Which harness's data files to read. |
 | `--json` | off | Emit JSON instead of text. Stable shape, documented per command. |
 | `--markdown` | off | Emit Markdown (tables, fenced blocks). For pasting into a bug or PR. |
 | `--limit <n>` | varies per command | Max rows. `0` means no limit. |
@@ -130,6 +130,16 @@ everything else is xpcshell. Measured over every bucket file on 2026-11-15, that
 right for every test in the aggregates, so a test file is looked up in one
 harness's data only.
 
+web-platform-tests are decided before the filename, by where they are: a path
+under `testing/web-platform/` is `wpt`, test or directory, since that tree holds
+every wpt test and most of them end in `.html`. A wpt test is named by a
+repository path that keeps its variant —
+`testing/web-platform/tests/close-watcher/basic.html?dialog` — so quote it in a
+shell. The wpt files are published by the same generator once its nightly task
+exists; until then every `wpt-*.json` is a 404, and a command that reads every
+harness (`summary`, `dates`, the test list `test` searches) leaves wpt out
+rather than failing.
+
 A **directory** has no filename at all, so the xpcshell fallthrough sent
 `failures --path <dir>` and `flaky <dir>` to xpcshell with the same misleading
 "check your path for typos". Nothing in the aggregates says which harness runs a
@@ -140,6 +150,8 @@ and `--json` wraps them as `{ "harnesses": [...] }`), and the not-found message
 appears only when neither has any, and it names both files it searched. The rule
 is `harnessesForPathFilter()` (`lib/model/harness.ts`), shared by both commands.
 An explicit `--harness`, and a query with no path at all, are never widened.
+A directory of the wpt tree is not widened either: it is in the wpt files and in
+no other. One above it (`testing/`) reads all three.
 
 Two limits worth stating, because both are deliberate. **`failures` and `flaky`
 only**: `issues`, `crashes` and `skips` take the same `--path` and still read

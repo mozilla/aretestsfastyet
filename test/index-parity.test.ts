@@ -51,7 +51,7 @@
  * The checked-in fixtures, read from disk, with a source that rejects any name
  * it was not given. `test/framing.test.ts` already asserts the CLI asks for
  * `{harness}-timings/{harness}-stats.json`; this file asserts the *page* reads
- * the same two names under the same two indices, which is the half that would
+ * the same names under the same indices, which is the half that would
  * otherwise be assumed.
  */
 
@@ -61,12 +61,14 @@ import assert from 'node:assert/strict';
 
 import type { StatsFile } from '../lib/formats/stats.ts';
 import { DEFAULT_SUMMARY_DAYS, computeSummary } from '../lib/query/summary.ts';
+import { HARNESSES as ALL_HARNESSES } from '../lib/model/harness.ts';
 import { timingsIndex } from '../lib/sources/source.ts';
 import {
     type MergedStats,
     type SummaryRow,
     MOCHITEST_FLAVORS,
     SUMMARY_DAYS,
+    WPT_FLAVORS,
     mergeBackfillStats,
     summaryRows,
 } from '../site/index-view.ts';
@@ -81,6 +83,7 @@ import {
 const ROOT = new URL('../', import.meta.url);
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
+// Without wpt, which only the last test serves.
 const HARNESSES = ['xpcshell', 'mochitest'] as const;
 
 function statsFixture(harness: string): StatsFile {
@@ -109,12 +112,23 @@ function pageStats(harness: string): MergedStats {
 /** The page's summary rows for one harness on its own. */
 function pageRows(harness: string): SummaryRow[] {
     return harness === 'xpcshell'
-        ? summaryRows(pageStats('xpcshell'), null)
-        : summaryRows(null, pageStats('mochitest'));
+        ? summaryRows({ xpcshell: pageStats('xpcshell') })
+        : summaryRows({ mochitest: pageStats('mochitest') });
 }
 
+/** The page's summary rows without wpt. */
+function pageAllRows(): SummaryRow[] {
+    return summaryRows({ xpcshell: pageStats('xpcshell'), mochitest: pageStats('mochitest') });
+}
+
+/** The stats files of the two harnesses that are published. */
+const PUBLISHED = {
+    'xpcshell-timings/xpcshell-stats.json': 'xpcshell-stats.json',
+    'mochitest-timings/mochitest-stats.json': 'mochitest-stats.json',
+};
+
 /** The CLI's `summary --json`, over the pinned stats files. */
-async function cliSummary(): Promise<
+async function cliSummary(files: Record<string, string> = PUBLISHED): Promise<
     {
         harness: string;
         current: Record<string, number | null> & { dayCount: number; endDate: string };
@@ -122,10 +136,7 @@ async function cliSummary(): Promise<
         delta: Record<string, number | null>;
     }[]
 > {
-    const source = fixtureSource({
-        'xpcshell-timings/xpcshell-stats.json': 'xpcshell-stats.json',
-        'mochitest-timings/mochitest-stats.json': 'mochitest-stats.json',
-    });
+    const source = fixtureSource(files);
     const result = await invoke(['summary', '--json'], { source });
     return json<{ harnesses: never[] }>(result).harnesses;
 }
@@ -327,8 +338,8 @@ test('the backfill merge does not move the summary window', () => {
     // 2026-08-03 — and this is what makes the counter comparison above valid.
     const live = statsFixture('mochitest');
     const merged = pageStats('mochitest');
-    const liveRows = summaryRows(null, mergeBackfillStats(null, live).stats);
-    const mergedRows = summaryRows(null, merged);
+    const liveRows = summaryRows({ mochitest: mergeBackfillStats(null, live).stats });
+    const mergedRows = summaryRows({ mochitest: merged });
     assert.deepEqual(
         mergedRows.find((row) => !row.isFlavor)!.totals,
         liveRows.find((row) => !row.isFlavor)!.totals,
@@ -344,27 +355,26 @@ test('the backfill merge does not move the summary window', () => {
 // Framing parity
 // =========================================================================
 
-test('both sides read the same two files, under the same two indices', async () => {
+test('both sides ask for every harness\'s stats file, each under its own index', async () => {
     // The page's half of what `framing.test.ts` asserts for the CLI. Confirmed
-    // from `fetch-utils.js:212-222` rather than guessed: it derives the harness
+    // from `harnessOfDataFile` in `fetch-utils.js`, not guessed: it derives the harness
     // from the filename prefix and asks `test-info-{harness}-timings`, which is
     // exactly what `timingsIndex()` builds for the CLI.
-    const source = fixtureSource({
-        'xpcshell-timings/xpcshell-stats.json': 'xpcshell-stats.json',
-        'mochitest-timings/mochitest-stats.json': 'mochitest-stats.json',
-    });
+    const source = fixtureSource(PUBLISHED);
     await invoke(['summary', '--json'], { source });
+    // The wpt request is a miss: this source has no wpt file.
     assert.deepEqual(
         [...source.requested].sort(),
-        HARNESSES.map((harness) => `${timingsIndex(harness)}/${harness}-stats.json`).sort()
+        ALL_HARNESSES.map((harness) => `${timingsIndex(harness)}/${harness}-stats.json`).sort()
     );
 
     // And the page asks `fetchData` for the bare filenames, which `fetch-utils`
-    // resolves to those same two indices. Asserted against the controller's
+    // resolves to those same indices. Asserted against the controller's
     // recorded requests in `test/index-page.test.ts`; named here so the
     // index-resolution rule is written down in one place.
     assert.equal(timingsIndex('xpcshell'), 'xpcshell-timings');
     assert.equal(timingsIndex('mochitest'), 'mochitest-timings');
+    assert.equal(timingsIndex('wpt'), 'wpt-timings');
 });
 
 test('neither side sorts: the row order is identical and it is source order', async () => {
@@ -377,7 +387,7 @@ test('neither side sorts: the row order is identical and it is source order', as
         ['xpcshell', 'mochitest'],
         'the CLI lists harnesses in source order'
     );
-    const pageAll = summaryRows(pageStats('xpcshell'), pageStats('mochitest'));
+    const pageAll = pageAllRows();
     assertSameOrder(
         pageAll.filter((row) => !row.isFlavor).map((row) => row.kind),
         ['xpcshell', 'mochitest'],
@@ -390,7 +400,7 @@ test('the page adds a flavor breakdown the CLI does not have', async () => {
     // value comparison cannot see at all: both sides agree on every harness
     // number and the page simply shows eight more rows.
     const cli = await cliSummary();
-    const pageAll = summaryRows(pageStats('xpcshell'), pageStats('mochitest'));
+    const pageAll = pageAllRows();
 
     assertDeclaredDivergences('index vs summary: row unit', [
         {
@@ -441,10 +451,64 @@ test('the CLI reports no negative rate on the pinned data, and neither does the 
             assert.ok((entry.current[key] ?? 0) >= 0, `cli ${entry.harness} ${key}`);
         }
     }
-    for (const row of summaryRows(pageStats('xpcshell'), pageStats('mochitest'))) {
+    for (const row of pageAllRows()) {
         assert.ok(
             (row.jobFailureRate ?? 0) >= 0,
             `${row.name}: the page's subtraction stayed positive`
         );
     }
+});
+
+// =========================================================================
+// With wpt published
+// =========================================================================
+
+test('once wpt-stats.json is published both sides add WPT, last, with the same rates', async () => {
+    // The pinned wpt file is two days long: no prior period, and a 2-day window.
+    const cli = await cliSummary({ ...PUBLISHED, 'wpt-timings/wpt-stats.json': 'wpt-stats.json' });
+    const wpt = mergeBackfillStats(null, statsFixture('wpt')).stats;
+    const pageAll = summaryRows({
+        xpcshell: pageStats('xpcshell'),
+        mochitest: pageStats('mochitest'),
+        wpt,
+    });
+
+    assertSameOrder(
+        cli.map((entry) => entry.harness),
+        [...ALL_HARNESSES],
+        'the CLI lists the harnesses in source order'
+    );
+    assertSameOrder(
+        pageAll.filter((row) => !row.isFlavor).map((row) => row.kind),
+        [...ALL_HARNESSES],
+        'the page lists them in the same order'
+    );
+    assert.deepEqual(pageAll.slice(0, pageAllRows().length), pageAllRows());
+
+    const entry = cli.find((row) => row.harness === 'wpt')!;
+    const page = pageAll.find((row) => row.kind === 'wpt' && !row.isFlavor)!;
+    assert.equal(entry.current.dayCount, 2);
+    assert.equal(entry.prior, null);
+    assert.deepEqual(page.totals.dates, ['2026-11-21', '2026-11-22']);
+    for (const key of [
+        'totalTestRuns',
+        'failedTestRuns',
+        'skippedTestRuns',
+        'processedJobCount',
+        'failedJobs',
+        'invalidJobs',
+    ] as const) {
+        assert.equal(page.totals[key], entry.current[key], `wpt: ${key}`);
+    }
+    // A real 0, not the `null` of a missing denominator.
+    assert.equal(page.invalidJobRate, 0);
+    for (const key of ['testFailureRate', 'jobFailureRate', 'skipRate', 'invalidJobRate'] as const) {
+        assert.equal(page[key], entry.current[key], `wpt: ${key}`);
+    }
+
+    // As for mochitest, only the page has flavor rows.
+    assert.deepEqual(
+        pageAll.filter((row) => row.isFlavor && row.kind === 'wpt').map((row) => row.name),
+        WPT_FLAVORS.map((flavor) => flavor.name)
+    );
 });

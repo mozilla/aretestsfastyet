@@ -45,6 +45,7 @@ import {
 } from '../lib/sources/source.ts';
 import { type CommandContext, progress } from './context.ts';
 import { notFoundError, usageError } from './errors.ts';
+import { HARNESSES } from '../lib/model/harness.ts';
 import type { GlobalOptions, Harness } from './options.ts';
 
 /**
@@ -54,13 +55,18 @@ import type { GlobalOptions, Harness } from './options.ts';
  * `missingFiles` exists because a 404 is swallowed to `null` here but is not the
  * same problem as a typo — an unpublished bucket has to be nameable in the
  * not-found message rather than reported as a missing test.
+ *
+ * `listedHarnesses` are the harnesses whose test list was found and searched.
  */
 export function testLookupLoaders(context: CommandContext): TestLookupLoaders<BucketFile> & {
     readonly missingFiles: string[];
+    readonly listedHarnesses: Harness[];
 } {
     const missingFiles: string[] = [];
+    const listedHarnesses: Harness[] = [];
     return {
         missingFiles,
+        listedHarnesses,
         async loadBucket(harness: Harness, testPath: string): Promise<LoadedTestFile<BucketFile> | null> {
             const suffix = bucketFileSuffix(bucketIndexForPath(testPath));
             const name: DataFileName = {
@@ -80,7 +86,7 @@ export function testLookupLoaders(context: CommandContext): TestLookupLoaders<Bu
         },
         async loadAllTestPaths(): Promise<string[]> {
             const files = await Promise.all(
-                (['xpcshell', 'mochitest'] as Harness[]).map(async (harness) => {
+                HARNESSES.map(async (harness) => {
                     try {
                         return await fetchJson<IssuesFile>(context.source, {
                             index: timingsIndex(harness),
@@ -94,6 +100,8 @@ export function testLookupLoaders(context: CommandContext): TestLookupLoaders<Bu
                     }
                 })
             );
+            listedHarnesses.length = 0;
+            listedHarnesses.push(...HARNESSES.filter((_, index) => files[index] !== null));
             if (files.every((file) => file === null)) {
                 // `collectTestPaths` would return `[]`, which the ladder reads
                 // as "no test matches" — a claim nothing checked.
@@ -160,6 +168,37 @@ export async function ifPublished<T>(loading: Promise<T>): Promise<T | null> {
         }
         throw error;
     }
+}
+
+/**
+ * One file per harness. Without `--harness`, a harness whose file is not
+ * published is left out (`onMissing` is told); all of them missing is an error.
+ */
+export async function loadPerHarness<T>(
+    explicit: Harness | undefined,
+    load: (harness: Harness) => Promise<T>,
+    onMissing: (harness: Harness) => void = () => {}
+): Promise<{ harness: Harness; loaded: T }[]> {
+    if (explicit !== undefined) {
+        return [{ harness: explicit, loaded: await load(explicit) }];
+    }
+    const results: { harness: Harness; loaded: T }[] = [];
+    let firstMissing: unknown;
+    for (const harness of HARNESSES) {
+        try {
+            results.push({ harness, loaded: await load(harness) });
+        } catch (error) {
+            if (!(error instanceof DataFileNotFoundError)) {
+                throw error;
+            }
+            firstMissing ??= error;
+            onMissing(harness);
+        }
+    }
+    if (results.length === 0) {
+        throw firstMissing;
+    }
+    return results;
 }
 
 /** Reads a harness's `index.json`. */

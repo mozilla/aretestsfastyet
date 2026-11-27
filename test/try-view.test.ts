@@ -1750,7 +1750,10 @@ test('the pinned push really does carry uploaded profiles', () => {
 test('the verdict is weaker for an empty permanent table than for a green push', () => {
     const green = noFailuresText({ noTestFailuresAtAll: true, otherFailedJobCount: 0 });
     assert.equal(green.verdict, 'No test failures — the patches might be ready to land.');
-    assert.equal(green.caveat, 'This page only covers mochitest and xpcshell failures.');
+    assert.equal(
+        green.caveat,
+        'This page only covers mochitest, xpcshell and web-platform-tests failures.'
+    );
     assert.equal(green.caveatHasLink, false);
 
     const noPerma = noFailuresText({ noTestFailuresAtAll: false, otherFailedJobCount: 0 });
@@ -1762,7 +1765,7 @@ test('a green verdict next to a failed build says so and links Treeherder', () =
     assert.equal(one.caveatHasLink, true);
     assert.equal(
         one.caveat,
-        'But this page only covers mochitest and xpcshell, and 1 other job failed: '
+        'But this page only covers mochitest, xpcshell and web-platform-tests, and 1 other job failed: '
     );
     const many = noFailuresText({ noTestFailuresAtAll: true, otherFailedJobCount: 3 });
     assert.match(many.caveat, /and 3 other jobs failed: $/);

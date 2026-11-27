@@ -117,8 +117,20 @@ async function fetchJson(url) {
     return response.json();
 }
 
+// The harnesses with timing files, each under the index `<harness>-timings`.
+const TIMING_HARNESSES = ['xpcshell', 'mochitest', 'wpt'];
+
+// "wpt-stats.json" -> "wpt". index.json is the one of the harness the page shows.
+function harnessOfDataFile(filename) {
+    const harness = TIMING_HARNESSES.find(name => filename.startsWith(name + '-'));
+    if (harness) {
+        return harness;
+    }
+    return filename === 'index.json' ? getHarnessType() : 'xpcshell';
+}
+
 // Find all timings jobs for a try revision using Treeherder API
-// Returns an object with xpcshell and mochitest task IDs (if they exist)
+// Returns an object with the task ID of each harness (if it exists)
 async function findTimingsJobsForRevision(revision) {
     try {
         console.log(`Finding timings jobs for try revision ${revision}...`);
@@ -162,10 +174,7 @@ async function findTimingsJobsForRevision(revision) {
         const stateIndex = propertyNames.indexOf('state');
 
         // Find the most recent completed timings jobs (keep the last one found in the list)
-        const timingsJobs = {
-            xpcshell: null,
-            mochitest: null
-        };
+        const timingsJobs = Object.fromEntries(TIMING_HARNESSES.map(harness => [harness, null]));
 
         for (const job of allJobs) {
             const jobName = job[jobTypeNameIndex];
@@ -176,18 +185,16 @@ async function findTimingsJobsForRevision(revision) {
                 continue;
             }
 
-            if (jobName.endsWith('xpcshell-timings-rev')) {
-                timingsJobs.xpcshell = taskId;
-            } else if (jobName.endsWith('mochitest-timings-rev')) {
-                timingsJobs.mochitest = taskId;
+            const harness = TIMING_HARNESSES.find(name => jobName.endsWith(`${name}-timings-rev`));
+            if (harness) {
+                timingsJobs[harness] = taskId;
             }
         }
 
-        if (timingsJobs.xpcshell) {
-            console.log(`Found xpcshell-timings job: ${timingsJobs.xpcshell}`);
-        }
-        if (timingsJobs.mochitest) {
-            console.log(`Found mochitest-timings job: ${timingsJobs.mochitest}`);
+        for (const harness of TIMING_HARNESSES) {
+            if (timingsJobs[harness]) {
+                console.log(`Found ${harness}-timings job: ${timingsJobs[harness]}`);
+            }
         }
 
         return timingsJobs;
@@ -207,8 +214,8 @@ async function findTimingsJobsForRevision(revision) {
 // date is ignored on both paths rather than silently 404ing.
 async function fetchData(filename, date) {
     if (getDataSource() !== 'local') {
-        // Check if this is a try revision file (format: xpcshell-try-<revision>.json or mochitest-try-<revision>.json)
-        const tryMatch = filename.match(/^(xpcshell|mochitest)-try-([a-f0-9]{40})\.json$/);
+        // Check if this is a try revision file (format: <harness>-try-<revision>.json)
+        const tryMatch = filename.match(/^(xpcshell|mochitest|wpt)-try-([a-f0-9]{40})\.json$/);
 
         if (tryMatch) {
             const [, requestedHarness, revision] = tryMatch;
@@ -245,14 +252,7 @@ async function fetchData(filename, date) {
             }
         }
 
-        // Detect harness from filename (xpcshell-*.json or mochitest-*.json)
-        // For generic files like index.json, use the URL parameter
-        let harness = 'xpcshell';
-        if (filename.startsWith('mochitest-')) {
-            harness = 'mochitest';
-        } else if (filename === 'index.json') {
-            harness = getHarnessType();
-        }
+        const harness = harnessOfDataFile(filename);
 
         // Try the detected harness first
         const response = await fetchFromCI(harness + '-timings', filename, date);
@@ -294,12 +294,6 @@ async function fetchData(filename, date) {
 
         // No local file — fall back to CI so the page works without generated data.
         console.log(`No local data for ${filename}, falling back to CI…`);
-        let harness = 'xpcshell';
-        if (filename.startsWith('mochitest-')) {
-            harness = 'mochitest';
-        } else if (filename === 'index.json') {
-            harness = getHarnessType();
-        }
-        return fetchFromCI(harness + '-timings', filename, date);
+        return fetchFromCI(harnessOfDataFile(filename) + '-timings', filename, date);
     }
 }

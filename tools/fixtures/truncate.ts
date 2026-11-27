@@ -138,7 +138,8 @@ function selectTests(
 export function truncateTimingFile(
     data: AnyRecord,
     perStatus: number,
-    pathPrefix?: string
+    pathPrefix?: string,
+    mustKeep?: ReadonlySet<string>
 ): AnyRecord {
     const tables = data['tables'] as Record<string, string[]>;
     const testInfo = data['testInfo'] as Record<string, (number | null)[]>;
@@ -168,7 +169,19 @@ export function truncateTimingFile(
                           : (tables['testPaths']?.[directoryId] ?? '');
                   return directory === pathPrefix || directory.startsWith(`${pathPrefix}/`);
               };
-    const kept = selectTests(testRuns, keptStatuses, perStatus, preferred);
+    const selected = selectTests(testRuns, keptStatuses, perStatus, preferred);
+    // Tests another fixture needs here, eg. those of the wpt subtests fixture.
+    const required: number[] = [];
+    if (mustKeep !== undefined) {
+        for (let testId = 0; testId < testRuns.length; testId++) {
+            const directory = tables['testPaths']?.[testInfo['testPathIds']?.[testId] ?? -1] ?? '';
+            const name = tables['testNames']?.[testInfo['testNameIds']?.[testId] ?? -1] ?? '';
+            if (mustKeep.has(directory ? `${directory}/${name}` : name)) {
+                required.push(testId);
+            }
+        }
+    }
+    const kept = [...new Set([...selected, ...required])].sort((a, b) => a - b);
     if (kept.length === 0) {
         throw new Error('No tests carry any status, so the fixture would be empty.');
     }
@@ -297,6 +310,218 @@ export function truncateTimingFile(
         ...(newTaskInfo ? { taskInfo: newTaskInfo } : {}),
         testInfo: newTestInfo,
         testRuns: keptRuns,
+    };
+}
+
+// --- the subtests family ---------------------------------------------------
+
+type SubtestRows = Record<string, (number | null)[] | (number | null)[][]>;
+
+/** Where each test's subtests start, and the test's full path. */
+function subtestLayout(data: AnyRecord): { first: number[]; counts: number[]; paths: string[] } {
+    const tables = data['tables'] as Record<string, string[]>;
+    const testInfo = data['testInfo'] as Record<string, (number | null)[]>;
+    const counts = (data['subtests'] as AnyRecord)['countsByTest'] as number[];
+    const first: number[] = [];
+    const paths: string[] = [];
+    let next = 0;
+    for (let testId = 0; testId < counts.length; testId++) {
+        first.push(next);
+        next += counts[testId]!;
+        const directory = tables['testPaths']?.[testInfo['testPathIds']?.[testId] ?? -1] ?? '';
+        const name = tables['testNames']?.[testInfo['testNameIds']?.[testId] ?? -1] ?? '';
+        paths.push(directory ? `${directory}/${name}` : name);
+    }
+    return { first, counts, paths };
+}
+
+/** `perKind` tests with unexpected results, expected failures only, passes only. */
+export function selectSubtestTests(data: AnyRecord, perKind: number): string[] {
+    const subtests = data['subtests'] as AnyRecord;
+    const { first, counts, paths } = subtestLayout(data);
+    const withRows = (rows: AnyRecord): Set<number> => {
+        const tests = new Set<number>();
+        let testId = 0;
+        for (const subtestId of rows['subtestIds'] as number[]) {
+            while (subtestId >= first[testId]! + counts[testId]!) {
+                testId++;
+            }
+            tests.add(testId);
+        }
+        return tests;
+    };
+    const unexpected = withRows(subtests['unexpected'] as AnyRecord);
+    const expected = withRows(subtests['expectedFailures'] as AnyRecord);
+    const kinds: ((testId: number) => boolean)[] = [
+        (testId) => unexpected.has(testId),
+        (testId) => expected.has(testId) && !unexpected.has(testId),
+        (testId) => !expected.has(testId) && !unexpected.has(testId),
+    ];
+    const chosen: string[] = [];
+    for (const isKind of kinds) {
+        let taken = 0;
+        for (let testId = 0; testId < paths.length && taken < perKind; testId++) {
+            if (isKind(testId)) {
+                chosen.push(paths[testId]!);
+                taken++;
+            }
+        }
+    }
+    return chosen;
+}
+
+/** Keeps the tests `keep` accepts and at most `maxSubtests` subtests of each. */
+export function truncateSubtests(
+    data: AnyRecord,
+    keep: (testPath: string) => boolean,
+    maxSubtests: number
+): AnyRecord {
+    const tables = data['tables'] as Record<string, string[]>;
+    const testInfo = data['testInfo'] as Record<string, (number | null)[]>;
+    const taskInfo = data['taskInfo'] as Record<string, (number | null)[]>;
+    const subtests = data['subtests'] as AnyRecord;
+    const expected = subtests['expectedFailures'] as SubtestRows;
+    const unexpected = subtests['unexpected'] as SubtestRows;
+    const { first, counts, paths } = subtestLayout(data);
+
+    const remaps: Record<string, TableRemap> = {};
+    for (const [name, table] of Object.entries(tables)) {
+        remaps[name] = new TableRemap(table);
+    }
+    const remap = (table: string, id: number | null): number | null => remaps[table]!.map(id);
+
+    const rowsBySubtest = (rows: SubtestRows): Map<number, number[]> => {
+        const bySubtest = new Map<number, number[]>();
+        (rows['subtestIds'] as number[]).forEach((subtestId, row) => {
+            const list = bySubtest.get(subtestId);
+            if (list === undefined) {
+                bySubtest.set(subtestId, [row]);
+            } else {
+                list.push(row);
+            }
+        });
+        return bySubtest;
+    };
+    const expectedRows = rowsBySubtest(expected);
+    const unexpectedRows = rowsBySubtest(unexpected);
+    const hasDays = unexpected['days'] !== undefined;
+
+    const newTestInfo: Record<string, (number | null)[]> = {
+        testPathIds: [],
+        testNameIds: [],
+        componentIds: [],
+    };
+    const out = {
+        countsByTest: [] as number[],
+        nameIds: [] as (number | null)[],
+        passCounts: [] as number[],
+        expectedFailures: {
+            subtestIds: [] as number[],
+            statusIds: [] as (number | null)[],
+            jobNameIds: [] as (number | null)[][],
+            counts: [] as number[][],
+        },
+        unexpected: {
+            subtestIds: [] as number[],
+            statusIds: [] as (number | null)[],
+            taskIdIds: [] as (number | null)[][],
+            messageIds: [] as (number | null)[][],
+            ...(hasDays ? { days: [] as number[][] } : {}),
+        },
+    };
+    const resultCounts = new Map<string, number>();
+    const count = (status: string, results: number): void => {
+        resultCounts.set(status, (resultCounts.get(status) ?? 0) + results);
+    };
+
+    for (let testId = 0; testId < paths.length; testId++) {
+        if (!keep(paths[testId]!)) {
+            continue;
+        }
+        const all = Array.from({ length: counts[testId]! }, (_, index) => first[testId]! + index);
+        const withRows = all.filter((id) => expectedRows.has(id) || unexpectedRows.has(id));
+        const passOnly = all.filter((id) => !expectedRows.has(id) && !unexpectedRows.has(id));
+        // Subtests with a row first, then back in file order for the decoder.
+        const kept = [...withRows, ...passOnly].slice(0, maxSubtests).sort((a, b) => a - b);
+
+        newTestInfo['testPathIds']!.push(remap('testPaths', testInfo['testPathIds']![testId]!));
+        newTestInfo['testNameIds']!.push(remap('testNames', testInfo['testNameIds']![testId]!));
+        newTestInfo['componentIds']!.push(remap('components', testInfo['componentIds']![testId] ?? null));
+        out.countsByTest.push(kept.length);
+
+        for (const oldId of kept) {
+            const newId = out.nameIds.length;
+            out.nameIds.push(remap('subtestNames', (subtests['nameIds'] as number[])[oldId]!));
+            const passCount = (subtests['passCounts'] as number[])[oldId]!;
+            out.passCounts.push(passCount);
+            count('PASS', passCount);
+
+            for (const row of expectedRows.get(oldId) ?? []) {
+                const statusId = (expected['statusIds'] as number[])[row]!;
+                const rowCounts = (expected['counts'] as number[][])[row]!;
+                out.expectedFailures.subtestIds.push(newId);
+                out.expectedFailures.statusIds.push(remap('statuses', statusId));
+                out.expectedFailures.jobNameIds.push(
+                    (expected['jobNameIds'] as number[][])[row]!.map((id) => remap('jobNames', id))
+                );
+                out.expectedFailures.counts.push(rowCounts);
+                count(tables['statuses']![statusId]!, rowCounts.reduce((sum, value) => sum + value, 0));
+            }
+            for (const row of unexpectedRows.get(oldId) ?? []) {
+                const statusId = (unexpected['statusIds'] as number[])[row]!;
+                const taskIdIds = (unexpected['taskIdIds'] as number[][])[row]!;
+                out.unexpected.subtestIds.push(newId);
+                out.unexpected.statusIds.push(remap('statuses', statusId));
+                out.unexpected.taskIdIds.push(taskIdIds.map((id) => remap('taskIds', id)));
+                out.unexpected.messageIds.push(
+                    (unexpected['messageIds'] as (number | null)[][])[row]!.map((id) => remap('messages', id))
+                );
+                out.unexpected.days?.push((unexpected['days'] as number[][])[row]!);
+                count(tables['statuses']![statusId]!, taskIdIds.length);
+            }
+        }
+    }
+
+    // taskInfo is indexed by task-ID index: re-emitted in the remapped order.
+    const taskOrder = remaps['taskIds']!.order();
+    const newTaskInfo: AnyRecord = {};
+    for (const [key, value] of Object.entries(taskInfo)) {
+        const table =
+            key === 'repositoryIds'
+                ? 'repositories'
+                : key === 'jobNameIds'
+                  ? 'jobNames'
+                  : key === 'commitIds'
+                    ? 'commitIds'
+                    : undefined;
+        newTaskInfo[key] = taskOrder.map((oldIndex) => {
+            const entry = value[oldIndex] ?? null;
+            return table ? remap(table, entry) : entry;
+        });
+    }
+
+    const newTables: AnyRecord = {};
+    for (const name of Object.keys(tables)) {
+        newTables[name] = remaps[name]!.build();
+    }
+
+    const metadata = { ...(data['metadata'] as AnyRecord) };
+    metadata['subtestCount'] = out.nameIds.length;
+    if ('totalTestCount' in metadata) {
+        metadata['totalTestCount'] = out.countsByTest.length;
+    }
+    if ('resultCounts' in metadata) {
+        metadata['resultCounts'] = Object.fromEntries(
+            [...resultCounts].filter(([, results]) => results > 0).sort(([a], [b]) => (a < b ? -1 : 1))
+        );
+    }
+
+    return {
+        metadata,
+        tables: newTables,
+        taskInfo: newTaskInfo,
+        testInfo: newTestInfo,
+        subtests: out,
     };
 }
 

@@ -31,6 +31,22 @@ import {
     passRateNumerator,
     splitExecutionMode,
 } from '../lib/model/status.ts';
+import { HARNESSES, HARNESS_LABELS, detectHarness, harnessesForPathFilter, isHarness } from '../lib/model/harness.ts';
+import { isTestFilePath, normalizeTestPath } from '../lib/model/test-path.ts';
+import {
+    isWptTestPath,
+    splitTestPath,
+    stripWptVariant,
+    wptRepoPath,
+    wptSourceFile,
+} from '../lib/model/wpt-path.ts';
+import {
+    type WptUnexpectedSubtest,
+    classifyWptSubtestMarker,
+    wptRunStatus,
+    wptSubtestMessage,
+} from '../lib/model/wpt-status.ts';
+import { WPT_SCENARIOS } from './wpt-scenarios.ts';
 import {
     countRerunsByTask,
     executionModeOf,
@@ -88,6 +104,8 @@ test('every observed status classifies to exactly one kind and mode', () => {
         CRASH: ['crash', null],
         SKIP: ['skip', null],
         'EXPECTED-FAIL': ['expected-fail', null],
+        // Only in the wpt files.
+        'UNEXPECTED-PASS': ['fail', null],
     };
     assert.deepEqual(OBSERVED_STATUSES.slice().sort(), Object.keys(expected).sort());
     for (const [status, [kind, mode]] of Object.entries(expected)) {
@@ -157,6 +175,17 @@ test('EXPECTED-FAIL is neither a pass nor a failure', () => {
     // "did CI behave as expected" rate.
     assert.equal(countsAsRun('expected-fail'), true);
     assert.equal(passRateNumerator('expected-fail'), true);
+});
+
+test('UNEXPECTED-PASS is a failure, not an unknown and not a pass', () => {
+    const { kind, raw } = classifyStatus('UNEXPECTED-PASS');
+    assert.equal(kind, 'fail');
+    assert.equal(isFailureLike(kind), true);
+    assert.equal(isPass(kind), false);
+    assert.equal(passRateNumerator(kind), false);
+    assert.equal(countsAsRun(kind), true);
+    // `raw` still tells it from a FAIL.
+    assert.equal(raw, 'UNEXPECTED-PASS');
 });
 
 test('skips are excluded from a pass rate’s denominator', () => {
@@ -742,4 +771,210 @@ test('the two formatters disagree on purpose, and the disagreement is the reason
 
     assert.equal(formatDurationMs(86_400_000), '1d');
     assert.equal(formatDurationPadded(86_400_000), '24h 00m');
+});
+
+// --- web-platform-tests ---------------------------------------------------
+
+test('a wpt id becomes the repository path the files use, with its variant', () => {
+    // As `normalizeWptTestId` in the generator's `profile-worker.js`.
+    assert.equal(
+        wptRepoPath('/dom/nodes/Node-cloneNode.html'),
+        'testing/web-platform/tests/dom/nodes/Node-cloneNode.html'
+    );
+    assert.equal(
+        wptRepoPath('/_mozilla/dom/foo.html'),
+        'testing/web-platform/mozilla/tests/dom/foo.html'
+    );
+    // The variant is part of the path, slashes included.
+    assert.equal(
+        wptRepoPath('/close-watcher/basic.html?dialog'),
+        'testing/web-platform/tests/close-watcher/basic.html?dialog'
+    );
+    assert.equal(
+        wptRepoPath('/fetch/a.html?url=/common/b.html#frag'),
+        'testing/web-platform/tests/fetch/a.html?url=/common/b.html#frag'
+    );
+    assert.equal(wptRepoPath('dom/base/test/test_foo.html'), null);
+    assert.equal(wptRepoPath('xpcshell.toml:netwerk/test/unit/test_a.js'), null);
+});
+
+test('the source file of a wpt test is its script when it is generated from one', () => {
+    const root = 'testing/web-platform/tests';
+    const cases: [string, string][] = [
+        ['dom/a.html', 'dom/a.html'],
+        ['dom/a.html?x=/y/z.html', 'dom/a.html'],
+        ['dom/a.html#frag', 'dom/a.html'],
+        ['fetch/a.any.html', 'fetch/a.any.js'],
+        ['fetch/a.any.worker.html?q', 'fetch/a.any.js'],
+        ['fetch/a.any.sharedworker.html', 'fetch/a.any.js'],
+        ['fetch/a.any.serviceworker.html', 'fetch/a.any.js'],
+        ['fetch/a.any.worker-module.html', 'fetch/a.any.js'],
+        ['fetch/a.https.any.shadowrealm-in-audioworklet.html', 'fetch/a.https.any.js'],
+        ['dom/a.window.html', 'dom/a.window.js'],
+        ['workers/a.worker.html', 'workers/a.worker.js'],
+        ['web-extensions/a.extension.html', 'web-extensions/a.extension.js'],
+        // Not generated from a script.
+        ['dom/company.html', 'dom/company.html'],
+        ['dom/window.html', 'dom/window.html'],
+        ['webdriver/tests/classic/get_title/get.py', 'webdriver/tests/classic/get_title/get.py'],
+        ['svg/a.svg', 'svg/a.svg'],
+    ];
+    for (const [test, source] of cases) {
+        assert.equal(wptSourceFile(`${root}/${test}`), `${root}/${source}`, test);
+    }
+    assert.equal(stripWptVariant('a/b.html?c#d'), 'a/b.html');
+    assert.equal(stripWptVariant('a/b.html'), 'a/b.html');
+});
+
+test('a wpt path splits into directory and name before its variant', () => {
+    const root = 'testing/web-platform/tests';
+    // [path, directory, name]
+    const cases: [string, string, string][] = [
+        [`${root}/dom/a.html`, `${root}/dom`, 'a.html'],
+        [`${root}/close-watcher/basic.html?dialog`, `${root}/close-watcher`, 'basic.html?dialog'],
+        [`${root}/x/foo.html?url=/common/bar.html`, `${root}/x`, 'foo.html?url=/common/bar.html'],
+        [`${root}/x/foo.html#/a/b`, `${root}/x`, 'foo.html#/a/b'],
+        [`${root}/x/foo.html?a=1&b=/c/#d/e`, `${root}/x`, 'foo.html?a=1&b=/c/#d/e'],
+        [
+            'testing/web-platform/mozilla/tests/dom/a.html?x=/y',
+            'testing/web-platform/mozilla/tests/dom',
+            'a.html?x=/y',
+        ],
+        // The other harnesses have no variant: the last `/` is the split.
+        ['dom/base/test/test_foo.html', 'dom/base/test', 'test_foo.html'],
+        ['dom/base/odd?dir/test_foo.js', 'dom/base/odd?dir', 'test_foo.js'],
+        ['test_foo.js', '', 'test_foo.js'],
+    ];
+    for (const [path, directory, name] of cases) {
+        assert.deepEqual(splitTestPath(path), { directory, name }, path);
+        assert.equal(directory === '' ? name : `${directory}/${name}`, path);
+    }
+});
+
+test('a wpt path is a test by having an extension, whichever it is', () => {
+    const root = 'testing/web-platform/tests';
+    for (const test of ['dom/a.html', 'dom/a.htm', 'svg/a.svg', 'x/a.py', 'x/a.xht', 'x/a.html?v=1', 'x/a.html?u=/b/']) {
+        assert.equal(isWptTestPath(`${root}/${test}`), true, test);
+        assert.equal(isTestFilePath(`${root}/${test}`), true, test);
+    }
+    for (const directory of ['dom', 'dom/nodes', 'css/css-values-4', '']) {
+        assert.equal(isWptTestPath(`${root}/${directory}`), false, directory);
+        assert.equal(isTestFilePath(`${root}/${directory}`), false, directory);
+    }
+    // Outside the wpt tree, an `.svg` or a `.py` is not a test.
+    assert.equal(isWptTestPath('dom/base/test/test_foo.html'), false);
+    assert.equal(isTestFilePath('dom/base/test/test_foo.html'), true);
+    assert.equal(isTestFilePath('layout/reftests/a.svg'), false);
+    assert.equal(isTestFilePath('testing/mozbase/a.py'), false);
+});
+
+test('normalizeTestPath takes a wpt marker id to the path of the files', () => {
+    assert.equal(
+        normalizeTestPath('/dom/nodes/Node-cloneNode.html?a'),
+        'testing/web-platform/tests/dom/nodes/Node-cloneNode.html?a'
+    );
+    assert.equal(
+        normalizeTestPath('/_mozilla/x/y.py'),
+        'testing/web-platform/mozilla/tests/x/y.py'
+    );
+    // A wpt "group" marker names a directory.
+    assert.equal(normalizeTestPath('/css/css-sizing'), null);
+    assert.equal(
+        normalizeTestPath('xpcshell.toml:netwerk/test/unit/test_a.js'),
+        'netwerk/test/unit/test_a.js'
+    );
+    assert.equal(normalizeTestPath('browser/base/content/test/browser.toml'), null);
+});
+
+test('wpt is the third harness, and the wpt tree decides before the filename', () => {
+    assert.deepEqual([...HARNESSES], ['xpcshell', 'mochitest', 'wpt']);
+    assert.deepEqual(HARNESSES.map((harness) => HARNESS_LABELS[harness]), ['XPCShell', 'Mochitest', 'WPT']);
+    assert.equal(isHarness('wpt'), true);
+    assert.equal(isHarness('reftest'), false);
+    // `.html` is mochitest and `.js` is xpcshell everywhere but here.
+    assert.equal(detectHarness('testing/web-platform/tests/dom/a.html'), 'wpt');
+    assert.equal(detectHarness('testing/web-platform/tests/fetch/a.any.js'), 'wpt');
+    assert.equal(detectHarness('testing/web-platform/mozilla/tests/dom/browser_a.js'), 'wpt');
+    assert.equal(detectHarness('/dom/a.html'), 'wpt');
+    assert.equal(detectHarness('testing/web-platform'), 'xpcshell');
+    assert.equal(detectHarness('dom/a.html'), 'mochitest');
+});
+
+test('a path filter in the wpt tree reads the wpt files, and only a directory above it adds them', () => {
+    const wpt = { required: 'wpt', speculative: [] };
+    assert.deepEqual(harnessesForPathFilter('testing/web-platform/tests/dom', undefined), wpt);
+    assert.deepEqual(harnessesForPathFilter('testing/web-platform/tests/dom/a.html', undefined), wpt);
+    assert.deepEqual(harnessesForPathFilter('testing/web-platform/', undefined), wpt);
+    // `testing/` holds tests of all three; `dom/` cannot hold a wpt one.
+    for (const above of ['testing', 'testing/', 'testing/web-platform']) {
+        assert.deepEqual(
+            harnessesForPathFilter(above, undefined),
+            { required: 'xpcshell', speculative: ['mochitest', 'wpt'] },
+            above
+        );
+    }
+    assert.deepEqual(harnessesForPathFilter('dom', undefined), {
+        required: 'xpcshell',
+        speculative: ['mochitest'],
+    });
+    assert.deepEqual(harnessesForPathFilter('testing/xpcshell', undefined), {
+        required: 'xpcshell',
+        speculative: ['mochitest'],
+    });
+    assert.deepEqual(harnessesForPathFilter('testing/web-platform/tests/dom', 'mochitest'), {
+        required: 'mochitest',
+        speculative: [],
+    });
+});
+
+test('a wpt run gets the status the generator gives it, scenario by scenario', () => {
+    for (const scenario of WPT_SCENARIOS) {
+        const unexpected: WptUnexpectedSubtest[] = [];
+        for (const subtest of scenario.subtests) {
+            const kind = classifyWptSubtestMarker(subtest.name, subtest.color, subtest.expected);
+            if (kind !== null) {
+                unexpected.push({
+                    status: subtest.name,
+                    subtest: subtest.subtest,
+                    message: subtest.message ?? null,
+                    isPass: kind === 'pass',
+                });
+            }
+        }
+        assert.deepEqual(
+            wptRunStatus(scenario.test, unexpected),
+            { status: scenario.status, message: scenario.message },
+            scenario.label
+        );
+    }
+});
+
+test('a wpt subtest marker is unexpected by its name or its colour, never by its status alone', () => {
+    assert.equal(classifyWptSubtestMarker('PASS', 'green'), null);
+    assert.equal(classifyWptSubtestMarker('KNOWN-FAIL', 'yellow'), null);
+    assert.equal(classifyWptSubtestMarker('KNOWN-NOTRUN', 'yellow'), null);
+    assert.equal(classifyWptSubtestMarker('KNOWN-INTERMITTENT-PASS', 'yellow'), null);
+    // A known intermittent failure is yellow too, and is a failure when a pass is expected.
+    assert.equal(classifyWptSubtestMarker('KNOWN-INTERMITTENT-FAIL', 'yellow', 'PASS'), 'failure');
+    assert.equal(classifyWptSubtestMarker('KNOWN-INTERMITTENT-TIMEOUT', 'yellow', 'PASS'), 'failure');
+    assert.equal(classifyWptSubtestMarker('KNOWN-INTERMITTENT-NOTRUN', 'yellow', 'TIMEOUT'), null);
+    assert.equal(classifyWptSubtestMarker('KNOWN-INTERMITTENT-PASS', 'yellow', 'FAIL'), null);
+    // Older markers do not say what was expected.
+    assert.equal(classifyWptSubtestMarker('KNOWN-INTERMITTENT-FAIL', 'yellow'), null);
+    // Anything else unexpected is orange.
+    assert.equal(classifyWptSubtestMarker('FAIL', 'orange'), 'failure');
+    assert.equal(classifyWptSubtestMarker('NOTRUN', 'orange'), 'failure');
+    assert.equal(classifyWptSubtestMarker('UNEXPECTED-PASS', 'orange'), 'pass');
+    // `ERROR` is red whether expected or not: the test marker's count decides.
+    assert.equal(classifyWptSubtestMarker('ERROR', 'red'), null);
+    assert.equal(classifyWptSubtestMarker('FAIL', undefined), null);
+
+    assert.equal(
+        wptSubtestMessage({ status: 'FAIL', subtest: 'a subtest', message: 'assert_true', isPass: false }),
+        'FAIL | a subtest - assert_true'
+    );
+    assert.equal(
+        wptSubtestMessage({ status: 'NOTRUN', subtest: 'a subtest', message: null, isPass: false }),
+        'NOTRUN | a subtest'
+    );
 });

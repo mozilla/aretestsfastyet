@@ -131,14 +131,22 @@
  * fallback, the unique-substring auto-redirect — is reproduced, and the
  * reasoning for each lives next to the code that does it in
  * `site/test-view.ts`.
+ *
+ * A web-platform-test also gets a `Subtests` section, which is not a port:
+ * `test/test-page.test.ts` covers it.
  */
 
 import { bucketFileSuffix, bucketIndexForPath, decodeBucket } from '../lib/formats/buckets.ts';
 import type { BucketFile } from '../lib/formats/buckets.ts';
 import type { DecodedTimingFile } from '../lib/formats/decode.ts';
+import {
+    type SubtestsFile,
+    decodeSubtests,
+    subtestsBucketFileName,
+} from '../lib/formats/subtests.ts';
 import { parseTaskId } from '../lib/formats/tables.ts';
-import { resourceUsageProfileUrl } from '../lib/links.ts';
-import { detectHarness } from '../lib/model/harness.ts';
+import { resourceUsageProfileUrl, searchfoxUrl } from '../lib/links.ts';
+import { HARNESSES, detectHarness } from '../lib/model/harness.ts';
 import { classifyStatus } from '../lib/model/status.ts';
 import { displaySkipMessage } from '../lib/model/skips.ts';
 import {
@@ -166,13 +174,19 @@ import {
     type Outcomes,
     type RuntimePanel,
     type Selection,
+    type SubtestRow,
+    type SubtestStatusCount,
+    type SubtestsView,
     type SummaryStat,
     type TestView,
     CRASH_NO_SIGNATURE,
     FAILURE_NO_MESSAGE,
+    SUBTESTS_SUMMARY_SEPARATOR,
+    SUBTEST_ROWS_PER_PAGE,
     buildDayCellMatrix,
     buildIssueAttribution,
     buildRuntimePanel,
+    buildSubtestsView,
     buildTestView,
     cellKey,
     collectDurations,
@@ -185,7 +199,11 @@ import {
     formatCount,
     issueFilterNotice,
     runtimeTitleFor,
+    subtestDetail,
+    testNameOf,
+    testPathSegments,
     variantLabel,
+    visibleSubtests,
 } from './test-view.ts';
 
 // --- the shared scripts, as they are ------------------------------------
@@ -343,6 +361,8 @@ interface PageState {
     issueRows: RenderedIssue[];
     /** Cache keys, so a mouse move that changes nothing does no work. */
     lastRuntimeKey: string;
+    /** The Subtests view: `null` until its file arrives, or when there is no section. */
+    subtests: SubtestsView | null;
 }
 
 /** One rendered job-table cell and the elements a filter touches. */
@@ -406,8 +426,7 @@ function renderHeader(
     harness: string,
     component: string | Node | null
 ): HTMLElement {
-    const testName = testPath.split('/').pop() ?? testPath;
-    const heading = el('h1', { text: testName });
+    const heading = el('h1', { text: testNameOf(testPath) });
     heading.append(
         el('span', { class: `harness-badge harness-${harness}`, text: harness })
     );
@@ -471,27 +490,24 @@ function renderHeader(
  * double-click selects one segment rather than the whole line.
  */
 function pathSegments(testPath: string): Node[] {
-    const parts = testPath.split('/');
-    const fileName = parts.pop() ?? testPath;
+    const { folders, name } = testPathSegments(testPath);
     const nodes: Node[] = [];
-    let prefix = '';
-    for (const part of parts) {
-        prefix = prefix === '' ? part : `${prefix}/${part}`;
+    for (const folder of folders) {
         const link = el('a', {
             class: 'path-segment',
-            text: part,
-            title: `Tests in ${prefix}`,
-            href: folderPageUrl(prefix),
+            text: folder.name,
+            title: `Tests in ${folder.path}`,
+            href: folderPageUrl(folder.path),
         });
         nodes.push(link, el('span', { class: 'path-sep', text: '/' }));
     }
     nodes.push(
         el('a', {
             class: 'path-file',
-            text: fileName,
+            text: name,
             title: 'Open in Searchfox',
             attrs: {
-                href: `https://searchfox.org/mozilla-central/source/${testPath}`,
+                href: searchfoxUrl(testPath),
                 target: '_blank',
             },
         })
@@ -1145,6 +1161,23 @@ function issueMatchesEntryForRuns(
     }
 }
 
+/** The profiler link to a task's resource-usage profile, on the markers of this test. */
+function profileLinkOf(
+    testPath: string,
+    rawTaskId: string,
+    jobName: string,
+    date: string | null
+): string {
+    const { taskId, retryId } = parseTaskId(rawTaskId);
+    const profileUrl = resourceUsageProfileUrl(taskId, retryId, date);
+    const profileName = `${jobName} (${rawTaskId})`;
+    return (
+        `${getProfilerOrigin()}/from-url/${encodeURIComponent(profileUrl)}` +
+        `?profileName=${encodeURIComponent(profileName)}` +
+        `&markerSearch=${encodeURIComponent(testNameOf(testPath))}`
+    );
+}
+
 /**
  * The links for one run.
  *
@@ -1167,13 +1200,7 @@ function buildRunInfo(
     const { taskId, retryId } = parseTaskId(rawTaskId);
 
     const date = dateOfDay(s.raw.metadata.startTime, day);
-    const profileUrl = resourceUsageProfileUrl(taskId, retryId, date);
-    const profileName = `${jobName} (${rawTaskId})`;
-    const testName = s.testPath.split('/').pop() ?? s.testPath;
-    const profileLink =
-        `${getProfilerOrigin()}/from-url/${encodeURIComponent(profileUrl)}` +
-        `?profileName=${encodeURIComponent(profileName)}` +
-        `&markerSearch=${encodeURIComponent(testName)}`;
+    const profileLink = profileLinkOf(s.testPath, rawTaskId, jobName, date);
 
     let crashLink: string | null = null;
     if (issueType === 'CRASH' && minidump !== null && minidump !== undefined) {
@@ -1191,6 +1218,303 @@ function buildRunInfo(
         crashLink,
         treeherderLink: getTreeherderJobUrl({ taskId, retryId: String(retryId) }, s.raw),
     };
+}
+
+// --- subtests ------------------------------------------------------------
+//
+// web-platform-tests only. `site/test-view.ts` decides; this fetches and draws.
+
+/** The Subtests view of a web-platform-test, or `null`: the page is whole without it. */
+async function loadSubtests(testPath: string): Promise<SubtestsView | null> {
+    const filename = subtestsBucketFileName(bucketFileSuffix(bucketIndexForPath(testPath)));
+    try {
+        const response = await fetchData(filename);
+        // A snapshot can have the timing files without the subtests files.
+        if (!response.ok) {
+            return null;
+        }
+        const raw = (await response.json()) as SubtestsFile;
+        const { metadata } = raw;
+        return buildSubtestsView(
+            decodeSubtests(raw).subtestsOfTest(testPath),
+            'startDate' in metadata
+                ? { days: metadata.days, startDate: metadata.startDate, endDate: metadata.endDate }
+                : null
+        );
+    } catch (error) {
+        console.warn(`Could not read ${filename}, so no subtests are shown:`, error);
+        return null;
+    }
+}
+
+/** Adds the Subtests section after `render`, and last, so its arrival moves nothing. */
+async function showSubtests(testPath: string): Promise<void> {
+    const view = await loadSubtests(testPath);
+    // Still this test's `state`: nothing replaces it once `render` has set it.
+    if (view === null || state === null) {
+        return;
+    }
+    state.subtests = view;
+    requireElement('content').append(renderSubtests(view, testPath));
+}
+
+function renderSubtests(view: SubtestsView, testPath: string): HTMLElement {
+    const heading = el('h2', { text: view.dateInfo === '' ? 'Subtests' : 'Subtests ' });
+    if (view.dateInfo !== '') {
+        heading.append(
+            el('span', {
+                text: `(${view.dateInfo})`,
+                attrs: { style: 'font-size: 12px; color: #888; font-weight: normal;' },
+            })
+        );
+    }
+
+    const summary = el('div', { class: 'subtests-summary' });
+    for (const [index, part] of view.summary.parts.entries()) {
+        if (index > 0) {
+            summary.append(SUBTESTS_SUMMARY_SEPARATOR);
+        }
+        summary.append(el('span', { class: part.cssClass, text: part.text }));
+    }
+
+    const headRow = el('tr', {
+        children: [
+            el('th', { text: 'Subtest' }),
+            el('th', { class: 'num', text: 'Passed' }),
+            el('th', { text: 'Expected failures' }),
+            el('th', { text: 'Unexpected results' }),
+        ],
+    });
+    const body = el('tbody');
+    const table = el('table', {
+        class: 'platform-table subtests-table',
+        children: [el('thead', { children: [headRow] }), body],
+    });
+
+    const more = el('button', { class: 'subtests-more', attrs: { type: 'button' } });
+    const count = el('span', { class: 'subtests-count' });
+    const footer = el('div', { class: 'subtests-footer', children: [more, count] });
+
+    let filter = '';
+    let limit = SUBTEST_ROWS_PER_PAGE;
+    let drawn = 0;
+    // "More" appends, so that an open row stays open. A filter change starts over.
+    const draw = (startOver: boolean): void => {
+        const visible = visibleSubtests(view, { filter, limit });
+        if (startOver) {
+            body.replaceChildren();
+            drawn = 0;
+        }
+        for (const row of visible.rows.slice(drawn)) {
+            body.append(renderSubtestRow(view, row, testPath));
+        }
+        drawn = visible.rows.length;
+        count.textContent = visible.countText;
+        more.textContent = visible.moreLabel ?? '';
+        more.style.display = visible.moreLabel === null ? 'none' : '';
+        footer.style.display = visible.moreLabel === null && visible.countText === '' ? 'none' : '';
+    };
+    more.addEventListener('click', () => {
+        limit += SUBTEST_ROWS_PER_PAGE;
+        draw(false);
+    });
+
+    const section = el('div', {
+        class: 'section',
+        id: 'subtests-section',
+        children: [heading, summary],
+    });
+
+    // With every row drawn, the browser's find-in-page is filter enough.
+    if (view.rows.length > SUBTEST_ROWS_PER_PAGE) {
+        const input = el('input', {
+            class: 'subtests-filter',
+            id: 'subtests-filter',
+            attrs: {
+                type: 'search',
+                autocomplete: 'off',
+                placeholder: 'Filter subtests by name',
+                'aria-label': 'Filter subtests by name',
+            },
+        });
+        input.addEventListener('input', () => {
+            filter = input.value;
+            limit = SUBTEST_ROWS_PER_PAGE;
+            draw(true);
+        });
+        section.append(input);
+    }
+
+    section.append(el('div', { class: 'subtests-table-wrap', children: [table] }), footer);
+    draw(true);
+    return section;
+}
+
+/** The statuses of one cell: a count and a badge each. */
+function renderSubtestStatuses(statuses: readonly SubtestStatusCount[]): HTMLElement[] {
+    return statuses.map((entry) =>
+        el('span', {
+            class: 'subtest-status',
+            children: [
+                el('span', { class: 'subtest-status-count', text: formatCount(entry.count) }),
+                el('span', { class: `issue-badge ${entry.badgeClass}`, text: entry.status }),
+            ],
+        })
+    );
+}
+
+function renderSubtestRow(view: SubtestsView, row: SubtestRow, testPath: string): HTMLElement {
+    const name = el('td', { class: 'subtest-name' });
+    const tr = el('tr', {
+        class: `subtest-row subtest-${row.group}`,
+        children: [
+            name,
+            el('td', {
+                class: `num subtest-passes${row.passCount === 0 ? ' zero' : ''}`,
+                text: formatCount(row.passCount),
+            }),
+            el('td', {
+                class: 'subtest-expected-cell',
+                children: renderSubtestStatuses(row.expected),
+            }),
+            el('td', {
+                class: 'subtest-unexpected-cell',
+                children: renderSubtestStatuses(row.unexpected),
+            }),
+        ],
+    });
+    tr.dataset['subtestIndex'] = String(row.index);
+
+    if (!row.expandable) {
+        name.append(el('span', { class: 'subtest-toggle-spacer' }), row.name);
+        return tr;
+    }
+
+    const toggle = el('button', {
+        class: 'subtest-toggle',
+        text: '▸',
+        attrs: { type: 'button', 'aria-expanded': 'false', 'aria-label': `Results of ${row.name}` },
+    });
+    name.append(toggle, row.name);
+    tr.classList.add('expandable');
+
+    let detail: HTMLElement | null = null;
+    tr.addEventListener('click', (event) => {
+        // Selecting a subtest name to copy it must not toggle the row.
+        if (event.target !== toggle && (window.getSelection()?.toString() ?? '') !== '') {
+            return;
+        }
+        // Built on the first click: most rows are never opened.
+        if (detail === null) {
+            detail = renderSubtestDetail(view, row, testPath);
+            tr.after(detail);
+        } else {
+            detail.style.display = detail.style.display === 'none' ? '' : 'none';
+        }
+        const open = detail.style.display !== 'none';
+        toggle.textContent = open ? '▾' : '▸';
+        toggle.setAttribute('aria-expanded', String(open));
+    });
+    return tr;
+}
+
+/** What a row opens to, with the links a failing run has under Issue Details. */
+function renderSubtestDetail(view: SubtestsView, row: SubtestRow, testPath: string): HTMLElement {
+    const { unexpected, expected } = subtestDetail(view, row.index);
+    const cell = el('td', { attrs: { colspan: '4' } });
+
+    if (unexpected.length > 0) {
+        const table = el('table');
+        for (const result of unexpected) {
+            const links: Node[] = [
+                el('a', {
+                    text: 'Profile',
+                    attrs: {
+                        href: profileLinkOf(testPath, result.taskRun, result.jobName, result.date),
+                        target: '_blank',
+                    },
+                }),
+            ];
+            if (result.treeherderUrl !== null) {
+                links.push(
+                    document.createTextNode(' '),
+                    el('a', { text: 'Job', attrs: { href: result.treeherderUrl, target: '_blank' } })
+                );
+            }
+            const viewCell = el('td', { class: 'view-links' });
+            viewCell.append(document.createTextNode('View: '), ...links);
+            table.append(
+                el('tr', {
+                    children: [
+                        el('td', { class: 'run-date', text: result.dateLabel }),
+                        el('td', {
+                            children: [
+                                el('span', {
+                                    class: `issue-badge ${result.badgeClass}`,
+                                    text: result.status,
+                                }),
+                            ],
+                        }),
+                        el('td', {
+                            class: 'run-job-name',
+                            children: [
+                                el('a', {
+                                    text: result.jobName,
+                                    attrs: {
+                                        href: taskPageUrl(result.taskId, result.retryId, testPath),
+                                        target: '_blank',
+                                    },
+                                }),
+                            ],
+                        }),
+                        el('td', { class: 'subtest-message', text: result.message ?? '' }),
+                        viewCell,
+                    ],
+                })
+            );
+        }
+        cell.append(
+            el('h4', { text: 'Unexpected results' }),
+            el('div', { class: 'issue-runs', children: [table] })
+        );
+    }
+
+    if (expected.length > 0) {
+        cell.append(el('h4', { text: 'Expected failures' }));
+    }
+    for (const failure of expected) {
+        const table = el('table');
+        for (const job of failure.jobs) {
+            table.append(
+                el('tr', {
+                    children: [
+                        el('td', { class: 'num', text: formatCount(job.count) }),
+                        el('td', { class: 'run-job-name', text: job.jobName }),
+                    ],
+                })
+            );
+        }
+        cell.append(
+            el('div', {
+                class: 'issue-runs',
+                children: [
+                    el('div', {
+                        class: 'subtest-expected-status',
+                        children: [
+                            el('span', {
+                                class: `issue-badge ${failure.badgeClass}`,
+                                text: failure.status,
+                            }),
+                            failure.countText,
+                        ],
+                    }),
+                    table,
+                ],
+            })
+        );
+    }
+
+    return el('tr', { class: 'subtest-detail', children: [cell] });
 }
 
 // --- charts --------------------------------------------------------------
@@ -1933,6 +2257,7 @@ function applyChartHighlight(
             : s.matrix.map((dayData) => {
                   const totals: Outcomes = {
                       passes: 0,
+                      expectedFails: 0,
                       failures: 0,
                       timeouts: 0,
                       crashes: 0,
@@ -2167,17 +2492,19 @@ function updateRuntimeForSelection(s: PageState): void {
 // --- the search form -----------------------------------------------------
 
 /**
- * The union of every test path in both harnesses' 21-day aggregates.
+ * The union of every test path in every harness's 21-day aggregate.
  *
- * `loadAllTestPaths` (`old/test.html:2814`). Both files, because the autocomplete
+ * `loadAllTestPaths` (`old/test.html:2814`). Every file, because the autocomplete
  * should find a test whichever harness runs it — and because `detectHarness`
  * cannot be trusted to have guessed right, which is the same reason the loader
  * has a fallback.
  */
 async function loadAllTestPaths(): Promise<string[]> {
     const files = await Promise.all(
-        ['xpcshell-issues.json', 'mochitest-issues.json'].map((name) =>
-            fetchData(name).then((r) => (r.ok ? (r.json() as Promise<TestPathsSource>) : null))
+        HARNESSES.map((harness) =>
+            fetchData(`${harness}-issues.json`).then((r) =>
+                r.ok ? (r.json() as Promise<TestPathsSource>) : null
+            )
         )
     );
     return collectTestPaths(files);
@@ -2484,8 +2811,7 @@ async function loadTestData(): Promise<void> {
     }
 
     const harness = detectHarness(testPath);
-    const testName = testPath.split('/').pop() ?? testPath;
-    document.title = `${testName} - Test Info`;
+    document.title = `${testNameOf(testPath)} - Test Info`;
 
     // The header, drawn from the URL before anything is fetched.
     const contentEl = requireElement('content');
@@ -2546,6 +2872,9 @@ async function loadTestData(): Promise<void> {
                 resolution.identity.component,
                 resolution.harness
             );
+            if (resolution.harness === 'wpt') {
+                await showSubtests(resolution.testPath);
+            }
             return;
         }
 
@@ -2639,6 +2968,7 @@ function render(
         skipRateChart: null,
         issueRows: [],
         lastRuntimeKey: 'overall',
+        subtests: null,
     };
     state = s;
 
@@ -2799,10 +3129,16 @@ declare global {
         __testState?: () => PageState | null;
     }
 }
-window.__testState = () => state;
 
-void loadTestData().then(() => {
-    if (state !== null) {
-        window.__testView = state.view;
+/** Starts the page. `site/test-main.ts` calls it, so that a test can import this file. */
+export async function start(): Promise<void> {
+    // A second start in one process must not report the test of the first.
+    state = null;
+    window.__testState = () => state;
+    await loadTestData();
+    // Through the accessor: the compiler cannot see `loadTestData` assign `state`.
+    const view = window.__testState()?.view;
+    if (view !== undefined) {
+        window.__testView = view;
     }
-});
+}

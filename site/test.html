@@ -113,6 +113,11 @@
             color: #7b1fa2;
         }
 
+        .harness-wpt {
+            background-color: #e0f2f1;
+            color: #00695c;
+        }
+
         .summary-stats {
             display: flex;
             gap: 20px;
@@ -318,6 +323,7 @@
         }
 
         .badge-pass { background-color: #28a745; color: #fff; }
+        .badge-expected-fail { background-color: #4f7f5a; color: #fff; }
         .badge-skip { background-color: #6c757d; color: #fff; }
         .badge-fail { background-color: #ff8c00; color: #fff; }
         .badge-crash { background-color: #dc3545; color: #fff; }
@@ -534,6 +540,156 @@
             margin-left: 12px;
         }
 
+        /* Subtests (web-platform-tests). An unexpected result must stand out
+           from a pass and from an expected failure. */
+        .subtests-summary {
+            font-size: 13px;
+            color: #333;
+            margin-bottom: 12px;
+        }
+
+        .subtests-summary .unexpected { color: #b35000; font-weight: bold; }
+        .subtests-summary .expected { color: #666; }
+        .subtests-summary .pass { color: #1e7e34; }
+        .subtests-summary .zero { color: #767676; }
+
+        .subtests-filter {
+            display: block;
+            width: 100%;
+            max-width: 420px;
+            box-sizing: border-box;
+            padding: 6px 10px;
+            margin-bottom: 12px;
+            font-family: monospace;
+            font-size: 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .subtests-table-wrap {
+            overflow-x: auto;
+        }
+
+        .subtests-table td {
+            vertical-align: top;
+        }
+
+        .subtest-name {
+            font-family: monospace;
+            font-size: 12px;
+            word-break: break-word;
+        }
+
+        .subtest-row.expandable {
+            cursor: pointer;
+        }
+
+        .subtest-row.expandable:hover {
+            background-color: #e9ecef;
+        }
+
+        .subtest-row.subtest-unexpected > td:first-child {
+            box-shadow: inset 3px 0 0 #ff8c00;
+        }
+
+        .subtest-toggle,
+        .subtest-toggle-spacer {
+            display: inline-block;
+            width: 14px;
+            margin-right: 6px;
+        }
+
+        .subtest-toggle {
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: 11px;
+            color: #666;
+            cursor: pointer;
+        }
+
+        .subtests-table td.subtest-passes { color: #1e7e34; }
+        .subtests-table td.subtest-passes.zero { color: #767676; }
+
+        .subtest-status {
+            display: block;
+            white-space: nowrap;
+        }
+
+        .subtest-status + .subtest-status {
+            margin-top: 3px;
+        }
+
+        .subtest-status-count {
+            display: inline-block;
+            min-width: 24px;
+            margin-right: 6px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            color: #666;
+        }
+
+        .subtest-unexpected-cell .subtest-status-count {
+            font-weight: bold;
+            color: #333;
+        }
+
+        .badge-expected { background-color: #e9ecef; color: #495057; }
+
+        .subtest-detail > td {
+            background: #fafafa;
+            padding-left: 32px;
+        }
+
+        .subtest-detail h4 {
+            margin: 4px 0 6px 0;
+            font-size: 12px;
+            color: #333;
+        }
+
+        /* `.platform-table`'s cell rules reach every `td` below it. */
+        .subtest-detail .issue-runs {
+            margin-left: 0;
+        }
+
+        .subtest-detail .issue-runs td {
+            padding-left: 0;
+            padding-right: 12px;
+            border-bottom: none;
+            vertical-align: baseline;
+        }
+
+        .subtest-expected-status {
+            margin-bottom: 2px;
+            color: #666;
+        }
+
+        .subtest-message {
+            font-family: monospace;
+            word-break: break-word;
+        }
+
+        .subtests-footer {
+            margin-top: 12px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .subtests-more {
+            background: none;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px 12px;
+            margin-right: 10px;
+            font-size: 12px;
+            color: #007bff;
+            cursor: pointer;
+        }
+
+        .subtests-more:hover {
+            background-color: #e9ecef;
+        }
+
         /* Phones. The job table and the runtime panel side by side leave the
            table a few pixels wide, and it is the most important thing on the
            page, so the panel moves under it, collapsed until its heading is
@@ -617,6 +773,6 @@
         <div id="content" style="display: none;"></div>
     </div>
 
-    <script type="module" src="./test.ts"></script>
+    <script type="module" src="./test-main.ts"></script>
 </body>
 </html>

@@ -524,19 +524,51 @@ function listOption(args, name) {
   return Array.isArray(value) ? value : [];
 }
 
+// lib/model/wpt-path.ts
+var WPT_TESTS_ROOT = "testing/web-platform/tests";
+var WPT_MOZILLA_TESTS_ROOT = "testing/web-platform/mozilla/tests";
+var WPT_ROOT = "testing/web-platform/";
+var MOZILLA_URL_PREFIX = "/_mozilla/";
+function isWptPath(path) {
+  return path.startsWith(WPT_ROOT);
+}
+function wptRepoPath(id) {
+  if (!id.startsWith("/")) {
+    return null;
+  }
+  if (id.startsWith(MOZILLA_URL_PREFIX)) {
+    return `${WPT_MOZILLA_TESTS_ROOT}/${id.slice(MOZILLA_URL_PREFIX.length)}`;
+  }
+  return `${WPT_TESTS_ROOT}${id}`;
+}
+function stripWptVariant(path) {
+  const variantStart = path.search(/[?#]/);
+  return variantStart === -1 ? path : path.slice(0, variantStart);
+}
+function isWptTestPath(path) {
+  if (!isWptPath(path)) {
+    return false;
+  }
+  const fileName = stripWptVariant(path).split("/").pop() ?? "";
+  return /\.[A-Za-z0-9]+$/.test(fileName);
+}
+
 // lib/model/test-path.ts
 var MANIFEST_PREFIX = /^[^:]+\.(?:toml|ini):/;
 function stripManifestPrefix(id) {
   return id.replace(MANIFEST_PREFIX, "").replace(/\s+\(finished\)$/, "").trim();
 }
 function isTestFilePath(path) {
+  if (isWptPath(path)) {
+    return isWptTestPath(path);
+  }
   return /\.(js|html|xhtml)$/.test(path);
 }
 function normalizeTestPath(id) {
   if (id === null || id === void 0 || id === "") {
     return null;
   }
-  const path = stripManifestPrefix(id);
+  const path = wptRepoPath(id) ?? stripManifestPrefix(id);
   return isTestFilePath(path) ? path : null;
 }
 function describeTestPathDrop(id) {
@@ -544,7 +576,14 @@ function describeTestPathDrop(id) {
 }
 
 // lib/model/harness.ts
+var HARNESSES = ["xpcshell", "mochitest", "wpt"];
+function isHarness(value) {
+  return HARNESSES.includes(value);
+}
 function detectHarness(testPath) {
+  if (isWptPath(testPath) || wptRepoPath(testPath) !== null) {
+    return "wpt";
+  }
   const fileName = testPath.split("/").pop() ?? testPath;
   if (fileName.endsWith(".html") || fileName.endsWith(".xhtml")) {
     return "mochitest";
@@ -561,10 +600,20 @@ function harnessesForPathFilter(pathPrefix, explicit) {
   if (explicit !== void 0) {
     return { required: explicit, speculative: [] };
   }
-  if (pathPrefix === void 0 || pathPrefix === "" || !isDirectoryPath(pathPrefix)) {
+  if (pathPrefix === void 0 || pathPrefix === "") {
     return { required: "xpcshell", speculative: [] };
   }
-  return { required: "xpcshell", speculative: ["mochitest"] };
+  if (isWptPath(pathPrefix)) {
+    return { required: "wpt", speculative: [] };
+  }
+  if (!isDirectoryPath(pathPrefix)) {
+    return { required: "xpcshell", speculative: [] };
+  }
+  const containsWptTree = WPT_ROOT.startsWith(pathPrefix.replace(/\/*$/, "/"));
+  return {
+    required: "xpcshell",
+    speculative: containsWptTree ? ["mochitest", "wpt"] : ["mochitest"]
+  };
 }
 function describeSearchedFiles(files, formatCount) {
   return files.map((file) => `${formatCount(file.testCount)} tests in ${file.harness}-issues.json`).join(" and ");
@@ -578,7 +627,7 @@ function isAgentCaller(env) {
 var GLOBAL_OPTION_SPECS = {
   harness: {
     type: "string",
-    placeholder: "<xpcshell|mochitest>",
+    placeholder: "<xpcshell|mochitest|wpt>",
     describe: "Which harness\u2019s data to read. Inferred from the test path by default."
   },
   json: { type: "boolean", describe: "Emit JSON instead of text." },
@@ -626,7 +675,7 @@ var GLOBAL_OPTION_SPECS = {
   },
   help: { type: "boolean", describe: "Show this help." }
 };
-function readGlobalOptions(args, env = {}, extraHarnessValues = []) {
+function readGlobalOptions(args, env = {}, harnessValues = HARNESSES) {
   const wantsJson = boolOption(args, "json");
   const wantsMarkdown = boolOption(args, "markdown");
   if (wantsJson && wantsMarkdown) {
@@ -636,7 +685,7 @@ function readGlobalOptions(args, env = {}, extraHarnessValues = []) {
     );
   }
   const harnessValue = stringOption(args, "harness");
-  const allowed = ["xpcshell", "mochitest", ...extraHarnessValues];
+  const allowed = harnessValues;
   if (harnessValue !== void 0 && !allowed.includes(harnessValue)) {
     throw usageError(
       `--harness expects ${allowed.slice(0, -1).join(", ")} or ${allowed[allowed.length - 1]}, got "${harnessValue}"`
@@ -664,7 +713,7 @@ function readGlobalOptions(args, env = {}, extraHarnessValues = []) {
     // Narrow on purpose: a widened value is not a harness any other
     // command understands, so it stays out of the shared field and the
     // command reads it from the raw argument.
-    harness: harnessValue === "xpcshell" || harnessValue === "mochitest" ? harnessValue : void 0,
+    harness: harnessValue !== void 0 && isHarness(harnessValue) ? harnessValue : void 0,
     limit: numberOption(args, "limit"),
     config: listOption(args, "config"),
     excludeConfig: listOption(args, "exclude-config"),
@@ -2418,401 +2467,6 @@ function renderMarkdown2(result, allThreads) {
   return joinLines(lines);
 }
 
-// cli/commands/dates.ts
-async function runDates(context, args) {
-  if (args.positionals.length > 0) {
-    throw usageError(`dates takes no arguments, got "${args.positionals[0]}"`);
-  }
-  const harnesses = context.globals.harness !== void 0 ? [context.globals.harness] : ["xpcshell", "mochitest"];
-  const result = { harnesses: [] };
-  for (const harness of harnesses) {
-    progress(context, `Reading ${harness} index.json\u2026`);
-    const file = await fetchJson(context.source, {
-      index: timingsIndex(harness),
-      filename: "index.json"
-    });
-    const dates = [...file.dates];
-    result.harnesses.push({
-      harness,
-      dates,
-      // `index.json` is newest first, so the ends are the other way round
-      // from `stats.json`. Naming them rather than indexing at the call
-      // site is what stops that from being got wrong twice.
-      newest: dates[0] ?? null,
-      oldest: dates[dates.length - 1] ?? null,
-      dayCount: dates.length
-    });
-  }
-  if (context.globals.format === "json") {
-    emit(context, toJson(result));
-    return;
-  }
-  emit(
-    context,
-    context.globals.format === "markdown" ? renderMarkdown3(result) : renderText3(result)
-  );
-}
-function renderText3(result) {
-  const lines = [];
-  for (const entry of result.harnesses) {
-    if (entry.dayCount === 0) {
-      lines.push(`${entry.harness}: no dates published`);
-      lines.push("");
-      continue;
-    }
-    lines.push(
-      `${entry.harness}: ${entry.dayCount} dates, ${dateWithWeekday(entry.oldest)} \u2026 ${dateWithWeekday(entry.newest)}`
-    );
-    for (const date of entry.dates) {
-      lines.push(`  ${dateWithWeekday(date)}${isWeekend(date) ? "  \u2014 weekend" : ""}`);
-    }
-    lines.push("");
-  }
-  return joinLines(lines);
-}
-function renderMarkdown3(result) {
-  const lines = [];
-  for (const entry of result.harnesses) {
-    lines.push(heading(entry.harness));
-    lines.push("");
-    if (entry.dayCount === 0) {
-      lines.push("No dates published.");
-      lines.push("");
-      continue;
-    }
-    lines.push(
-      ...table2(
-        [{ header: "Date" }, { header: "Weekday" }, { header: "Note" }],
-        entry.dates.map((date) => [
-          date,
-          dateWithWeekday(date).replace(`${date} `, "").replace(/[()]/g, ""),
-          isWeekend(date) ? "weekend" : ""
-        ])
-      )
-    );
-    lines.push("");
-  }
-  return joinLines(lines);
-}
-
-// lib/formats/delta.ts
-function forEachDelta(deltas, base, fn) {
-  let value = base;
-  for (let i = 0; i < deltas.length; i++) {
-    value += deltas[i];
-    fn(value, i);
-  }
-}
-
-// lib/formats/errors.ts
-function decodeErrors(file) {
-  const { tables, messages, markers, testInfo, taskInfo, metadata } = file;
-  const groupCount = markers.testIds.length;
-  if (markers.messageIds.length !== groupCount || markers.taskIdIds.length !== groupCount || markers.counts.length !== groupCount) {
-    throw new Error(
-      `markers arrays are not parallel: testIds ${groupCount}, messageIds ${markers.messageIds.length}, taskIdIds ${markers.taskIdIds.length}, counts ${markers.counts.length}`
-    );
-  }
-  return {
-    date: metadata.date,
-    generatedAt: metadata.generatedAt,
-    jobCount: metadata.jobCount,
-    processedJobCount: metadata.processedJobCount,
-    invalidJobCount: metadata.invalidJobCount,
-    markerCounts: metadata.markerCounts,
-    markerNames: tables.markerNames,
-    groupCount,
-    messageCount: messages.markerNameIds.length,
-    testCount: testInfo.testPathIds.length,
-    messageAt(messageId) {
-      const kindId = messages.markerNameIds[messageId];
-      if (kindId === void 0) {
-        throw new Error(
-          `index ${messageId} out of range for messages (length ${messages.markerNameIds.length})`
-        );
-      }
-      return {
-        messageId,
-        kind: lookup(tables.markerNames, kindId, "tables.markerNames"),
-        text: lookupOptional(
-          tables.messageTexts,
-          messages.textIds[messageId],
-          "tables.messageTexts"
-        ),
-        file: lookupOptional(tables.files, messages.fileIds[messageId], "tables.files"),
-        line: messages.lines[messageId] ?? null,
-        component: lookupOptional(
-          tables.components,
-          messages.componentIds[messageId],
-          "tables.components"
-        )
-      };
-    },
-    testPathAt(testId) {
-      const pathId = testInfo.testPathIds[testId];
-      const nameId = testInfo.testNameIds[testId];
-      if (pathId === void 0 || nameId === void 0) {
-        throw new Error(
-          `index ${testId} out of range for testInfo (length ${testInfo.testPathIds.length})`
-        );
-      }
-      return joinTestPath(
-        lookup(tables.testPaths, pathId, "tables.testPaths"),
-        lookup(tables.testNames, nameId, "tables.testNames")
-      );
-    },
-    testComponentAt(testId) {
-      return lookupOptional(
-        tables.components,
-        testInfo.componentIds?.[testId],
-        "tables.components"
-      );
-    },
-    *groups() {
-      for (let groupId = 0; groupId < groupCount; groupId++) {
-        const counts = markers.counts[groupId];
-        let totalCount = 0;
-        for (let i = 0; i < counts.length; i++) {
-          totalCount += counts[i];
-        }
-        yield {
-          groupId,
-          testId: markers.testIds[groupId],
-          messageId: markers.messageIds[groupId],
-          totalCount,
-          // The task IDs are delta-encoded but their *count* is just
-          // the array length, so the ranking path never decodes them.
-          taskCount: markers.taskIdIds[groupId].length
-        };
-      }
-    },
-    taskIdsOfGroup(groupId) {
-      const deltas = markers.taskIdIds[groupId];
-      if (deltas === void 0) {
-        throw new Error(
-          `index ${groupId} out of range for markers (length ${groupCount})`
-        );
-      }
-      const out = [];
-      forEachDelta(deltas, 0, (taskIdIndex) => {
-        out.push(lookup(tables.taskIds, taskIdIndex, "tables.taskIds"));
-      });
-      return out;
-    },
-    jobNameOfTaskIndex(taskIdIndex) {
-      const jobNameId = taskInfo.jobNameIds[taskIdIndex];
-      if (jobNameId === void 0) {
-        throw new Error(
-          `index ${taskIdIndex} out of range for taskInfo.jobNameIds (length ${taskInfo.jobNameIds.length})`
-        );
-      }
-      return lookup(tables.jobNames, jobNameId, "tables.jobNames");
-    }
-  };
-}
-
-// lib/query/error-ranking.ts
-var DEFAULT_MAX_TESTS = 20;
-var DEFAULT_MAX_GROUP_IDS = 50;
-function rankErrors(file, options = {}) {
-  const grouping = options.grouping ?? "location";
-  const maxTests = options.maxTestsPerGroup ?? DEFAULT_MAX_TESTS;
-  const maxGroupIds = options.maxGroupIds ?? DEFAULT_MAX_GROUP_IDS;
-  const messageNeedle = options.message?.toLowerCase();
-  const componentNeedle = options.component?.toLowerCase();
-  const fileNeedle = options.file?.toLowerCase();
-  const messageCache = /* @__PURE__ */ new Map();
-  const messageOf = (messageId) => {
-    let decoded = messageCache.get(messageId);
-    if (decoded === void 0) {
-      decoded = file.messageAt(messageId);
-      messageCache.set(messageId, decoded);
-    }
-    return decoded;
-  };
-  const testPathCache = /* @__PURE__ */ new Map();
-  const pathOf = (testId) => {
-    let path = testPathCache.get(testId);
-    if (path === void 0) {
-      path = file.testPathAt(testId);
-      testPathCache.set(testId, path);
-    }
-    return path;
-  };
-  const groups = /* @__PURE__ */ new Map();
-  let matchedCount = 0;
-  let fileCount = 0;
-  let matchedGroups = 0;
-  for (const group of file.groups()) {
-    fileCount += group.totalCount;
-    const message = messageOf(group.messageId);
-    if (options.kind !== void 0 && message.kind !== options.kind) {
-      continue;
-    }
-    if (messageNeedle !== void 0 && !(message.text ?? "").toLowerCase().includes(messageNeedle)) {
-      continue;
-    }
-    if (componentNeedle !== void 0 && !(message.component ?? "").toLowerCase().includes(componentNeedle)) {
-      continue;
-    }
-    if (fileNeedle !== void 0 && !(message.file ?? "").toLowerCase().includes(fileNeedle)) {
-      continue;
-    }
-    const path = pathOf(group.testId);
-    if (options.test !== void 0 && !matchesTest(path, options.test)) {
-      continue;
-    }
-    matchedCount += group.totalCount;
-    matchedGroups += 1;
-    const key = groupKey(grouping, message, path);
-    let accumulator = groups.get(key);
-    if (accumulator === void 0) {
-      accumulator = {
-        key,
-        ...groupFields(grouping, message, path),
-        count: 0,
-        perTest: /* @__PURE__ */ new Map(),
-        perComponent: /* @__PURE__ */ new Map(),
-        groupIds: []
-      };
-      groups.set(key, accumulator);
-    }
-    accumulator.count += group.totalCount;
-    accumulator.perTest.set(
-      group.testId,
-      (accumulator.perTest.get(group.testId) ?? 0) + group.totalCount
-    );
-    if (grouping !== "kind") {
-      const component = message.component ?? UNKNOWN_COMPONENT;
-      accumulator.perComponent.set(
-        component,
-        (accumulator.perComponent.get(component) ?? 0) + group.totalCount
-      );
-    }
-    if (accumulator.groupIds.length < maxGroupIds) {
-      accumulator.groupIds.push(group.groupId);
-    }
-  }
-  const rows2 = [];
-  for (const accumulator of groups.values()) {
-    rows2.push({
-      key: accumulator.key,
-      kind: accumulator.kind,
-      text: accumulator.text,
-      file: accumulator.file,
-      line: accumulator.line,
-      component: accumulator.component,
-      count: accumulator.count,
-      testCount: accumulator.perTest.size,
-      tests: [...accumulator.perTest].sort((a, b) => b[1] - a[1]).slice(0, maxTests).map(([testId, count2]) => ({ testId, path: pathOf(testId), count: count2 })),
-      components: sortComponents(accumulator.perComponent),
-      groupIds: accumulator.groupIds
-    });
-  }
-  const sort = options.sort ?? "occurrences";
-  rows2.sort(
-    (a, b) => sort === "tests" ? b.testCount - a.testCount || b.count - a.count : b.count - a.count || b.testCount - a.testCount
-  );
-  return { rows: rows2, totals: { matchedCount, fileCount, matchedGroups } };
-}
-var UNKNOWN_COMPONENT = "Unknown";
-function sortComponents(perComponent) {
-  return [...perComponent].map(([component, count2]) => ({ component, count: count2 })).sort((a, b) => b.count - a.count || a.component.localeCompare(b.component));
-}
-function dominates(leaderCount, total) {
-  return leaderCount * 2 > total;
-}
-function componentSummary(shares) {
-  if (shares.length === 0) {
-    return null;
-  }
-  if (shares.length === 1) {
-    return shares[0].component;
-  }
-  const total = shares.reduce((sum, share) => sum + share.count, 0);
-  if (dominates(shares[0].count, total)) {
-    return `${shares[0].component}  +${(shares.length - 1).toLocaleString()} more`;
-  }
-  return `${shares.length.toLocaleString()} components`;
-}
-var MAX_BREAKDOWN_ROWS = 12;
-function componentBreakdownLines(shares) {
-  const shown = shares.slice(0, MAX_BREAKDOWN_ROWS);
-  const lines = shown.map((share) => `${share.component}  ${share.count.toLocaleString()}`);
-  if (shares.length > shown.length) {
-    const rest = shares.slice(shown.length);
-    const restCount = rest.reduce((sum, share) => sum + share.count, 0);
-    lines.push(
-      `\u2026 and ${rest.length.toLocaleString()} more, ${restCount.toLocaleString()} occurrences`
-    );
-  }
-  return lines;
-}
-function matchesTest(path, wanted) {
-  if (path === wanted) {
-    return true;
-  }
-  const prefix = wanted.endsWith("/") ? wanted : `${wanted}/`;
-  return path.startsWith(prefix);
-}
-var KEY_SEPARATOR = "";
-var KEY_ABSENT = "";
-function groupKey(grouping, message, path) {
-  const part = (value) => value === null ? KEY_ABSENT : String(value);
-  switch (grouping) {
-    case "message":
-      return [part(message.kind), part(message.text)].join(KEY_SEPARATOR);
-    case "location":
-      return [
-        part(message.kind),
-        part(message.text),
-        part(message.file),
-        part(message.line)
-      ].join(KEY_SEPARATOR);
-    case "test":
-      return path;
-    case "component":
-      return part(message.component);
-    case "kind":
-      return message.kind;
-  }
-}
-function groupFields(grouping, message, path) {
-  switch (grouping) {
-    case "message":
-      return {
-        kind: message.kind,
-        text: message.text,
-        file: null,
-        line: null,
-        component: null
-      };
-    case "location":
-      return {
-        kind: message.kind,
-        text: message.text,
-        file: message.file,
-        line: message.line,
-        component: message.component
-      };
-    case "test":
-      return { kind: null, text: path, file: null, line: null, component: null };
-    case "component":
-      return {
-        kind: null,
-        text: null,
-        file: null,
-        line: null,
-        component: message.component
-      };
-    case "kind":
-      return { kind: message.kind, text: null, file: null, line: null, component: null };
-  }
-}
-function kindTotals(file) {
-  return Object.entries(file.markerCounts).map(([kind, count2]) => ({ kind, count: count2 })).sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
-}
-
 // lib/formats/status-entries.ts
 var UnknownStatusGroupShapeError = class extends Error {
   // Written out rather than declared as constructor parameter properties:
@@ -3293,8 +2947,10 @@ async function resolveTest(query, explicitHarness, loaders) {
 // cli/data.ts
 function testLookupLoaders(context) {
   const missingFiles = [];
+  const listedHarnesses = [];
   return {
     missingFiles,
+    listedHarnesses,
     async loadBucket(harness, testPath) {
       const suffix = bucketFileSuffix(bucketIndexForPath(testPath));
       const name = {
@@ -3314,7 +2970,7 @@ function testLookupLoaders(context) {
     },
     async loadAllTestPaths() {
       const files = await Promise.all(
-        ["xpcshell", "mochitest"].map(async (harness) => {
+        HARNESSES.map(async (harness) => {
           try {
             return await fetchJson(context.source, {
               index: timingsIndex(harness),
@@ -3328,6 +2984,8 @@ function testLookupLoaders(context) {
           }
         })
       );
+      listedHarnesses.length = 0;
+      listedHarnesses.push(...HARNESSES.filter((_, index) => files[index] !== null));
       if (files.every((file) => file === null)) {
         throw new DataFileNotFoundError({
           index: timingsIndex("xpcshell"),
@@ -3358,6 +3016,29 @@ async function ifPublished(loading) {
     }
     throw error;
   }
+}
+async function loadPerHarness(explicit, load, onMissing = () => {
+}) {
+  if (explicit !== void 0) {
+    return [{ harness: explicit, loaded: await load(explicit) }];
+  }
+  const results = [];
+  let firstMissing;
+  for (const harness of HARNESSES) {
+    try {
+      results.push({ harness, loaded: await load(harness) });
+    } catch (error) {
+      if (!(error instanceof DataFileNotFoundError)) {
+        throw error;
+      }
+      firstMissing ??= error;
+      onMissing(harness);
+    }
+  }
+  if (results.length === 0) {
+    throw firstMissing;
+  }
+  return results;
 }
 async function loadIndex(context, harness) {
   return fetchJson(context.source, {
@@ -3448,6 +3129,406 @@ function dayIndexOfDate(endDate, days, date) {
   const daysBack = Math.round((end - wanted) / 864e5);
   const index = days - 1 - daysBack;
   return index >= 0 && index < days ? index : null;
+}
+
+// cli/commands/dates.ts
+async function runDates(context, args) {
+  if (args.positionals.length > 0) {
+    throw usageError(`dates takes no arguments, got "${args.positionals[0]}"`);
+  }
+  const files = await loadPerHarness(
+    context.globals.harness,
+    (harness) => {
+      progress(context, `Reading ${harness} index.json\u2026`);
+      return fetchJson(context.source, {
+        index: timingsIndex(harness),
+        filename: "index.json"
+      });
+    },
+    (harness) => progress(context, `No ${harness} index.json is published; leaving ${harness} out.`)
+  );
+  const result = { harnesses: [] };
+  for (const { harness, loaded: file } of files) {
+    const dates = [...file.dates];
+    result.harnesses.push({
+      harness,
+      dates,
+      // `index.json` is newest first, so the ends are the other way round
+      // from `stats.json`. Naming them rather than indexing at the call
+      // site is what stops that from being got wrong twice.
+      newest: dates[0] ?? null,
+      oldest: dates[dates.length - 1] ?? null,
+      dayCount: dates.length
+    });
+  }
+  if (context.globals.format === "json") {
+    emit(context, toJson(result));
+    return;
+  }
+  emit(
+    context,
+    context.globals.format === "markdown" ? renderMarkdown3(result) : renderText3(result)
+  );
+}
+function renderText3(result) {
+  const lines = [];
+  for (const entry of result.harnesses) {
+    if (entry.dayCount === 0) {
+      lines.push(`${entry.harness}: no dates published`);
+      lines.push("");
+      continue;
+    }
+    lines.push(
+      `${entry.harness}: ${entry.dayCount} dates, ${dateWithWeekday(entry.oldest)} \u2026 ${dateWithWeekday(entry.newest)}`
+    );
+    for (const date of entry.dates) {
+      lines.push(`  ${dateWithWeekday(date)}${isWeekend(date) ? "  \u2014 weekend" : ""}`);
+    }
+    lines.push("");
+  }
+  return joinLines(lines);
+}
+function renderMarkdown3(result) {
+  const lines = [];
+  for (const entry of result.harnesses) {
+    lines.push(heading(entry.harness));
+    lines.push("");
+    if (entry.dayCount === 0) {
+      lines.push("No dates published.");
+      lines.push("");
+      continue;
+    }
+    lines.push(
+      ...table2(
+        [{ header: "Date" }, { header: "Weekday" }, { header: "Note" }],
+        entry.dates.map((date) => [
+          date,
+          dateWithWeekday(date).replace(`${date} `, "").replace(/[()]/g, ""),
+          isWeekend(date) ? "weekend" : ""
+        ])
+      )
+    );
+    lines.push("");
+  }
+  return joinLines(lines);
+}
+
+// lib/formats/delta.ts
+function forEachDelta(deltas, base, fn) {
+  let value = base;
+  for (let i = 0; i < deltas.length; i++) {
+    value += deltas[i];
+    fn(value, i);
+  }
+}
+
+// lib/formats/errors.ts
+function decodeErrors(file) {
+  const { tables, messages, markers, testInfo, taskInfo, metadata } = file;
+  const groupCount = markers.testIds.length;
+  if (markers.messageIds.length !== groupCount || markers.taskIdIds.length !== groupCount || markers.counts.length !== groupCount) {
+    throw new Error(
+      `markers arrays are not parallel: testIds ${groupCount}, messageIds ${markers.messageIds.length}, taskIdIds ${markers.taskIdIds.length}, counts ${markers.counts.length}`
+    );
+  }
+  return {
+    date: metadata.date,
+    generatedAt: metadata.generatedAt,
+    jobCount: metadata.jobCount,
+    processedJobCount: metadata.processedJobCount,
+    invalidJobCount: metadata.invalidJobCount,
+    markerCounts: metadata.markerCounts,
+    markerNames: tables.markerNames,
+    groupCount,
+    messageCount: messages.markerNameIds.length,
+    testCount: testInfo.testPathIds.length,
+    messageAt(messageId) {
+      const kindId = messages.markerNameIds[messageId];
+      if (kindId === void 0) {
+        throw new Error(
+          `index ${messageId} out of range for messages (length ${messages.markerNameIds.length})`
+        );
+      }
+      return {
+        messageId,
+        kind: lookup(tables.markerNames, kindId, "tables.markerNames"),
+        text: lookupOptional(
+          tables.messageTexts,
+          messages.textIds[messageId],
+          "tables.messageTexts"
+        ),
+        file: lookupOptional(tables.files, messages.fileIds[messageId], "tables.files"),
+        line: messages.lines[messageId] ?? null,
+        component: lookupOptional(
+          tables.components,
+          messages.componentIds[messageId],
+          "tables.components"
+        )
+      };
+    },
+    testPathAt(testId) {
+      const pathId = testInfo.testPathIds[testId];
+      const nameId = testInfo.testNameIds[testId];
+      if (pathId === void 0 || nameId === void 0) {
+        throw new Error(
+          `index ${testId} out of range for testInfo (length ${testInfo.testPathIds.length})`
+        );
+      }
+      return joinTestPath(
+        lookup(tables.testPaths, pathId, "tables.testPaths"),
+        lookup(tables.testNames, nameId, "tables.testNames")
+      );
+    },
+    testComponentAt(testId) {
+      return lookupOptional(
+        tables.components,
+        testInfo.componentIds?.[testId],
+        "tables.components"
+      );
+    },
+    *groups() {
+      for (let groupId = 0; groupId < groupCount; groupId++) {
+        const counts = markers.counts[groupId];
+        let totalCount = 0;
+        for (let i = 0; i < counts.length; i++) {
+          totalCount += counts[i];
+        }
+        yield {
+          groupId,
+          testId: markers.testIds[groupId],
+          messageId: markers.messageIds[groupId],
+          totalCount,
+          // The task IDs are delta-encoded but their *count* is just
+          // the array length, so the ranking path never decodes them.
+          taskCount: markers.taskIdIds[groupId].length
+        };
+      }
+    },
+    taskIdsOfGroup(groupId) {
+      const deltas = markers.taskIdIds[groupId];
+      if (deltas === void 0) {
+        throw new Error(
+          `index ${groupId} out of range for markers (length ${groupCount})`
+        );
+      }
+      const out = [];
+      forEachDelta(deltas, 0, (taskIdIndex) => {
+        out.push(lookup(tables.taskIds, taskIdIndex, "tables.taskIds"));
+      });
+      return out;
+    },
+    jobNameOfTaskIndex(taskIdIndex) {
+      const jobNameId = taskInfo.jobNameIds[taskIdIndex];
+      if (jobNameId === void 0) {
+        throw new Error(
+          `index ${taskIdIndex} out of range for taskInfo.jobNameIds (length ${taskInfo.jobNameIds.length})`
+        );
+      }
+      return lookup(tables.jobNames, jobNameId, "tables.jobNames");
+    }
+  };
+}
+
+// lib/query/error-ranking.ts
+var DEFAULT_MAX_TESTS = 20;
+var DEFAULT_MAX_GROUP_IDS = 50;
+function rankErrors(file, options = {}) {
+  const grouping = options.grouping ?? "location";
+  const maxTests = options.maxTestsPerGroup ?? DEFAULT_MAX_TESTS;
+  const maxGroupIds = options.maxGroupIds ?? DEFAULT_MAX_GROUP_IDS;
+  const messageNeedle = options.message?.toLowerCase();
+  const componentNeedle = options.component?.toLowerCase();
+  const fileNeedle = options.file?.toLowerCase();
+  const messageCache = /* @__PURE__ */ new Map();
+  const messageOf = (messageId) => {
+    let decoded = messageCache.get(messageId);
+    if (decoded === void 0) {
+      decoded = file.messageAt(messageId);
+      messageCache.set(messageId, decoded);
+    }
+    return decoded;
+  };
+  const testPathCache = /* @__PURE__ */ new Map();
+  const pathOf = (testId) => {
+    let path = testPathCache.get(testId);
+    if (path === void 0) {
+      path = file.testPathAt(testId);
+      testPathCache.set(testId, path);
+    }
+    return path;
+  };
+  const groups = /* @__PURE__ */ new Map();
+  let matchedCount = 0;
+  let fileCount = 0;
+  let matchedGroups = 0;
+  for (const group of file.groups()) {
+    fileCount += group.totalCount;
+    const message = messageOf(group.messageId);
+    if (options.kind !== void 0 && message.kind !== options.kind) {
+      continue;
+    }
+    if (messageNeedle !== void 0 && !(message.text ?? "").toLowerCase().includes(messageNeedle)) {
+      continue;
+    }
+    if (componentNeedle !== void 0 && !(message.component ?? "").toLowerCase().includes(componentNeedle)) {
+      continue;
+    }
+    if (fileNeedle !== void 0 && !(message.file ?? "").toLowerCase().includes(fileNeedle)) {
+      continue;
+    }
+    const path = pathOf(group.testId);
+    if (options.test !== void 0 && !matchesTest(path, options.test)) {
+      continue;
+    }
+    matchedCount += group.totalCount;
+    matchedGroups += 1;
+    const key = groupKey(grouping, message, path);
+    let accumulator = groups.get(key);
+    if (accumulator === void 0) {
+      accumulator = {
+        key,
+        ...groupFields(grouping, message, path),
+        count: 0,
+        perTest: /* @__PURE__ */ new Map(),
+        perComponent: /* @__PURE__ */ new Map(),
+        groupIds: []
+      };
+      groups.set(key, accumulator);
+    }
+    accumulator.count += group.totalCount;
+    accumulator.perTest.set(
+      group.testId,
+      (accumulator.perTest.get(group.testId) ?? 0) + group.totalCount
+    );
+    if (grouping !== "kind") {
+      const component = message.component ?? UNKNOWN_COMPONENT;
+      accumulator.perComponent.set(
+        component,
+        (accumulator.perComponent.get(component) ?? 0) + group.totalCount
+      );
+    }
+    if (accumulator.groupIds.length < maxGroupIds) {
+      accumulator.groupIds.push(group.groupId);
+    }
+  }
+  const rows2 = [];
+  for (const accumulator of groups.values()) {
+    rows2.push({
+      key: accumulator.key,
+      kind: accumulator.kind,
+      text: accumulator.text,
+      file: accumulator.file,
+      line: accumulator.line,
+      component: accumulator.component,
+      count: accumulator.count,
+      testCount: accumulator.perTest.size,
+      tests: [...accumulator.perTest].sort((a, b) => b[1] - a[1]).slice(0, maxTests).map(([testId, count2]) => ({ testId, path: pathOf(testId), count: count2 })),
+      components: sortComponents(accumulator.perComponent),
+      groupIds: accumulator.groupIds
+    });
+  }
+  const sort = options.sort ?? "occurrences";
+  rows2.sort(
+    (a, b) => sort === "tests" ? b.testCount - a.testCount || b.count - a.count : b.count - a.count || b.testCount - a.testCount
+  );
+  return { rows: rows2, totals: { matchedCount, fileCount, matchedGroups } };
+}
+var UNKNOWN_COMPONENT = "Unknown";
+function sortComponents(perComponent) {
+  return [...perComponent].map(([component, count2]) => ({ component, count: count2 })).sort((a, b) => b.count - a.count || a.component.localeCompare(b.component));
+}
+function dominates(leaderCount, total) {
+  return leaderCount * 2 > total;
+}
+function componentSummary(shares) {
+  if (shares.length === 0) {
+    return null;
+  }
+  if (shares.length === 1) {
+    return shares[0].component;
+  }
+  const total = shares.reduce((sum, share) => sum + share.count, 0);
+  if (dominates(shares[0].count, total)) {
+    return `${shares[0].component}  +${(shares.length - 1).toLocaleString()} more`;
+  }
+  return `${shares.length.toLocaleString()} components`;
+}
+var MAX_BREAKDOWN_ROWS = 12;
+function componentBreakdownLines(shares) {
+  const shown = shares.slice(0, MAX_BREAKDOWN_ROWS);
+  const lines = shown.map((share) => `${share.component}  ${share.count.toLocaleString()}`);
+  if (shares.length > shown.length) {
+    const rest = shares.slice(shown.length);
+    const restCount = rest.reduce((sum, share) => sum + share.count, 0);
+    lines.push(
+      `\u2026 and ${rest.length.toLocaleString()} more, ${restCount.toLocaleString()} occurrences`
+    );
+  }
+  return lines;
+}
+function matchesTest(path, wanted) {
+  if (path === wanted) {
+    return true;
+  }
+  const prefix = wanted.endsWith("/") ? wanted : `${wanted}/`;
+  return path.startsWith(prefix);
+}
+var KEY_SEPARATOR = "";
+var KEY_ABSENT = "";
+function groupKey(grouping, message, path) {
+  const part = (value) => value === null ? KEY_ABSENT : String(value);
+  switch (grouping) {
+    case "message":
+      return [part(message.kind), part(message.text)].join(KEY_SEPARATOR);
+    case "location":
+      return [
+        part(message.kind),
+        part(message.text),
+        part(message.file),
+        part(message.line)
+      ].join(KEY_SEPARATOR);
+    case "test":
+      return path;
+    case "component":
+      return part(message.component);
+    case "kind":
+      return message.kind;
+  }
+}
+function groupFields(grouping, message, path) {
+  switch (grouping) {
+    case "message":
+      return {
+        kind: message.kind,
+        text: message.text,
+        file: null,
+        line: null,
+        component: null
+      };
+    case "location":
+      return {
+        kind: message.kind,
+        text: message.text,
+        file: message.file,
+        line: message.line,
+        component: message.component
+      };
+    case "test":
+      return { kind: null, text: path, file: null, line: null, component: null };
+    case "component":
+      return {
+        kind: null,
+        text: null,
+        file: null,
+        line: null,
+        component: message.component
+      };
+    case "kind":
+      return { kind: message.kind, text: null, file: null, line: null, component: null };
+  }
+}
+function kindTotals(file) {
+  return Object.entries(file.markerCounts).map(([kind, count2]) => ({ kind, count: count2 })).sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
 }
 
 // cli/commands/errors.ts
@@ -3929,6 +4010,8 @@ function classifyBase(base) {
     case "OK":
       return "pass";
     case "FAIL":
+    // A pass where a failure is expected turns the job orange too.
+    case "UNEXPECTED-PASS":
       return "fail";
     case "TIMEOUT":
       return "timeout";
@@ -4220,7 +4303,7 @@ function flakinessByFolder(file, options = {}) {
     }
     const leaf = {
       fullPath: identity.fullPath,
-      name: identity.fullPath.slice(identity.fullPath.lastIndexOf("/") + 1),
+      name: identity.name,
       flaky: 0,
       stable: 0,
       skipped: 0,
@@ -4328,7 +4411,7 @@ function flakinessByFolderAveraged(file, options = {}) {
     }
     node.tests.push({
       fullPath: identity.fullPath,
-      name: identity.fullPath.slice(identity.fullPath.lastIndexOf("/") + 1),
+      name: identity.name,
       flaky: counts.flaky,
       stable: counts.stable,
       skipped: skippedShare,
@@ -4505,7 +4588,7 @@ var FLAKY_OPTIONS = {
   // `harnessesForPathFilter`.
   harness: {
     type: "string",
-    placeholder: "<xpcshell|mochitest>",
+    placeholder: "<xpcshell|mochitest|wpt>",
     describe: "Which harness\u2019s data to read. Omit it and a directory path reads both, printing whichever has rows."
   },
   path: {
@@ -6547,7 +6630,7 @@ var FAILURES_OPTIONS = {
   // `harnessesForPathFilter`.
   harness: {
     type: "string",
-    placeholder: "<xpcshell|mochitest>",
+    placeholder: "<xpcshell|mochitest|wpt>",
     describe: "Which harness\u2019s data to read. Omit it and a directory path reads both, printing whichever has rows."
   },
   message: {
@@ -7859,6 +7942,12 @@ async function runDrilldown(context, client, tree, range, bug, args) {
     );
   }
   const occurrences = await withRunIds(context, client, tree, raw);
+  if (globals.harness === "wpt") {
+    throw usageError(
+      '--harness expects mochitest or xpcshell with --bug, got "wpt"',
+      "Omit --harness to see every occurrence of the bug, whatever its job."
+    );
+  }
   const filter = {
     ...globals.harness === void 0 ? {} : { harness: globals.harness },
     ...globals.config.length === 0 ? {} : { config: globals.config },
@@ -8988,14 +9077,19 @@ async function runSummary(context, args) {
       "Use `fx-tests test <path> --config` for one test, which reads a bucket file."
     );
   }
-  const harnesses = context.globals.harness !== void 0 ? [context.globals.harness] : ["xpcshell", "mochitest"];
+  const files = await loadPerHarness(
+    context.globals.harness,
+    (harness) => {
+      progress(context, `Reading ${harness}-stats.json\u2026`);
+      return fetchJson(context.source, {
+        index: timingsIndex(harness),
+        filename: `${harness}-stats.json`
+      });
+    },
+    (harness) => progress(context, `No ${harness}-stats.json is published; leaving ${harness} out.`)
+  );
   const results = [];
-  for (const harness of harnesses) {
-    progress(context, `Reading ${harness}-stats.json\u2026`);
-    const file = await fetchJson(context.source, {
-      index: timingsIndex(harness),
-      filename: `${harness}-stats.json`
-    });
+  for (const { harness, loaded: file } of files) {
     const summary = computeSummary(file, days === void 0 ? {} : { days });
     results.push({
       harness,
@@ -9509,10 +9603,13 @@ async function lookUpTest(context, testPath) {
     );
   }
   throw notFoundError(
-    // The list step reads both harnesses, whichever bucket was read.
-    `No test path in the xpcshell and mochitest 21-day data contains "${resolution.query}", so this reports nothing about the test itself.`,
+    // Only the harnesses whose test list was found were searched.
+    `No test path in the ${listOfHarnesses(loaders.listedHarnesses)} 21-day data contains "${resolution.query}", so this reports nothing about the test itself.`,
     "It may have been renamed, added after the window started, or never run in CI. Check the spelling, or pass a longer fragment of the path."
   );
+}
+function listOfHarnesses(harnesses) {
+  return harnesses.length <= 1 ? harnesses.join("") : `${harnesses.slice(0, -1).join(", ")} and ${harnesses[harnesses.length - 1]}`;
 }
 async function runTest(context, args) {
   const testPath = args.positionals[0];
@@ -10721,6 +10818,57 @@ function normalizeMessage(message) {
   return message.replace(/\r\n/g, "\n").replace(/task_\d+/g, "task_id").replace(/\nRejection date: [^\n]+/g, "").replace(/Test ran for \d+s/g, "Test ran for Xs");
 }
 
+// lib/model/wpt-status.ts
+var isWptPass = (status) => status === "OK" || status === "PASS";
+function classifyWptSubtestMarker(name, color, expected) {
+  if (name.startsWith("KNOWN-INTERMITTENT-")) {
+    return name !== "KNOWN-INTERMITTENT-PASS" && expected === "PASS" ? "failure" : null;
+  }
+  if (color !== "orange") {
+    return null;
+  }
+  return name === "UNEXPECTED-PASS" ? "pass" : "failure";
+}
+function wptSubtestMessage(subtest) {
+  return `${subtest.status} | ${subtest.subtest}${subtest.message ? ` - ${subtest.message}` : ""}`;
+}
+function wptRunStatus(marker, unexpectedSubtests) {
+  const { status, expected } = marker;
+  const ownMessage = marker.message ?? null;
+  if (!status) {
+    return { status: "UNKNOWN", message: null };
+  }
+  if (status === "SKIP") {
+    return { status, message: ownMessage };
+  }
+  const isPass = isWptPass(status);
+  const isListedFailure = !isWptPass(expected) && (marker.known_intermittent !== void 0 || marker.color === "yellow" && status !== "TIMEOUT");
+  if (!isPass && expected !== void 0 && !isListedFailure) {
+    return {
+      status: status === "TIMEOUT" || status === "CRASH" ? status : "FAIL",
+      message: ownMessage
+    };
+  }
+  const failure = unexpectedSubtests.find((subtest) => !subtest.isPass);
+  if (failure !== void 0) {
+    return { status: "FAIL", message: wptSubtestMessage(failure) };
+  }
+  const unexpectedCount = unexpectedSubtests.filter(
+    (subtest) => !subtest.status.startsWith("KNOWN-INTERMITTENT-")
+  ).length;
+  if ((marker.unexpected_subtests ?? 0) > unexpectedCount) {
+    return { status: "FAIL", message: ownMessage };
+  }
+  const unexpectedPass = unexpectedSubtests[0];
+  if (unexpectedPass !== void 0) {
+    return { status: "UNEXPECTED-PASS", message: wptSubtestMessage(unexpectedPass) };
+  }
+  if (isPass && expected !== void 0 && marker.color !== "yellow") {
+    return { status: "UNEXPECTED-PASS", message: ownMessage };
+  }
+  return { status: isPass ? "PASS" : "EXPECTED-FAIL", message: null };
+}
+
 // lib/model/test-markers.ts
 function isStreamedProfile(bytes2) {
   const head = new TextDecoder().decode(bytes2.subarray(0, 64 * 1024));
@@ -10835,6 +10983,36 @@ function parseTestMarkers(profile, job, dropped = []) {
     message: marker.message,
     status: marker.statusName
   }));
+  let wptSubtestMarkers;
+  const unexpectedWptSubtests = (test, start, end) => {
+    if (wptSubtestMarkers === void 0) {
+      wptSubtestMarkers = [];
+      for (let i = 0; i < length; i++) {
+        const data = markers.data[i];
+        if (data?.type !== "TestStatus" || data.test === void 0 || !data.subtest) {
+          continue;
+        }
+        const name = stringArray[markers.name[i]] ?? "";
+        const kind = classifyWptSubtestMarker(name, data.color, data.expected);
+        if (kind === null) {
+          continue;
+        }
+        wptSubtestMarkers.push({
+          test: data.test,
+          time: startTime[i] ?? 0,
+          status: name,
+          subtest: data.subtest,
+          message: normalizeMessage(data.message ?? null),
+          isPass: kind === "pass",
+          stack: resolveStack(markers.stack?.[i], thread)
+        });
+      }
+      wptSubtestMarkers.sort((a, b) => a.time - b.time);
+    }
+    return wptSubtestMarkers.filter(
+      (marker) => marker.test === test && marker.time >= start && marker.time <= end
+    );
+  };
   const testStringId = stringArray.indexOf("test");
   const timings = [];
   for (let i = 0; i < length; i++) {
@@ -10863,18 +11041,39 @@ function parseTestMarkers(profile, job, dropped = []) {
     const start = startTime[i] ?? 0;
     const end = endTime[i] ?? 0;
     let status = data.status ?? "UNKNOWN";
-    if (status === "FAIL" && data.color === "green") {
+    const isWpt = wptRepoPath(fullTestId) !== null;
+    const wptSubtests = isWpt ? unexpectedWptSubtests(fullTestId, start, end) : [];
+    const wptRun = isWpt ? wptRunStatus(data, wptSubtests) : null;
+    if (wptRun !== null) {
+      status = wptRun.status;
+    } else if (status === "FAIL" && data.color === "green") {
       status = "EXPECTED-FAIL";
     } else if (status === "PASS" && data.expected !== void 0 && data.expected !== "PASS") {
       status = "UNEXPECTED-PASS";
     } else if (["TIMEOUT", "FAIL", "CRASH", "PASS"].includes(status) && parallelRanges.length > 0) {
       status += overlaps(start, end, parallelRanges) ? "-PARALLEL" : "-SEQUENTIAL";
     }
-    let message = normalizeMessage(data.message ?? null);
+    let message = normalizeMessage(wptRun === null ? data.message ?? null : wptRun.message);
     let minidump = null;
     let details = [];
     let partitioned = { messages: [], profileFilenames: [] };
-    if (status.startsWith("FAIL") || status.startsWith("TIMEOUT") || status === "ERROR") {
+    if (isWpt) {
+      const ordered = [
+        ...wptSubtests.filter((subtest) => !subtest.isPass),
+        ...wptSubtests.filter((subtest) => subtest.isPass)
+      ];
+      partitioned = partitionMarkerMessages(
+        ordered.map((subtest) => ({
+          message: wptSubtestMessage(subtest),
+          status: subtest.status
+        }))
+      );
+      details = ordered.map((subtest) => ({
+        message: wptSubtestMessage(subtest),
+        status: subtest.status,
+        stack: subtest.stack
+      }));
+    } else if (status.startsWith("FAIL") || status.startsWith("TIMEOUT") || status === "ERROR") {
       partitioned = partitionMarkerMessages(messagesInRange(fullTestId, start, end));
       message = partitioned.messages[0] ?? message;
       details = markersInRange(fullTestId, start, end).filter((marker) => uploadedProfileName(marker.message) === null).map((marker) => ({
@@ -10946,7 +11145,11 @@ function parseTestMarkers(profile, job, dropped = []) {
 }
 
 // lib/model/try-jobs.ts
-var SUPPORTED_HARNESSES = ["mochitest", "xpcshell"];
+var SUPPORTED_HARNESSES = [
+  "mochitest",
+  "xpcshell",
+  "web-platform-tests"
+];
 var VERIFY_JOB_KINDS = [
   { prefix: "test-verify-wpt", parseable: false },
   { prefix: "test-verify-gpu", parseable: true },
@@ -13096,7 +13299,7 @@ var COMMANDS = [
     summary: "The sheriff-annotated top offenders, tree-wide, with bug numbers.",
     usage: "fx-tests intermittent [--harness <h>] [--bug <id>] [options]",
     options: INTERMITTENT_OPTIONS,
-    extraHarnessValues: ["unknown"],
+    harnessValues: ["xpcshell", "mochitest", "unknown"],
     rejectsGlobals: [
       {
         names: ["data-source"],
@@ -13184,7 +13387,7 @@ var REJECTED_GLOBALS = Object.fromEntries(
 var PLANNED_COMMANDS = {};
 function version() {
   if (true) {
-    return "2026.11.15 23:10 UTC";
+    return "2026.11.24 15:55 UTC";
   }
   try {
     const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -13296,7 +13499,7 @@ async function dispatch(options) {
     streams.out(commandHelp(command, specs));
     return ExitCode.Success;
   }
-  const globals = readGlobalOptions(args, options.env ?? {}, command.extraHarnessValues ?? []);
+  const globals = readGlobalOptions(args, options.env ?? {}, command.harnessValues);
   for (const rejected of command.rejectsGlobals ?? []) {
     if (rejected.names.some((name) => args.options.has(name))) {
       throw usageError(rejected.message, rejected.hint);

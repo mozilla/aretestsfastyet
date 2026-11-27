@@ -17,11 +17,11 @@ import type { IndexFile } from '../../lib/formats/stats.ts';
 import { fetchJson, timingsIndex } from '../../lib/sources/source.ts';
 import type { ParsedArgs } from '../args.ts';
 import { type CommandContext, emit, progress } from '../context.ts';
+import { loadPerHarness } from '../data.ts';
 import { usageError } from '../errors.ts';
 import { toJson } from '../format/json.ts';
 import * as md from '../format/markdown.ts';
 import { dateWithWeekday, isWeekend, joinLines } from '../format/text.ts';
-import type { Harness } from '../options.ts';
 
 /** The `--json` shape. */
 export interface DatesJson {
@@ -41,18 +41,20 @@ export async function runDates(context: CommandContext, args: ParsedArgs): Promi
         throw usageError(`dates takes no arguments, got "${args.positionals[0]}"`);
     }
 
-    const harnesses: Harness[] =
-        context.globals.harness !== undefined
-            ? [context.globals.harness]
-            : ['xpcshell', 'mochitest'];
+    const files = await loadPerHarness(
+        context.globals.harness,
+        (harness) => {
+            progress(context, `Reading ${harness} index.json…`);
+            return fetchJson<IndexFile>(context.source, {
+                index: timingsIndex(harness),
+                filename: 'index.json',
+            });
+        },
+        (harness) => progress(context, `No ${harness} index.json is published; leaving ${harness} out.`)
+    );
 
     const result: DatesJson = { harnesses: [] };
-    for (const harness of harnesses) {
-        progress(context, `Reading ${harness} index.json…`);
-        const file = await fetchJson<IndexFile>(context.source, {
-            index: timingsIndex(harness),
-            filename: 'index.json',
-        });
+    for (const { harness, loaded: file } of files) {
         const dates = [...file.dates];
         result.harnesses.push({
             harness,

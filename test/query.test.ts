@@ -73,6 +73,7 @@ import type { TestIdentity } from '../lib/formats/tables.ts';
 import { findIssues, findSkips, groupIssues } from '../lib/query/issues.ts';
 import { groupFailuresByMessage } from '../lib/query/failures.ts';
 import { groupCrashesBySignature } from '../lib/query/crashes.ts';
+import type { Harness } from '../lib/model/harness.ts';
 import { computeSummary, markerTotals } from '../lib/query/summary.ts';
 import {
     type TestLookupLoaders,
@@ -1903,7 +1904,7 @@ test('marker totals come from the file, and the kinds differ by harness', () => 
  * `served` records every (harness, path) the ladder asked for, in order, which
  * is how "no other file was read" is asserted rather than assumed.
  */
-function fakeLoaders(world: Record<'xpcshell' | 'mochitest', string[]>): TestLookupLoaders<null> & {
+function fakeLoaders(world: Partial<Record<Harness, string[]>>): TestLookupLoaders<null> & {
     served: string[];
     listReads: number;
 } {
@@ -1917,7 +1918,7 @@ function fakeLoaders(world: Record<'xpcshell' | 'mochitest', string[]>): TestLoo
         },
         async loadBucket(harness, testPath) {
             served.push(`${harness}:${testPath}`);
-            const paths = world[harness];
+            const paths = world[harness] ?? [];
             const testId = paths.indexOf(testPath);
             if (testId === -1) {
                 return null;
@@ -1941,7 +1942,7 @@ function fakeLoaders(world: Record<'xpcshell' | 'mochitest', string[]>): TestLoo
         },
         async loadAllTestPaths() {
             state.listReads++;
-            return [...world.xpcshell, ...world.mochitest].sort();
+            return Object.values(world).flat().sort();
         },
     };
 }

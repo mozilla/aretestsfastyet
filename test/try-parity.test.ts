@@ -51,6 +51,14 @@ import {
     stripManifestPrefix,
 } from '../lib/model/test-path.ts';
 import { type DroppedMarker, parseTestMarkers } from '../cli/commands/try.ts';
+import {
+    type WptTestMarker,
+    type WptUnexpectedSubtest,
+    classifyWptSubtestMarker,
+    wptRunStatus,
+    wptSubtestMessage,
+} from '../lib/model/wpt-status.ts';
+import { WPT_SCENARIOS } from './wpt-scenarios.ts';
 import { sampleProfile } from './task-fixture.ts';
 import {
     type FailingTest,
@@ -1041,6 +1049,19 @@ test('the worker copies of the path rule match the shared ones', () => {
         'testAddTaskSkip',
         'replaying full log for dom/base/test/test_e.html',
         '',
+        // wpt ids are URLs, variant included; a wpt test can have any extension.
+        '/dom/nodes/Node-cloneNode.html',
+        '/close-watcher/basic.html?dialog',
+        '/fetch/a.any.worker.html?url=/common/b.html#frag',
+        '/_mozilla/dom/classList.html',
+        '/webdriver/tests/classic/get_title/get.py',
+        '/svg/painting/reftests/paint-order-001.svg',
+        // A wpt group marker names a directory.
+        '/css/css-sizing',
+        // Already a wpt repository path: a test, a variant, a directory.
+        'testing/web-platform/tests/dom/a.xht',
+        'testing/web-platform/tests/dom/a.html?v=/b/',
+        'testing/web-platform/tests/dom',
     ];
     for (const input of cases) {
         assert.equal(
@@ -1301,6 +1322,198 @@ test('both sides turn an unexpected PASS into the same status', () => {
         assert.equal(cliStatus(data), expected[index], `CLI on ${label}`);
         assert.equal(pageStatus({ status: 'PASS', ...data }), expected[index], `page on ${label}`);
     }
+});
+
+// --- web-platform-tests: one status rule, three copies -----------------------
+
+/** The worker's copies of the wpt status rule, lifted out of the template literal. */
+function workerWptHelpers(): {
+    classifyWptSubtestMarker: (
+        name: string,
+        color: string | undefined,
+        expected?: string
+    ) => 'failure' | 'pass' | null;
+    wptSubtestMessage: (subtest: WptUnexpectedSubtest) => string;
+    wptRunStatus: (
+        marker: WptTestMarker,
+        unexpectedSubtests: readonly WptUnexpectedSubtest[]
+    ) => { status: string; message: string | null };
+} {
+    const start = WORKER_SOURCE.indexOf('function isWptPass(status) {');
+    assert.ok(start > 0, 'the worker still defines the wpt helpers');
+    const end = WORKER_SOURCE.indexOf('function extractTestTimings', start);
+    assert.ok(end > start, 'the three wpt helpers are still contiguous');
+    return new Function(
+        `${WORKER_SOURCE.slice(start, end)}; ` +
+            'return { classifyWptSubtestMarker, wptSubtestMessage, wptRunStatus };'
+    )() as ReturnType<typeof workerWptHelpers>;
+}
+
+/** A profile with each scenario of `test/wpt-scenarios.ts` as one wpt test. */
+function wptScenarioProfile(): { profile: unknown; ids: string[] } {
+    const strings: string[] = ['test'];
+    const stringId = (value: string): number => {
+        const known = strings.indexOf(value);
+        return known === -1 ? strings.push(value) - 1 : known;
+    };
+    const name: number[] = [];
+    const data: unknown[] = [];
+    const startTime: number[] = [];
+    const endTime: number[] = [];
+    const ids: string[] = [];
+    WPT_SCENARIOS.forEach((scenario, index) => {
+        // A variant with a slash in every other id, and one Mozilla test.
+        const id =
+            index === 0
+                ? '/_mozilla/dom/scenario-0.html'
+                : `/dom/scenario-${index}.html${index % 2 === 0 ? '?url=/common/x.html' : ''}`;
+        ids.push(id);
+        const start = index * 10;
+        scenario.subtests.forEach((subtest, offset) => {
+            name.push(stringId(subtest.name));
+            data.push({
+                type: 'TestStatus',
+                test: id,
+                subtest: subtest.subtest,
+                ...(subtest.color === undefined ? {} : { color: subtest.color }),
+                ...(subtest.expected === undefined ? {} : { expected: subtest.expected }),
+                ...(subtest.message === undefined ? {} : { message: subtest.message }),
+            });
+            startTime.push(start + 1 + offset);
+            endTime.push(start + 1 + offset);
+        });
+        // A log line inside the range, which is not a subtest result.
+        name.push(stringId('INFO'));
+        data.push({ type: 'TestStatus', test: id, message: 'a log line' });
+        startTime.push(start + 5);
+        endTime.push(start + 5);
+
+        name.push(0);
+        data.push({ type: 'Test', test: id, ...scenario.test });
+        startTime.push(start);
+        endTime.push(start + 9);
+    });
+    return {
+        profile: {
+            meta: { startTime: 0 },
+            threads: [
+                { stringArray: strings, markers: { length: name.length, name, data, startTime, endTime } },
+            ],
+        },
+        ids,
+    };
+}
+
+test('the worker copies of the wpt status rule match the shared ones', () => {
+    const worker = workerWptHelpers();
+    for (const scenario of WPT_SCENARIOS) {
+        const unexpected: WptUnexpectedSubtest[] = [];
+        for (const subtest of scenario.subtests) {
+            const kind = classifyWptSubtestMarker(subtest.name, subtest.color, subtest.expected);
+            assert.equal(
+                worker.classifyWptSubtestMarker(subtest.name, subtest.color, subtest.expected),
+                kind,
+                `${scenario.label}: classifyWptSubtestMarker on ${subtest.name}`
+            );
+            if (kind !== null) {
+                const entry = {
+                    status: subtest.name,
+                    subtest: subtest.subtest,
+                    message: subtest.message ?? null,
+                    isPass: kind === 'pass',
+                };
+                assert.equal(worker.wptSubtestMessage(entry), wptSubtestMessage(entry), scenario.label);
+                unexpected.push(entry);
+            }
+        }
+        assert.deepEqual(
+            worker.wptRunStatus(scenario.test, unexpected),
+            wptRunStatus(scenario.test, unexpected),
+            scenario.label
+        );
+        // And the shared one is right, or the two agreeing would prove little.
+        assert.equal(wptRunStatus(scenario.test, unexpected).status, scenario.status, scenario.label);
+    }
+});
+
+test('both sides read a wpt job the same way: paths, statuses and messages', () => {
+    const { profile, ids } = wptScenarioProfile();
+    const page = workerExtractTestTimings()(profile) as {
+        path: string;
+        status: string;
+        message?: string;
+        allMessages: { message: string; status: string }[];
+    }[];
+    const cli = parseTestMarkers(profile, { jobName: 'test-linux2404-64/opt-web-platform-tests-1', taskId: 'T', retryId: 0 });
+
+    assert.equal(cli.length, WPT_SCENARIOS.length, 'one run per scenario, and no log line among them');
+    assert.equal(page.length, cli.length);
+    WPT_SCENARIOS.forEach((scenario, index) => {
+        const expectedPath =
+            index === 0
+                ? 'testing/web-platform/mozilla/tests/dom/scenario-0.html'
+                : `testing/web-platform/tests${ids[index]!}`;
+        for (const [side, run] of [
+            ['CLI', cli[index]!],
+            ['page', page[index]!],
+        ] as const) {
+            assert.equal(run.path, expectedPath, `${side}: ${scenario.label}`);
+            assert.equal(run.status, scenario.status, `${side}: ${scenario.label}`);
+            assert.equal(run.message ?? null, scenario.message, `${side}: ${scenario.label}`);
+        }
+        // The CLI drops a repeated message; none repeats here.
+        assert.deepEqual(
+            page[index]!.allMessages.map((entry) => entry.message),
+            cli[index]!.messages,
+            `messages: ${scenario.label}`
+        );
+        assert.deepEqual(
+            page[index]!.allMessages.map((entry) => entry.status),
+            cli[index]!.details.map((detail) => detail.status),
+            `message statuses: ${scenario.label}`
+        );
+    });
+    assert.deepEqual(
+        cli.filter((run) => /-(PARALLEL|SEQUENTIAL)$/.test(run.status)),
+        []
+    );
+});
+
+test('a wpt crash no test claimed keeps a repository path on both sides', () => {
+    // A crash against a wpt test that had already reported OK.
+    const id = '/webaudio/the-audio-api/the-pannernode-interface/distance-inverse.html';
+    const profile = {
+        meta: { startTime: 0 },
+        threads: [
+            {
+                stringArray: ['test', 'Crash'],
+                markers: {
+                    length: 2,
+                    name: [0, 1],
+                    data: [
+                        { type: 'Test', test: id, status: 'OK', color: 'green' },
+                        { type: 'Crash', test: id, signature: 'sig', minidump: null },
+                    ],
+                    startTime: [0, 50],
+                    endTime: [10, 50],
+                },
+            },
+        ],
+    };
+    const expected = `testing/web-platform/tests${id}`;
+    const page = workerExtractTestTimings()(profile);
+    const cli = parseTestMarkers(profile, { jobName: 'x-web-platform-tests-1', taskId: 'T', retryId: 0 });
+    assert.deepEqual(
+        page.map((run) => [run.path, run.status]),
+        [
+            [expected, 'PASS'],
+            [expected, 'CRASH'],
+        ]
+    );
+    assert.deepEqual(
+        cli.map((run) => [run.path, run.status]),
+        page.map((run) => [run.path, run.status])
+    );
 });
 
 // --- the manifest prefix: one rule for both, and for all three markers ------

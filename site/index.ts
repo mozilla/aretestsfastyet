@@ -150,14 +150,14 @@
  *     directly under a table headed "Last 7 Days". Each `.info-text` keeps its
  *     existing sentence and gains ` Covering 199 days, 2026-01-16 to
  *     2026-08-03.` — read off the data, so it cannot drift from what is
- *     plotted. Where the two harnesses differ the longer span is named with
- *     both, since one chart carries both series.
+ *     plotted. Each loaded harness's span is named, since one chart carries
+ *     every harness's series and they differ.
  *
  *     The markup is unchanged: the text is appended to the `<p>` that is
  *     already there.
  *
- *  6. **The two harness rows carry a prior-period comparison in their
- *     tooltip.** The one deliberate product change on this list.
+ *  6. **The harness rows carry a prior-period comparison in their tooltip.**
+ *     A deliberate product change, as divergence 9 is.
  *
  *     `{harness}-stats.json` is the only file with real history — 199 dates for
  *     xpcshell — and the landing page showed one week of it against nothing.
@@ -217,8 +217,12 @@
  *     nothing that the parameter could redirect. Propagating the parameter
  *     would put a query string on a page that ignores it. Reproduced as-is.
  *
- *     The `#${kind}` fragment is `xpcshell` or `mochitest` — a bare fragment,
- *     unlike the issues link's `#date=21days`.
+ *     The fragment is `xpcshell`, `mochitest` or `web-platform-tests` — a bare
+ *     fragment, unlike the issues link's `#date=21days`.
+ *
+ *  9. A third harness, web-platform-tests, shown the way mochitest is. Its
+ *     breakdown section is in the markup, `hidden` until `wpt-stats.json`
+ *     loads; without that file the page is unchanged.
  *
  * ## What is *not* on the list, having been checked
  *
@@ -226,7 +230,7 @@
  *   with `</h2>`. Parsed in jsdom to see what it actually costs: HTML5 error
  *   recovery closes the `h3` correctly, and
  *   `#xpcshellBreakdownContainer`'s children are `DIV H3 DIV H3 DIV` on both
- *   pages. So the markup is byte-identical, the parse is identical, and the
+ *   pages, WPT's pair aside. So the markup and the parse are identical, and the
  *   only consequence is that the two are `h3` and the anchor handler selects
  *   `h2[id]` — so they are not click-to-anchor. That is a property of the
  *   *selector*, not of the typo: fixing the tags would not make them
@@ -241,22 +245,24 @@
  */
 
 import { type StatsFile } from '../lib/formats/stats.ts';
+import { type Harness, HARNESSES, HARNESS_LABELS } from '../lib/model/harness.ts';
 import { DEFAULT_SUMMARY_DAYS, type Summary, computeSummary } from '../lib/query/summary.ts';
 import {
     type BreakdownPoint,
     type DisplayMode,
+    type HarnessStats,
     type MergedStats,
     type RatePoint,
     type SummaryRow,
-    HARNESS_COLORS,
+    HARNESS_VIEWS,
     INITIAL_DISPLAY_MODE,
-    MOCHITEST_FLAVORS,
     SUMMARY_DAYS,
     SUMMARY_LINK_HASH,
     breakdownSeries,
     displayValue,
     droppedDates,
     holeCount,
+    loadedHarnesses,
     mergeBackfillStats,
     rateSeries,
     summaryRows,
@@ -307,12 +313,10 @@ const plotly = (): PlotlyApi | undefined =>
 
 // --- page state -----------------------------------------------------------
 
-/** The merged xpcshell file, or `null` when it could not be loaded. */
-let xpcshellStats: MergedStats | null = null;
-/** The merged mochitest file, or `null`. */
-let mochitestStats: MergedStats | null = null;
+/** The merged file of each harness; `null` for one that could not be loaded. */
+let harnessStats: HarnessStats = {};
 /** The CLI's summary per harness, for the prior-period tooltips. Divergence 6. */
-const summaries = new Map<string, Summary>();
+const summaries = new Map<Harness, Summary>();
 let currentDisplayMode: DisplayMode = INITIAL_DISPLAY_MODE;
 
 /** Which chart containers have been drawn since the last data change. */
@@ -513,7 +517,7 @@ function renderSummaryRow(row: SummaryRow): HTMLElement {
                 percent(row.jobFailureRate),
                 counts(row.totals.failedJobs, row.jobPopulation)
             ),
-            row.isFlavor ? null : `green.html#${row.kind}`
+            row.isFlavor ? null : `green.html#${HARNESS_VIEWS[row.kind].greenAnchor}`
         )
     );
     tr.append(jobCell);
@@ -557,7 +561,7 @@ function updateStatsSummary(): void {
     if (tbody === null) {
         return;
     }
-    const rows = summaryRows(xpcshellStats, mochitestStats);
+    const rows = summaryRows(harnessStats);
     tbody.replaceChildren(...rows.map(renderSummaryRow));
 
     // Divergence 3: say how short the window actually is.
@@ -581,15 +585,8 @@ function updateStatsSummary(): void {
 }
 
 /** The loaded files with their harness names, skipping the ones that failed. */
-function namedStats(): [string, MergedStats][] {
-    const loaded: [string, MergedStats][] = [];
-    if (xpcshellStats !== null) {
-        loaded.push(['xpcshell', xpcshellStats]);
-    }
-    if (mochitestStats !== null) {
-        loaded.push(['mochitest', mochitestStats]);
-    }
-    return loaded;
+function namedStats(): [Harness, MergedStats][] {
+    return loadedHarnesses(harnessStats);
 }
 
 // --- the charts -----------------------------------------------------------
@@ -626,13 +623,17 @@ function rateTrace(
 /**
  * Restyles a trace as a per-flavor one. `old/index.html:621-624`, `:663-666`.
  *
- * `visible: 'legendonly'` is what makes the eight flavor traces start hidden
+ * `visible: 'legendonly'` is what makes the flavor traces start hidden
  * and appear on a legend click — the interaction the browser run exercises.
+ * `dash` differs per harness, to tell mochitest's flavors from WPT's.
  */
-function asFlavorTrace(trace: Record<string, unknown>): Record<string, unknown> {
+function asFlavorTrace(
+    trace: Record<string, unknown>,
+    dash: string
+): Record<string, unknown> {
     return {
         ...trace,
-        line: { ...(trace['line'] as Record<string, unknown>), width: 1.5, dash: 'dot' },
+        line: { ...(trace['line'] as Record<string, unknown>), width: 1.5, dash },
         marker: { size: 4 },
         visible: 'legendonly',
     };
@@ -678,19 +679,21 @@ function yLabel(percentageLabel: string, countLabel: string): string {
 }
 
 /**
- * The per-flavor traces for a chart keyed on two top-level series names.
+ * One harness's per-flavor traces for a chart keyed on two series names.
  * A port of `addMochitestFlavorTraces`, `old/index.html:612-627`.
  */
 function flavorTraces(
+    harness: Harness,
+    stats: MergedStats,
     numeratorKey: 'failedTestRuns' | 'skippedTestRuns' | 'failedJobs',
     denominatorKey: 'totalTestRuns' | 'processedJobCount'
 ): Record<string, unknown>[] {
-    const stats = mochitestStats;
-    if (stats?.flavors === undefined) {
+    if (stats.flavors === undefined) {
         return [];
     }
+    const view = HARNESS_VIEWS[harness];
     const traces: Record<string, unknown>[] = [];
-    for (const flavor of MOCHITEST_FLAVORS) {
+    for (const flavor of view.flavors) {
         const counters = stats.flavors[flavor.key];
         // Upstream's guard is on the *denominator* being present, not the
         // flavor: `:616`, `:658`.
@@ -703,7 +706,8 @@ function flavorTraces(
                     rateSeries(stats.dates, counters[numeratorKey], counters[denominatorKey]),
                     flavor.name,
                     flavor.color
-                )
+                ),
+                view.flavorDash
             )
         );
     }
@@ -713,17 +717,15 @@ function flavorTraces(
 /** Flaky Test Failures. `old/index.html:629-645`. */
 function createTestFailureChart(): void {
     const traces: Record<string, unknown>[] = [];
-    for (const [name, stats] of namedStats()) {
+    for (const [harness, stats] of namedStats()) {
         traces.push(
             rateTrace(
                 rateSeries(stats.dates, stats.failedTestRuns, stats.totalTestRuns),
-                harnessLabel(name),
-                HARNESS_COLORS[name]!
+                HARNESS_LABELS[harness],
+                HARNESS_VIEWS[harness].color
             )
         );
-        if (name === 'mochitest') {
-            traces.push(...flavorTraces('failedTestRuns', 'totalTestRuns'));
-        }
+        traces.push(...flavorTraces(harness, stats, 'failedTestRuns', 'totalTestRuns'));
     }
     draw('testFailureChart', traces, yLabel('Failure Percentage (%)', 'Failed Test Runs'));
 }
@@ -731,44 +733,39 @@ function createTestFailureChart(): void {
 /** Flaky Job Failures. `old/index.html:647-673`. */
 function createJobFailureChart(): void {
     const traces: Record<string, unknown>[] = [];
-    for (const [name, stats] of namedStats()) {
+    for (const [harness, stats] of namedStats()) {
         traces.push(
             rateTrace(
                 rateSeries(stats.dates, testFailedJobSeries(stats), stats.processedJobCount),
-                harnessLabel(name),
-                HARNESS_COLORS[name]!
+                HARNESS_LABELS[harness],
+                HARNESS_VIEWS[harness].color
             )
         );
     }
-    // The flavor traces come after *both* harnesses here, not interleaved:
+    // The flavor traces come after *every* harness here, not interleaved:
     // upstream's loop over the two harnesses closes before the flavor block
     // (`:649-654` then `:655-669`). The legend order differs from the other two
     // charts because of it.
-    traces.push(...flavorTraces('failedJobs', 'processedJobCount'));
+    for (const [harness, stats] of namedStats()) {
+        traces.push(...flavorTraces(harness, stats, 'failedJobs', 'processedJobCount'));
+    }
     draw('jobFailureChart', traces, yLabel('Failure Percentage (%)', 'Failed Jobs'));
 }
 
 /** Test Skips. `old/index.html:675-691`. */
 function createSkipRateChart(): void {
     const traces: Record<string, unknown>[] = [];
-    for (const [name, stats] of namedStats()) {
+    for (const [harness, stats] of namedStats()) {
         traces.push(
             rateTrace(
                 rateSeries(stats.dates, stats.skippedTestRuns, stats.totalTestRuns),
-                harnessLabel(name),
-                HARNESS_COLORS[name]!
+                HARNESS_LABELS[harness],
+                HARNESS_VIEWS[harness].color
             )
         );
-        if (name === 'mochitest') {
-            traces.push(...flavorTraces('skippedTestRuns', 'totalTestRuns'));
-        }
+        traces.push(...flavorTraces(harness, stats, 'skippedTestRuns', 'totalTestRuns'));
     }
     draw('skipRateChart', traces, yLabel('Skip Percentage (%)', 'Skipped Test Runs'));
-}
-
-/** The legend label for a harness. `old/index.html:634`, `:639`. */
-function harnessLabel(harness: string): string {
-    return harness === 'xpcshell' ? 'XPCShell' : 'Mochitest';
 }
 
 /** One stacked band of a breakdown chart. A port of `makeStackTrace`, `:698-717`. */
@@ -800,10 +797,7 @@ function stackTrace(
 }
 
 /** One harness's failure breakdown. A port of `createBreakdownChart`, `:693-725`. */
-function createBreakdownChart(chartId: string, stats: MergedStats | null): void {
-    if (stats === null) {
-        return;
-    }
+function createBreakdownChart(chartId: string, stats: MergedStats): void {
     draw(
         chartId,
         [
@@ -815,10 +809,27 @@ function createBreakdownChart(chartId: string, stats: MergedStats | null): void 
     );
 }
 
-/** Both breakdown charts, drawn by one observer entry. `old/index.html:727-730`. */
+/** The ids `site/index.html` gives a harness's breakdown chart and its `<h3>`. */
+const breakdownChartId = (harness: Harness): string => `${harness}BreakdownChart`;
+const breakdownHeadingId = (harness: Harness): string => `${harness}-failure-breakdown`;
+
+/** The breakdown charts, drawn by one observer entry. `old/index.html:727-730`. */
 function createBreakdownCharts(): void {
-    createBreakdownChart('xpcshellBreakdownChart', xpcshellStats);
-    createBreakdownChart('mochitestBreakdownChart', mochitestStats);
+    for (const [harness, stats] of namedStats()) {
+        createBreakdownChart(breakdownChartId(harness), stats);
+    }
+}
+
+/** Shows the breakdown section of each loaded harness; only WPT's starts hidden. */
+function revealBreakdownSections(): void {
+    for (const [harness] of namedStats()) {
+        for (const id of [breakdownHeadingId(harness), breakdownChartId(harness)]) {
+            const node = document.getElementById(id);
+            if (node !== null) {
+                node.hidden = false;
+            }
+        }
+    }
 }
 
 /** Container id → the function that draws its chart. `old/index.html:734-739`. */
@@ -837,7 +848,7 @@ const CHART_CREATORS = new Map<string, () => void>([
  * Read off the data rather than written down, so it cannot drift from what is
  * plotted. Every chart plots the whole file, so every chart gets the same
  * sentence — but it is computed per container rather than once, because the
- * breakdown container holds both harnesses and a future chart might hold one.
+ * breakdown container holds every harness and a future chart might hold one.
  */
 function labelChartWindows(): void {
     const loaded = namedStats();
@@ -845,8 +856,8 @@ function labelChartWindows(): void {
         return;
     }
     const spans = loaded.map(
-        ([name, stats]) =>
-            `${harnessLabel(name)} ${stats.dates.length} days, ` +
+        ([harness, stats]) =>
+            `${HARNESS_LABELS[harness]} ${stats.dates.length} days, ` +
             `${stats.dates[0]!} to ${stats.dates[stats.dates.length - 1]!}`
     );
     const sentence = ` Covering the full history: ${spans.join('; ')}.`;
@@ -861,10 +872,32 @@ function labelChartWindows(): void {
 // --- loading --------------------------------------------------------------
 
 /**
+ * The backfill request of each harness that makes one; WPT has nothing to repair.
+ * Literal `fetch` calls, which `tools/page-assets.ts` reads to copy the files.
+ */
+const BACKFILL_FETCHES: Readonly<Partial<Record<Harness, () => Promise<Response>>>> = {
+    // build-optional: xpcshell-stats-backfill.json — no xpcshell backfill is
+    // committed and none is expected. The backfill repairs a mochitest-only
+    // data loss, so this request has 404'd on every load since the page was
+    // written, and `tools/page-assets.ts` would otherwise fail the build over a
+    // file that is meant to be absent. `mochitest-stats-backfill.json` has no
+    // such marker, so the build copies it into `dist-site/` and stops if it
+    // ever goes missing — which is the bug this marker's absence used to hide.
+    xpcshell: () => fetch('./xpcshell-stats-backfill.json'),
+    mochitest: () => fetch('./mochitest-stats-backfill.json'),
+};
+
+/**
+ * Harnesses whose stats file may not be published. For these any failure to
+ * load, not only a 404, means "no data" and not the page-level error.
+ */
+const MAY_BE_UNPUBLISHED: ReadonlySet<Harness> = new Set<Harness>(['wpt']);
+
+/**
  * Fetches one harness's stats and merges its committed backfill.
  *
  * Both fetches are started by the caller before this is awaited, matching the
- * page's own arrangement (`old/index.html:8-16`): the four requests go out before
+ * page's own arrangement (`old/index.html:8-16`): the requests go out before
  * Plotly's CDN script has loaded, so the merge costs no extra latency.
  *
  * The backfill is best-effort — a 404 or a parse failure yields the live data
@@ -873,9 +906,9 @@ function labelChartWindows(): void {
  * every load and always has.
  */
 async function loadHarness(
-    harness: string,
+    harness: Harness,
     livePromise: Promise<Response>,
-    backfillPromise: Promise<Response>
+    backfillPromise: Promise<Response> | null
 ): Promise<MergedStats | null> {
     const response = await livePromise;
     if (!response.ok) {
@@ -895,13 +928,15 @@ async function loadHarness(
     }
 
     let backfill: StatsFile | null = null;
-    try {
-        const backfillResponse = await backfillPromise;
-        if (backfillResponse.ok) {
-            backfill = (await backfillResponse.json()) as StatsFile;
+    if (backfillPromise !== null) {
+        try {
+            const backfillResponse = await backfillPromise;
+            if (backfillResponse.ok) {
+                backfill = (await backfillResponse.json()) as StatsFile;
+            }
+        } catch (error) {
+            console.log(`No usable ${harness} backfill:`, (error as Error).message);
         }
-    } catch (error) {
-        console.log(`No usable ${harness} backfill:`, (error as Error).message);
     }
 
     const { stats, warnings } = mergeBackfillStats(backfill, live);
@@ -914,11 +949,11 @@ async function loadHarness(
                     .join('\n')
         );
     }
-    const unlisted = unlistedFlavors(live);
+    const unlisted = unlistedFlavors(live, harness);
     if (unlisted.length > 0) {
         console.warn(
             `${harness}: the data has flavors this page does not show: ${unlisted.join(', ')}. ` +
-                'Add them to MOCHITEST_FLAVORS in site/index-view.ts.'
+                `Add them to the ${harness} flavors of HARNESS_VIEWS in site/index-view.ts.`
         );
     }
     console.log(`Loaded ${harness} stats:`, stats.dates.length, 'days');
@@ -927,7 +962,7 @@ async function loadHarness(
 
 /** Redraws everything after a data or mode change. A port of `updateDisplay`, `:762-778`. */
 function updateDisplay(): void {
-    if (xpcshellStats === null && mochitestStats === null) {
+    if (namedStats().length === 0) {
         return;
     }
     dataReady = true;
@@ -1047,8 +1082,8 @@ export async function start(): Promise<void> {
 
     window.__view = (): unknown => ({
         displayMode: currentDisplayMode,
-        summaryDays: summaryRows(xpcshellStats, mochitestStats)[0]?.totals.dates.length ?? 0,
-        rows: summaryRows(xpcshellStats, mochitestStats),
+        summaryDays: summaryRows(harnessStats)[0]?.totals.dates.length ?? 0,
+        rows: summaryRows(harnessStats),
         chartDates: Object.fromEntries(
             namedStats().map(([name, stats]) => [name, stats.dates.length])
         ),
@@ -1066,29 +1101,33 @@ export async function start(): Promise<void> {
     };
     window.__displayMode = (): DisplayMode => currentDisplayMode;
 
-    // All four requests go out before anything is awaited, matching
+    // Every request goes out before anything is awaited, matching
     // `old/index.html:8-16`. The backfill is a plain `fetch` of a committed sibling,
     // not a published artifact, so it does not go through `fetchData`.
-    const xpcshellLive = fetchData('xpcshell-stats.json');
-    const mochitestLive = fetchData('mochitest-stats.json');
-    // build-optional: xpcshell-stats-backfill.json — no xpcshell backfill is
-    // committed and none is expected. The backfill repairs a mochitest-only
-    // data loss, so this request has 404'd on every load since the page was
-    // written, and `tools/page-assets.ts` would otherwise fail the build over a
-    // file that is meant to be absent. `mochitest-stats-backfill.json` has no
-    // such marker, so the build copies it into `dist-site/` and stops if it
-    // ever goes missing — which is the bug this marker's absence used to hide.
-    const xpcshellBackfill = fetch('./xpcshell-stats-backfill.json');
-    const mochitestBackfill = fetch('./mochitest-stats-backfill.json');
+    const live = HARNESSES.map((harness) => fetchData(`${harness}-stats.json`));
+    const backfills = HARNESSES.map((harness) => BACKFILL_FETCHES[harness]?.() ?? null);
 
     try {
-        [xpcshellStats, mochitestStats] = await Promise.all([
-            loadHarness('xpcshell', xpcshellLive, xpcshellBackfill),
-            loadHarness('mochitest', mochitestLive, mochitestBackfill),
-        ]);
-        if (xpcshellStats === null && mochitestStats === null) {
+        const loaded = await Promise.all(
+            HARNESSES.map((harness, i) => {
+                const load = loadHarness(harness, live[i]!, backfills[i] ?? null);
+                if (!MAY_BE_UNPUBLISHED.has(harness)) {
+                    return load;
+                }
+                return load.catch((error: unknown) => {
+                    console.log(`No usable ${harness} stats:`, (error as Error).message);
+                    return null;
+                });
+            })
+        );
+        harnessStats = Object.fromEntries(
+            HARNESSES.map((harness, i) => [harness, loaded[i] ?? null])
+        );
+        if (namedStats().length === 0) {
             throw new Error('No stats data available');
         }
+        // Before the first draw: Plotly cannot size a hidden node.
+        revealBreakdownSections();
         updateDisplay();
     } catch (error) {
         console.error('Failed to load stats:', error);

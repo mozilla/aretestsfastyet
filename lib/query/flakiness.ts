@@ -808,7 +808,7 @@ export function flakinessByFolder(
         // directory, and never repeated up the ancestry.
         const leaf: TestLeaf = {
             fullPath: identity.fullPath,
-            name: identity.fullPath.slice(identity.fullPath.lastIndexOf('/') + 1),
+            name: identity.name,
             flaky: 0,
             stable: 0,
             skipped: 0,
@@ -1018,7 +1018,7 @@ export function flakinessByFolderAveraged(
 
         node.tests.push({
             fullPath: identity.fullPath,
-            name: identity.fullPath.slice(identity.fullPath.lastIndexOf('/') + 1),
+            name: identity.name,
             flaky: counts.flaky,
             stable: counts.stable,
             skipped: skippedShare,

@@ -37,6 +37,7 @@ import assert from 'node:assert/strict';
 
 import { setupPage, fixture, shape, shapes, pathTo } from './dom-harness.ts';
 import type { IssuesWithTaskIdsFile } from '../lib/formats/issues.ts';
+import { HARNESSES } from '../lib/model/harness.ts';
 
 // --- ground truth, read off the raw fixture -------------------------------
 
@@ -1313,7 +1314,8 @@ test('the harness switcher renamed the heading for this page', () => {
     assert.equal(harness.document.title, 'XPCShell Crashes by Signature');
     assert.deepEqual(
         [...heading.querySelectorAll('option')].map((option) => option.value),
-        ['xpcshell', 'mochitest']
+        [...HARNESSES],
+        'the classic script repeats the list `lib/model/harness.ts` owns, and must not lag it'
     );
     assert.equal(
         (heading.querySelector('select') as HTMLSelectElement).value,

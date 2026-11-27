@@ -95,6 +95,22 @@ function renderCrashLinks(crashInstance, testName, currentData) {
 }
 
 /**
+ * The file to link to for a test: a wpt path without its variant, or the script
+ * of a generated test. Same rule as wptSourceFile() in lib/model/wpt-path.ts.
+ * @param {string} testPath - Full test path
+ * @returns {string} - Path of the test's source file
+ */
+function sourceFileOfTest(testPath) {
+    if (!testPath.startsWith('testing/web-platform/')) {
+        return testPath;
+    }
+    return testPath
+        .replace(/[?#].*$/, '')
+        .replace(/\.any(?:\.[\w-]+)?\.html$/, '.any.js')
+        .replace(/\.(window|worker|extension)\.html$/, '.$1.js');
+}
+
+/**
  * Generate Searchfox URL for a test path, optionally with a line number
  * extracted from a failure message like "[child : 42] error text".
  * @param {string} testPath - Full test path
@@ -102,7 +118,7 @@ function renderCrashLinks(crashInstance, testName, currentData) {
  * @returns {string} - Searchfox URL
  */
 function getSearchfoxUrl(testPath, message) {
-    let url = `https://searchfox.org/mozilla-central/source/${testPath}`;
+    let url = `https://searchfox.org/mozilla-central/source/${sourceFileOfTest(testPath)}`;
     if (message) {
         const match = message.match(/^\[[^\] :]+ : (\d+)\]/);
         if (match) url += `#${match[1]}`;

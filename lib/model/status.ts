@@ -99,6 +99,7 @@ export type ExecutionMode = 'parallel' | 'sequential';
  *
  * The `-PARALLEL`/`-SEQUENTIAL` variants are xpcshell-only; mochitest emits
  * only the six unsuffixed ones.
+ * `UNEXPECTED-PASS` is in the wpt files only.
  */
 export const OBSERVED_STATUSES = [
     'PASS',
@@ -113,6 +114,7 @@ export const OBSERVED_STATUSES = [
     'CRASH',
     'SKIP',
     'EXPECTED-FAIL',
+    'UNEXPECTED-PASS',
 ] as const;
 
 /**
@@ -157,6 +159,8 @@ function classifyBase(base: string): StatusKind {
         case 'OK':
             return 'pass';
         case 'FAIL':
+        // A pass where a failure is expected turns the job orange too.
+        case 'UNEXPECTED-PASS':
             return 'fail';
         case 'TIMEOUT':
             return 'timeout';

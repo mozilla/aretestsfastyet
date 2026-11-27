@@ -2018,9 +2018,14 @@ test('summary is a 7-day window per harness, from the stats file', async () => {
         assertFraming('summary', 'window', entry.current.dayCount, 7);
         assert.equal(entry.prior?.dayCount, 7, 'compared against the prior 7 days');
     }
+    // One per harness. The fixtures have no wpt file, so wpt has no row above.
     assert.deepEqual(
         [...requested].sort(),
-        ['mochitest-timings/mochitest-stats.json', 'xpcshell-timings/xpcshell-stats.json'],
+        [
+            'mochitest-timings/mochitest-stats.json',
+            'wpt-timings/wpt-stats.json',
+            'xpcshell-timings/xpcshell-stats.json',
+        ],
         'summary reads {harness}-stats.json, not the 21-day issues aggregate'
     );
 });

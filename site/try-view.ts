@@ -1367,7 +1367,8 @@ export function noFailuresText(options: {
     noTestFailuresAtAll: boolean;
     otherFailedJobCount: number;
 }): NoFailuresText {
-    const harnesses = SUPPORTED_HARNESSES.join(' and ');
+    // "mochitest, xpcshell and web-platform-tests": a list read aloud.
+    const harnesses = [SUPPORTED_HARNESSES.slice(0, -1).join(', '), SUPPORTED_HARNESSES.at(-1)].join(' and ');
     const verdict = options.noTestFailuresAtAll ? 'No test failures' : 'No permanent failures';
     const others = options.otherFailedJobCount;
     if (others > 0) {

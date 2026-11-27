@@ -46,6 +46,7 @@
  * both.
  */
 
+import { searchfoxUrl } from '../lib/links.ts';
 import { el, externalLink } from './drilldown-render.ts';
 import { taskPageSearch } from './task-view.ts';
 
@@ -144,7 +145,7 @@ export function testPageLink(
  */
 export function searchfoxButton(testPath: string): HTMLAnchorElement {
     const anchor = externalLink(
-        `https://searchfox.org/mozilla-central/source/${testPath}`,
+        searchfoxUrl(testPath),
         '🔍',
         'action-button'
     );

@@ -293,6 +293,11 @@ test('the flakiness worker is asked about each failure on this job’s chunk-str
     ]);
     assert.deepEqual(splitPath('a/b/browser_c.js'), { directory: 'a/b/', name: 'browser_c.js' });
     assert.deepEqual(splitPath('top.js'), { directory: '', name: 'top.js' });
+    // A wpt variant can contain slashes, and stays in the name.
+    assert.deepEqual(splitPath('testing/web-platform/tests/fetch/a.html?url=/common/b.html'), {
+        directory: 'testing/web-platform/tests/fetch/',
+        name: 'a.html?url=/common/b.html',
+    });
 });
 
 test('a crash against a manifest is listed on its own, with its dump', () => {

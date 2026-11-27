@@ -43,6 +43,7 @@ import { type IssueFilters, encodeFilters, typesOf } from './issue-filters.ts';
 import { type FlakyDay, dateOfDay, startDateOf } from '../lib/query/flakiness.ts';
 import { type TestIssue, buildTestIssues } from '../lib/query/test-issues.ts';
 import { computeTestStats } from '../lib/query/test-stats.ts';
+import { type Harness, HARNESSES, HARNESS_LABELS } from '../lib/model/harness.ts';
 import { classifyStatus } from '../lib/model/status.ts';
 import { skipReason } from '../lib/model/skips.ts';
 
@@ -189,25 +190,19 @@ export function isWholeWindow(range: DayRange | null, days: number): boolean {
 
 // --- the harnesses -------------------------------------------------------
 
-/** Which harness's data a file describes. */
-export type Harness = 'xpcshell' | 'mochitest';
-
-/** Both harnesses, in the order they are shown. */
-export const HARNESSES: readonly Harness[] = ['xpcshell', 'mochitest'];
+// Re-exported for the modules that import them from here.
+export { type Harness, HARNESSES };
 
 /**
  * How a harness reads in the heading.
  *
- * There is no harness *selector* any more: the page loads both aggregates and
+ * There is no harness *selector* any more: the page loads every aggregate and
  * merges them, so `?kind=` only ever meant "show me less" — and picking a
- * single harness left the dropdown with one option and no way back to both.
+ * single harness left the dropdown with one option and no way back to all.
  * What is left is the label, for stating which harnesses a path actually has
  * tests in.
  */
-export const SCOPE_LABEL: Record<Harness, string> = {
-    xpcshell: 'XPCShell',
-    mochitest: 'Mochitest',
-};
+export const SCOPE_LABEL: Record<Harness, string> = HARNESS_LABELS;
 
 /** One harness's loaded file, and the dates it covers. */
 export interface LoadedHarness {

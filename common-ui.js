@@ -505,6 +505,13 @@ function prepareRunsForDisplay(runs) {
  * Replace the page's h1 with a harness dropdown + suffix text.
  * @param {string} suffix - Text after the harness name (e.g., "Failures by Message")
  */
+// Same list as HARNESSES in lib/model/harness.ts, which a classic script cannot import.
+const HARNESS_SWITCHER_OPTIONS = [
+    ['xpcshell', 'XPCShell'],
+    ['mochitest', 'Mochitest'],
+    ['wpt', 'WPT'],
+];
+
 function initHarnessSwitcher(suffix) {
     const h1 = document.querySelector('h1');
     const currentHarness = getHarnessType();
@@ -512,7 +519,7 @@ function initHarnessSwitcher(suffix) {
     const select = document.createElement('select');
     select.className = 'harness-switcher';
 
-    for (const [value, label] of [['xpcshell', 'XPCShell'], ['mochitest', 'Mochitest']]) {
+    for (const [value, label] of HARNESS_SWITCHER_OPTIONS) {
         const option = document.createElement('option');
         option.value = value;
         option.textContent = label;
@@ -534,7 +541,8 @@ function initHarnessSwitcher(suffix) {
     h1.appendChild(select);
     h1.appendChild(document.createTextNode(' ' + suffix));
 
-    const label = currentHarness === 'mochitest' ? 'Mochitest' : 'XPCShell';
+    const [, label] =
+        HARNESS_SWITCHER_OPTIONS.find(([value]) => value === currentHarness) ?? HARNESS_SWITCHER_OPTIONS[0];
     document.title = `${label} ${suffix}`;
 }
 

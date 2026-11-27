@@ -20,7 +20,7 @@ import { type OptionSpecs } from './args.ts';
 import { usageError } from './errors.ts';
 // Imported as well as re-exported below: a `export … from` does not bring the
 // name into this module's scope, and `resolveHarness` uses both.
-import { type Harness, detectHarness } from '../lib/model/harness.ts';
+import { type Harness, HARNESSES, detectHarness, isHarness } from '../lib/model/harness.ts';
 
 /**
  * Which harness's data files to read.
@@ -75,7 +75,7 @@ export function isAgentCaller(env: Record<string, string | undefined>): boolean 
 export const GLOBAL_OPTION_SPECS: OptionSpecs = {
     harness: {
         type: 'string',
-        placeholder: '<xpcshell|mochitest>',
+        placeholder: '<xpcshell|mochitest|wpt>',
         describe: 'Which harness’s data to read. Inferred from the test path by default.',
     },
     json: { type: 'boolean', describe: 'Emit JSON instead of text.' },
@@ -135,7 +135,7 @@ export const GLOBAL_OPTION_SPECS: OptionSpecs = {
 export function readGlobalOptions(
     args: ParsedArgs,
     env: Record<string, string | undefined> = {},
-    extraHarnessValues: readonly string[] = []
+    harnessValues: readonly string[] = HARNESSES
 ): GlobalOptions {
     const wantsJson = boolOption(args, 'json');
     const wantsMarkdown = boolOption(args, 'markdown');
@@ -146,13 +146,13 @@ export function readGlobalOptions(
         );
     }
 
-    // `extraHarnessValues` lets one command widen this without every command
+    // `harnessValues` lets one command have its own values without every command
     // learning its vocabulary: `intermittent` classifies a bug as mochitest,
     // xpcshell or unknown, and `unknown` is a value on that same axis rather
     // than a second flag. The command validates its own meaning; this only
     // stops the shared check rejecting the value before the command sees it.
     const harnessValue = stringOption(args, 'harness');
-    const allowed = ['xpcshell', 'mochitest', ...extraHarnessValues];
+    const allowed = harnessValues;
     if (harnessValue !== undefined && !allowed.includes(harnessValue)) {
         throw usageError(
             `--harness expects ${allowed.slice(0, -1).join(', ')} or ` +
@@ -188,10 +188,7 @@ export function readGlobalOptions(
         // Narrow on purpose: a widened value is not a harness any other
         // command understands, so it stays out of the shared field and the
         // command reads it from the raw argument.
-        harness:
-            harnessValue === 'xpcshell' || harnessValue === 'mochitest'
-                ? harnessValue
-                : undefined,
+        harness: harnessValue !== undefined && isHarness(harnessValue) ? harnessValue : undefined,
         limit: numberOption(args, 'limit'),
         config: listOption(args, 'config'),
         excludeConfig: listOption(args, 'exclude-config'),

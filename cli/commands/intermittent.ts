@@ -531,6 +531,13 @@ async function runDrilldown(
     }
     const occurrences = await withRunIds(context, client, tree, raw);
 
+    // `harnessOfOccurrence` only tells mochitest and xpcshell apart.
+    if (globals.harness === 'wpt') {
+        throw usageError(
+            '--harness expects mochitest or xpcshell with --bug, got "wpt"',
+            'Omit --harness to see every occurrence of the bug, whatever its job.'
+        );
+    }
     const filter: DrilldownFilter = {
         ...(globals.harness === undefined ? {} : { harness: globals.harness }),
         ...(globals.config.length === 0 ? {} : { config: globals.config }),

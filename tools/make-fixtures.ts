@@ -18,15 +18,21 @@
  * Saturday file is not representative of the shapes that appear under load.
  *
  * Usage: node tools/make-fixtures.js [--date YYYY-MM-DD]
+ *        node tools/make-fixtures.js --wpt-from <directory>
+ *
+ * `--wpt-from` writes the wpt fixtures alone, from a directory of files the
+ * generator wrote: the wpt files are not published yet.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
     truncateErrors,
     truncateManifests,
+    selectSubtestTests,
     truncateResources,
+    truncateSubtests,
     truncateTimingFile,
     type AnyRecord,
 } from './fixtures/truncate.ts';
@@ -46,6 +52,9 @@ const TESTS_PER_STATUS = 2;
 const MARKER_GROUPS = 60;
 const MANIFEST_RUNS = 200;
 const RESOURCE_JOBS = 30;
+const SUBTESTS_PER_TEST = 40;
+/** The bucket both wpt fixtures, timings and subtests, are cut from. */
+const WPT_BUCKET = '00';
 
 function indexUrl(indexName: string, filename: string): string {
     return `${CI_INDEX}/gecko.v2.mozilla-central.latest.source.test-info-${indexName}/artifacts/public/${filename}`;
@@ -140,8 +149,49 @@ function looksLikeHang(dump: AnyRecord): boolean {
     return names.some((n) => waiting.test(n));
 }
 
+/** The timing and the subtests bucket are cut to the same tests. */
+async function writeWptFixtures(directory: string): Promise<void> {
+    const read = async (name: string): Promise<AnyRecord> =>
+        JSON.parse(await readFile(path.join(directory, name), 'utf8')) as AnyRecord;
+
+    await write('wpt-stats.json', await read('wpt-stats.json'));
+
+    const subtests = await read(`wpt-subtests-${WPT_BUCKET}.json`);
+    const withSubtests = new Set(selectSubtestTests(subtests, TESTS_PER_STATUS));
+    const bucket = truncateTimingFile(
+        await read(`wpt-${WPT_BUCKET}.json`),
+        TESTS_PER_STATUS,
+        undefined,
+        withSubtests
+    );
+    await write(`wpt-${WPT_BUCKET}.json`, bucket);
+
+    const tables = bucket['tables'] as Record<string, string[]>;
+    const testInfo = bucket['testInfo'] as Record<string, number[]>;
+    const kept = new Set(
+        testInfo['testPathIds']!.map((pathId, testId) => {
+            const directoryName = tables['testPaths']![pathId]!;
+            const name = tables['testNames']![testInfo['testNameIds']![testId]!]!;
+            return directoryName ? `${directoryName}/${name}` : name;
+        })
+    );
+    await write(
+        `wpt-subtests-${WPT_BUCKET}.json`,
+        truncateSubtests(subtests, (testPath) => kept.has(testPath), SUBTESTS_PER_TEST)
+    );
+}
+
 async function main(): Promise<void> {
     const argv = process.argv.slice(2);
+    const wptFlag = argv.indexOf('--wpt-from');
+    if (wptFlag >= 0) {
+        const directory = argv[wptFlag + 1];
+        if (directory === undefined) {
+            throw new Error('--wpt-from needs the directory the generator wrote to');
+        }
+        await writeWptFixtures(directory);
+        return;
+    }
     const dateFlag = argv.indexOf('--date');
     let date = dateFlag >= 0 ? argv[dateFlag + 1] : undefined;
 
